@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pixman.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <wayland-server-core.h>
@@ -32,6 +33,9 @@ struct wlr_foreign_toplevel_manager_v1;
 struct wlr_foreign_toplevel_handle_v1;
 struct wlr_xdg_decoration_manager_v1;
 struct wlr_xdg_toplevel_decoration_v1;
+struct wlr_pointer_constraints_v1;
+struct wlr_pointer_constraint_v1;
+struct wlr_relative_pointer_manager_v1;
 struct wlr_xwayland;
 struct wlr_xwayland_surface;
 struct wlr_tablet_manager_v2;
@@ -113,10 +117,13 @@ struct comp_toplevel {
 	struct wl_listener request_resize;
 	struct wl_listener set_title;
 	struct wl_listener set_app_id;
+	struct wl_listener new_popup;
 	/** Xwayland only; WM_CLASS updates (same refresh path as `set_app_id`). */
 	struct wl_listener set_class;
 	struct wl_listener xwayland_associate;
 	struct wl_listener xwayland_dissociate;
+	struct wl_listener xwayland_map_request;
+	struct wl_listener xwayland_request_configure;
 	struct wlr_foreign_toplevel_handle_v1 *foreign_toplevel;
 	struct wl_listener foreign_request_activate;
 	struct wl_listener foreign_request_close;
@@ -164,6 +171,11 @@ struct comp_server {
 	struct wlr_xdg_output_manager_v1 *xdg_output_manager;
 	struct wlr_screencopy_manager_v1 *screencopy_manager;
 	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
+	struct wlr_pointer_constraints_v1 *pointer_constraints;
+	struct wlr_relative_pointer_manager_v1 *relative_pointer_manager;
+	struct wlr_pointer_constraint_v1 *active_pointer_constraint;
+	pixman_region32_t pointer_confine;
+	bool pointer_confine_requires_warp;
 	struct wlr_scene *scene;
 	/** Scene stacking (back to front): background, layout+outputs, bottom, windows, top, overlay. */
 	struct wlr_scene_tree *layer_trees[4];
@@ -194,6 +206,9 @@ struct comp_server {
 	struct wl_listener cursor_frame;
 	struct wl_listener seat_request_cursor;
 	struct wl_listener seat_request_set_selection;
+	struct wl_listener seat_pointer_focus_change;
+	struct wl_listener new_pointer_constraint;
+	struct wl_listener pointer_constraint_commit;
 	struct wl_listener cursor_touch_down;
 	struct wl_listener cursor_touch_up;
 	struct wl_listener cursor_touch_motion;

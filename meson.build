@@ -16,6 +16,7 @@ cc = meson.get_compiler('c')
 m_dep = cc.find_library('m', required: false)
 
 wlroots = dependency('wlroots-0.19')
+pixman = dependency('pixman-1')
 wayland_server = dependency('wayland-server')
 xkbcommon = dependency('xkbcommon')
 wayland_protocols = dependency('wayland-protocols', version: '>=1.32')
@@ -65,6 +66,14 @@ tablet_v2_private_c = custom_target(
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+pointer_constraints_xml = wayland_protocols.get_variable('pkgdatadir') / 'unstable/pointer-constraints/pointer-constraints-unstable-v1.xml'
+pointer_constraints_server_h = custom_target(
+  'pointer-constraints-protocol',
+  output: 'pointer-constraints-unstable-v1-protocol.h',
+  input: pointer_constraints_xml,
+  command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+
 executable(
   'stackcomp',
   'src/main.c',
@@ -76,7 +85,8 @@ executable(
   ext_workspace_private_c,
   tablet_v2_server_h,
   tablet_v2_private_c,
-  dependencies: [wlroots, wayland_server, xkbcommon, m_dep],
+  pointer_constraints_server_h,
+  dependencies: [wlroots, pixman, wayland_server, xkbcommon, m_dep],
   install: true,
 )
 
