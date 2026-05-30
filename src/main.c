@@ -290,6 +290,25 @@ static bool compositor_session_active;
 static bool xdg_debug_logs_enabled;
 /** Optional append-only log target set by `--log-file`; NULL means stderr-only. */
 static FILE *stackcomp_log_file;
+/** Active startup log threshold used by our callback for explicit filtering. */
+static enum wlr_log_importance stackcomp_active_log_level = WLR_INFO;
+
+/** Map wlroots importance to an ordered rank for deterministic threshold checks. */
+static int stackcomp_log_level_rank(enum wlr_log_importance importance)
+{
+	switch (importance)
+	{
+	case WLR_ERROR:
+		return 1;
+	case WLR_INFO:
+		return 2;
+	case WLR_DEBUG:
+		return 3;
+	case WLR_SILENT:
+	default:
+		return 0;
+	}
+}
 
 /** Close the optional startup log file (registered via atexit). */
 static void stackcomp_log_close_file(void)
@@ -326,6 +345,13 @@ static const char *stackcomp_log_level_name(enum wlr_log_importance importance)
  */
 static void stackcomp_log_callback(enum wlr_log_importance importance, const char *fmt, va_list args)
 {
+	const int active = stackcomp_log_level_rank(stackcomp_active_log_level);
+	const int msg = stackcomp_log_level_rank(importance);
+	if (active == 0 || msg > active)
+	{
+		return;
+	}
+
 	char ts[32] = "";
 	time_t now = time(NULL);
 	struct tm tm_now;
@@ -4742,6 +4768,7 @@ int main(int argc, char **argv)
 	}
 
 	wlr_log_init(startup_log_level, stackcomp_log_callback);
+	stackcomp_active_log_level = startup_log_level;
 	{
 		const char *e = getenv("STACKCOMP_DEBUG_XDG");
 		xdg_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
