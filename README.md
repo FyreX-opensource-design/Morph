@@ -24,6 +24,53 @@ A wlroots-based Wayland compositor with stack, tile, and scroll layouts.
 
 See `PROTOCOLS.md` for the exact matrix of implemented and missing globals.
 
+## IPC (Current State)
+
+stackcomp currently has two IPC/control surfaces that are intentionally different:
+
+1. Local command IPC (text over Unix socket)
+2. Wayland protocol IPC (ext-workspace + foreign-toplevel)
+
+### 1) Local command IPC (socket)
+
+- Socket path: `$XDG_RUNTIME_DIR/stackcomp-ipc.sock`
+- Transport: `AF_UNIX` stream socket
+- Payload: one text command line (newline optional)
+- Scope: local scripts and CLI automation
+
+Supported command families:
+
+- `layout toggle|stack|tile|scroll`
+- `workspace N|next|prev|move N`
+- `tile move prev|next|first|last|<signed-int>`
+- `tile grid left|right|up|down|top|bottom|...`
+- `scroll prev|next|left|right|<signed-int>` (or `scroll move ...`)
+- `reload config` (alias: `reload`)
+
+Example:
+
+```bash
+echo 'workspace 2' | nc -U "$XDG_RUNTIME_DIR/stackcomp-ipc.sock"
+echo 'layout scroll' | nc -U "$XDG_RUNTIME_DIR/stackcomp-ipc.sock"
+```
+
+### 2) Wayland protocol IPC (client-facing)
+
+- `ext_workspace_manager_v1` (workspace listing + activate)
+- `zwlr_foreign_toplevel_manager_v1` (window metadata + activate/close/state requests)
+
+This is what tools like waybar or wayctl use through Wayland protocol objects and events, not through the local text socket.
+
+Important current limitation in stackcomp `ext_workspace_manager_v1`:
+
+- `activate`: implemented
+- `create_workspace`: currently no-op
+- `remove_workspace`: currently no-op
+- `assign_workspace`: currently no-op
+
+For probably planned IPC stabilization, see
+`feature-request_IPC_stabilisation.md`.
+
 ## Build
 
 Use Meson/Ninja:
