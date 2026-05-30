@@ -76,6 +76,7 @@ pointer_constraints_server_h = custom_target(
 
 executable(
   'stackcomp',
+  'src/crash_handler.c',
   'src/main.c',
   'src/config.c',
   'src/ext_workspace.c',

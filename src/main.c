@@ -55,6 +55,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "config.h"
+#include "crash_handler.h"
 #include "ext_workspace.h"
 #include "server.h"
 
@@ -4599,6 +4600,8 @@ int main(int argc, char **argv)
 {
 	enum wlr_log_importance startup_log_level = WLR_INFO;
 	const char *startup_log_file_path = NULL;
+	const char *startup_crash_log_path = NULL;
+	bool disable_crash_handler = false;
 	/*
 	 * First pass: parse logging flags before wlroots init so early errors and
 	 * startup diagnostics already use the requested level and sinks.
@@ -4663,6 +4666,27 @@ int main(int argc, char **argv)
 			startup_log_file_path = argv[i] + 11;
 			continue;
 		}
+		if (!strcmp(argv[i], "--crash-log"))
+		{
+			if (i + 1 >= argc)
+			{
+				fprintf(stderr, "Missing path after --crash-log\n");
+				return 1;
+			}
+			startup_crash_log_path = argv[i + 1];
+			i++;
+			continue;
+		}
+		if (!strncmp(argv[i], "--crash-log=", 12))
+		{
+			startup_crash_log_path = argv[i] + 12;
+			continue;
+		}
+		if (!strcmp(argv[i], "--no-crash-handler"))
+		{
+			disable_crash_handler = true;
+			continue;
+		}
 	}
 
 	if (startup_log_file_path && startup_log_file_path[0])
@@ -4691,6 +4715,12 @@ int main(int argc, char **argv)
 	if (signal(SIGCHLD, SIG_DFL) == SIG_ERR)
 	{
 		wlr_log_errno(WLR_ERROR, "signal(SIGCHLD, SIG_DFL)");
+		return 1;
+	}
+
+	if (!disable_crash_handler && !stackcomp_crash_handler_install(startup_crash_log_path))
+	{
+		wlr_log(WLR_ERROR, "Failed to install crash handler");
 		return 1;
 	}
 
@@ -4729,6 +4759,20 @@ int main(int argc, char **argv)
 			continue;
 		}
 		if (!strncmp(argv[i], "--log-level=", 12) || !strncmp(argv[i], "--log-file=", 11))
+		{
+			continue;
+		}
+		if (!strcmp(argv[i], "--crash-log"))
+		{
+			if (i + 1 >= argc)
+			{
+				wlr_log(WLR_ERROR, "Missing value after --crash-log");
+				return 1;
+			}
+			i++;
+			continue;
+		}
+		if (!strncmp(argv[i], "--crash-log=", 12) || !strcmp(argv[i], "--no-crash-handler"))
 		{
 			continue;
 		}

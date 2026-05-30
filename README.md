@@ -63,3 +63,5 @@ Current automated coverage includes config parser and rule validation checks.
 - Runtime dependencies include the normal wlroots graphics/input stack.
 - `xorg-xwayland` is needed if you want X11 client support.
 - Startup logging options: `--log-level silent|error|info|debug`, `--quiet`, `--verbose`, and `--log-file /path/to/stackcomp.log`.
+- Crash handler options: `--crash-log /path/to/stackcomp-crash.log` and `--no-crash-handler`.
+- Crash handling and post-mortem workflow are documented in `CRASHING.md`.
