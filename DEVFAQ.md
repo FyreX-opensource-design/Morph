@@ -117,3 +117,18 @@ Interpretation:
 
 - If the compositor exits cleanly and no follow-up errors/crashes appear, this is generally harmless.
 - Treat it as suspicious only when it repeats during normal runtime or is followed by error/fatal logs.
+
+## 9) Nested shutdown logs `(EE) failed to write to Xwayland fd: Broken pipe`
+
+This can still appear during an otherwise clean nested shutdown and is currently treated as known shutdown noise.
+
+Context:
+
+- stackcomp exits cleanly after the host X11 window is closed.
+- During teardown, Xwayland can still attempt one final write while its Wayland connection is already closing.
+- This produces the `(EE) ... Broken pipe` line even though the compositor process already terminates correctly.
+
+Interpretation:
+
+- If stackcomp exits and no assertions/crashes follow, this message is expected and not treated as a functional failure.
+- Investigate only if the message appears repeatedly during normal runtime or is followed by new fatal errors.

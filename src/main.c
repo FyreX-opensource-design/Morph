@@ -126,6 +126,80 @@ static void xwayland_request_configure(struct wl_listener *listener, void *data)
 static void xwayland_request_resize(struct wl_listener *listener, void *data);
 static void toplevel_handle_set_class(struct wl_listener *listener, void *data);
 
+/** Remove a listener link only when currently attached to a signal. */
+static void detach_listener_if_linked(struct wl_listener *listener)
+{
+	if (!listener)
+	{
+		return;
+	}
+	if (listener->link.prev && listener->link.next)
+	{
+		wl_list_remove(&listener->link);
+		wl_list_init(&listener->link);
+	}
+}
+
+/**
+ * Destroy Xwayland after detaching local signal listeners.
+ *
+ * wlroots asserts that certain Xwayland listener lists are empty at destroy
+ * time, so we must remove our `ready` / `new_surface` listeners first.
+ */
+static void server_destroy_xwayland(struct comp_server *server)
+{
+	if (!server || !server->xwayland)
+	{
+		return;
+	}
+	/* wlroots requires empty listener lists on destroy; detach ours first. */
+	detach_listener_if_linked(&server->xwayland_ready);
+	detach_listener_if_linked(&server->xwayland_new_surface);
+	/* Safe to destroy only after listener links are removed. */
+	wlr_xwayland_destroy(server->xwayland);
+	server->xwayland = NULL;
+}
+
+/** Detach server-owned global listeners before wlroots object/display teardown. */
+static void server_detach_global_listeners(struct comp_server *server)
+{
+	if (!server)
+	{
+		return;
+	}
+
+	detach_listener_if_linked(&server->backend_destroy);
+	detach_listener_if_linked(&server->new_output);
+	detach_listener_if_linked(&server->new_input);
+	detach_listener_if_linked(&server->xdg_shell_new_toplevel);
+	detach_listener_if_linked(&server->new_xdg_decoration);
+	detach_listener_if_linked(&server->layer_shell_new_surface);
+
+	detach_listener_if_linked(&server->cursor_motion);
+	detach_listener_if_linked(&server->cursor_motion_absolute);
+	detach_listener_if_linked(&server->cursor_button);
+	detach_listener_if_linked(&server->cursor_axis);
+	detach_listener_if_linked(&server->cursor_frame);
+	detach_listener_if_linked(&server->cursor_touch_down);
+	detach_listener_if_linked(&server->cursor_touch_up);
+	detach_listener_if_linked(&server->cursor_touch_motion);
+	detach_listener_if_linked(&server->cursor_touch_cancel);
+	detach_listener_if_linked(&server->cursor_touch_frame);
+	detach_listener_if_linked(&server->cursor_tablet_tool_axis);
+	detach_listener_if_linked(&server->cursor_tablet_tool_proximity);
+	detach_listener_if_linked(&server->cursor_tablet_tool_tip);
+	detach_listener_if_linked(&server->cursor_tablet_tool_button);
+
+	detach_listener_if_linked(&server->seat_request_cursor);
+	detach_listener_if_linked(&server->seat_request_set_selection);
+	detach_listener_if_linked(&server->seat_pointer_focus_change);
+	detach_listener_if_linked(&server->new_pointer_constraint);
+	detach_listener_if_linked(&server->pointer_constraint_commit);
+
+	detach_listener_if_linked(&server->xwayland_ready);
+	detach_listener_if_linked(&server->xwayland_new_surface);
+}
+
 /** Return the root wl_surface for an XDG or Xwayland toplevel, or NULL if unavailable. */
 static struct wlr_surface *toplevel_wlr_surface(const struct comp_toplevel *v)
 {
@@ -1041,22 +1115,40 @@ static void output_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_output *output = wl_container_of(listener, output, destroy);
+	struct comp_server *server = output->server;
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &output->server->toplevels, link)
+	wl_list_for_each(t, &server->toplevels, link)
 	{
 		if (t->foreign_toplevel)
 		{
 			wlr_foreign_toplevel_handle_v1_output_leave(t->foreign_toplevel, output->wlr_output);
 		}
 	}
-	server_apply_input_device_maps(output->server);
-	ext_workspace_on_output_remove(output->server, output->wlr_output);
+	server_apply_input_device_maps(server);
+	ext_workspace_on_output_remove(server, output->wlr_output);
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->commit.link);
 	wl_list_remove(&output->destroy.link);
 	wl_list_remove(&output->link);
 	wlr_scene_output_destroy(output->scene_output);
-	wlr_output_layout_remove(output->server->output_layout, output->wlr_output);
+	wlr_output_layout_remove(server->output_layout, output->wlr_output);
+	/*
+	 * Some nested backends can drop the last output without emitting backend
+	 * destroy immediately (for example closing the host X11 window). In nested
+	 * mode (`session == NULL`), terminate once no outputs remain so the process
+	 * exits instead of lingering and keeping WAYLAND_DISPLAY active.
+	 */
+	/* Nested fallback: no outputs left means host window is gone -> exit main loop. */
+	if (wl_list_empty(&server->outputs) && server->session == NULL && server->wl_display)
+	{
+		/*
+		 * Shut down Xwayland first so it does not keep writing to a closing
+		 * Wayland connection during the subsequent display-loop termination.
+		 */
+		server_destroy_xwayland(server);
+		wlr_log(WLR_INFO, "Last output removed in nested backend, terminating display loop");
+		wl_display_terminate(server->wl_display);
+	}
 	free(output);
 }
 
@@ -4633,6 +4725,11 @@ static void server_finish(struct comp_server *server)
 	{
 		comp_config_run_shutdown(server->config);
 	}
+	/*
+	 * Prevent wlroots destroy-time assertions by removing our listeners from
+	 * protocol/backend listener lists before the display/global teardown starts.
+	 */
+	server_detach_global_listeners(server);
 	compositor_session_active = false;
 	ext_workspace_fini(server);
 	ipc_fini(server);
@@ -5200,11 +5297,7 @@ int main(int argc, char **argv)
 	if (!wlr_backend_start(server.backend))
 	{
 		wlr_log(WLR_ERROR, "Failed to start backend");
-		if (server.xwayland)
-		{
-			wlr_xwayland_destroy(server.xwayland);
-			server.xwayland = NULL;
-		}
+		server_destroy_xwayland(&server);
 		server_finish(&server);
 		wl_display_destroy_clients(server.wl_display);
 		wl_display_destroy(server.wl_display);
@@ -5222,11 +5315,7 @@ int main(int argc, char **argv)
 
 	wl_display_run(server.wl_display);
 
-	if (server.xwayland)
-	{
-		wlr_xwayland_destroy(server.xwayland);
-		server.xwayland = NULL;
-	}
+	server_destroy_xwayland(&server);
 	server_finish(&server);
 	wl_display_destroy_clients(server.wl_display);
 	wl_display_destroy(server.wl_display);
