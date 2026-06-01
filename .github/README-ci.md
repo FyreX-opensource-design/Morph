@@ -99,6 +99,28 @@ Use these files first for diagnosis.
 
 You can emulate workflow jobs locally:
 
+Before running `act`, install and enable a container runtime API.
+For Debian, the easiest path is `docker.io`.
+
+Install and activate Docker on Debian:
+
+```bash
+sudo apt update
+sudo apt install -y docker.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+```
+
+Then log out and log in again, and verify Docker access:
+
+```bash
+docker version
+docker run --rm hello-world
+```
+
+Important: `docker-cli` alone is not enough for `act`. `act` needs a running
+Docker API/socket (`/var/run/docker.sock`) to start containers.
+
 Install `act` (generalized GitHub binary variant):
 
 ```bash
@@ -135,3 +157,8 @@ Note:
    - Check runner environment variables (PKG_CONFIG_PATH, LD_LIBRARY_PATH)
 4. Job remains pending
    - Check runner is online and labels match self-hosted and linux
+5. act fails with "failed to connect to the docker API" or missing
+   /var/run/docker.sock
+   - Ensure docker.io is installed
+   - Ensure Docker service is running: systemctl status docker
+   - Ensure current user is in docker group (re-login required after usermod)

@@ -46,6 +46,24 @@ This command does configure, compile, and tests in one step.
 
 You can execute the workflow file locally with act.
 
+Prerequisite on Debian: install and start `docker.io` first.
+
+```bash
+sudo apt update
+sudo apt install -y docker.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+```
+
+After re-login, verify Docker API access:
+
+```bash
+docker version
+docker run --rm hello-world
+```
+
+`act` needs the Docker daemon/socket. Docker CLI alone is not sufficient.
+
 1. Install act from https://github.com/nektos/act
    - Recommended here: GitHub release binary install (see .github/README-ci.md)
 2. Run the GitHub-hosted job locally:
@@ -76,3 +94,5 @@ tooling.
    - Compare local output with artifact logs from GitHub run
    - Ensure runner environment exports expected PKG_CONFIG_PATH and
      LD_LIBRARY_PATH
+4. act cannot connect to docker API
+   - Ensure docker service is running and user has docker group access
