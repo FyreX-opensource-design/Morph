@@ -5,19 +5,47 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
-    name: Build and unit tests
+    name: Build and tests (self-hosted)
     runs-on: [self-hosted, linux]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure
-        run: meson setup build --reconfigure
+      - name: Configure toolchain env
+        run: |
+          echo "PKG_CONFIG_PATH=${HOME}/.local/lib/x86_64-linux-gnu/pkgconfig:${HOME}/.local/share/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${HOME}/.local/lib/x86_64-linux-gnu:${HOME}/.local/lib:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
-      - name: Compile
-        run: meson compile -C build
+      - name: Verify tools
+        run: |
+          meson --version
+          ninja --version
 
-      - name: Run tests
-        run: meson test -C build --print-errorlogs
+      - name: Run CI script
+        run: ./scripts/ci-local.sh build
+
+      - name: Upload Meson logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-logs
+          path: |
+            build/meson-logs/meson-log.txt
+            build/meson-logs/testlog.txt
+          if-no-files-found: warn
+
+  workflow-sanity:
+    name: Workflow sanity (GitHub-hosted)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint workflows
+        uses: rhysd/actionlint@v1

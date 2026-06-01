@@ -97,6 +97,17 @@ meson test -C build --print-errorlogs
 
 Current automated coverage includes config parser and rule validation checks.
 
+## CI Workflows (Remote + Local)
+
+- GitHub remote workflow: `.github/workflows/ci.yml`
+- Local equivalent command: `./scripts/ci-local.sh build`
+
+Detailed setup, local execution via `act`, and troubleshooting are documented in
+`WORKFLOWS.md`.
+
+If you are new to GitHub Actions runner setup, start with
+`.github/README-ci.md`.
+
 ## Repository Structure
 
 - `src/`: compositor source code
