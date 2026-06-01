@@ -112,6 +112,16 @@ static void crash_signal_handler(int signo, siginfo_t *info, void *ucontext)
     sa.sa_handler = SIG_DFL;
     sigemptyset(&sa.sa_mask);
     (void)sigaction(signo, &sa, NULL);
+
+    /*
+     * The current signal is blocked while we are in its handler. Unblock it
+     * before re-raising so default handling can generate a core dump.
+     */
+    sigset_t unmask;
+    sigemptyset(&unmask);
+    sigaddset(&unmask, signo);
+    (void)sigprocmask(SIG_UNBLOCK, &unmask, NULL);
+
     (void)kill(getpid(), signo);
     _exit(128 + signo);
 }

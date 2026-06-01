@@ -4758,6 +4758,7 @@ static void print_usage(const char *argv0)
 	printf("Crash handling:\n");
 	printf("  --crash-log PATH           Append crash markers to PATH\n");
 	printf("  --no-crash-handler         Disable crash handler installation\n");
+	printf("  --crash-test               Trigger a deliberate SIGSEGV after startup\n");
 	printf("\n");
 	printf("Runtime control (IPC-aware):\n");
 	printf("  --layout stack|tile|scroll\n");
@@ -4779,6 +4780,7 @@ int main(int argc, char **argv)
 	const char *startup_log_file_path = NULL;
 	const char *startup_crash_log_path = NULL;
 	bool disable_crash_handler = false;
+	bool crash_test_from_argv = false;
 	/*
 	 * First pass: parse logging flags before wlroots init so early errors and
 	 * startup diagnostics already use the requested level and sinks.
@@ -4869,6 +4871,11 @@ int main(int argc, char **argv)
 			disable_crash_handler = true;
 			continue;
 		}
+		if (!strcmp(argv[i], "--crash-test"))
+		{
+			crash_test_from_argv = true;
+			continue;
+		}
 	}
 
 	if (startup_log_file_path && startup_log_file_path[0])
@@ -4955,7 +4962,8 @@ int main(int argc, char **argv)
 			i++;
 			continue;
 		}
-		if (!strncmp(argv[i], "--crash-log=", 12) || !strcmp(argv[i], "--no-crash-handler"))
+		if (!strncmp(argv[i], "--crash-log=", 12) || !strcmp(argv[i], "--no-crash-handler") ||
+			!strcmp(argv[i], "--crash-test"))
 		{
 			continue;
 		}
@@ -5312,6 +5320,12 @@ int main(int argc, char **argv)
 	 */
 	wlr_log(WLR_INFO, "Running compositor on WAYLAND_DISPLAY=%s", socket);
 	comp_config_run_startup(server.config);
+	if (crash_test_from_argv)
+	{
+		/* Deterministic test hook for validating crash-handler marker output. */
+		wlr_log(WLR_ERROR, "--crash-test requested: triggering SIGSEGV for crash-handler test");
+		raise(SIGSEGV);
+	}
 
 	wl_display_run(server.wl_display);
 
