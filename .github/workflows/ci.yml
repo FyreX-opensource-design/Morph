@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure toolchain env
         run: |
@@ -32,7 +32,7 @@ jobs:
 
       - name: Upload Meson logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: meson-logs
           path: |
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Lint workflows
         uses: reviewdog/action-actionlint@v1
