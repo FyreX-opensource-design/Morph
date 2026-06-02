@@ -168,6 +168,7 @@ static void server_detach_global_listeners(struct comp_server *server)
 		return;
 	}
 
+	/* Core compositor/server signals registered on backend, shell, and decoration managers. */
 	detach_listener_if_linked(&server->backend_destroy);
 	detach_listener_if_linked(&server->new_output);
 	detach_listener_if_linked(&server->new_input);
@@ -175,6 +176,7 @@ static void server_detach_global_listeners(struct comp_server *server)
 	detach_listener_if_linked(&server->new_xdg_decoration);
 	detach_listener_if_linked(&server->layer_shell_new_surface);
 
+	/* Cursor input pipeline: relative/absolute motion, buttons, axes, touch, and tablet tool events. */
 	detach_listener_if_linked(&server->cursor_motion);
 	detach_listener_if_linked(&server->cursor_motion_absolute);
 	detach_listener_if_linked(&server->cursor_button);
@@ -190,12 +192,14 @@ static void server_detach_global_listeners(struct comp_server *server)
 	detach_listener_if_linked(&server->cursor_tablet_tool_tip);
 	detach_listener_if_linked(&server->cursor_tablet_tool_button);
 
+	/* Seat/protocol control hooks: cursor requests, selection ownership, and pointer constraints. */
 	detach_listener_if_linked(&server->seat_request_cursor);
 	detach_listener_if_linked(&server->seat_request_set_selection);
 	detach_listener_if_linked(&server->seat_pointer_focus_change);
 	detach_listener_if_linked(&server->new_pointer_constraint);
 	detach_listener_if_linked(&server->pointer_constraint_commit);
 
+	/* Xwayland lifecycle hooks are detached here as a final safety net before teardown. */
 	detach_listener_if_linked(&server->xwayland_ready);
 	detach_listener_if_linked(&server->xwayland_new_surface);
 }
@@ -227,6 +231,7 @@ static bool toplevel_surface_initialized(const struct comp_toplevel *v)
 	return v->xwayland_surface && v->xwayland_surface->surface;
 }
 
+/** Extract normalized title/app fields for config/rule matching across backends. */
 static void toplevel_title_app_for_config(const struct comp_toplevel *v, const char **title_out,
 										  const char **app_out)
 {
@@ -3009,6 +3014,7 @@ static int ipc_client_send_line(const char *line)
 /** Parse and execute one inbound IPC command line. */
 static void ipc_process_line(struct comp_server *server, char *line)
 {
+	/* Accept commands with leading whitespace for shell/script friendliness. */
 	while (*line == ' ' || *line == '\t' || *line == '\r' || *line == '\n')
 	{
 		line++;
@@ -3026,6 +3032,7 @@ static void ipc_process_line(struct comp_server *server, char *line)
 
 	if (!strncmp(line, "layout ", 7))
 	{
+		/* Layout changes are runtime operations; no config reload required. */
 		const char *rest = line + 7;
 		while (*rest == ' ' || *rest == '\t')
 		{
@@ -3345,6 +3352,12 @@ static void keyboard_handle_destroy(struct wl_listener *listener, void *data)
 /* wlr_keyboard_notify_key() re-emits keyboard->events.key; ignore nested calls. */
 static int keyboard_key_dispatch_depth;
 
+/**
+ * Keyboard key callback.
+ *
+ * Resolves keysym/modifier state for binding matching and forwards events to
+ * focused clients. A recursion guard avoids re-entry via wlroots callbacks.
+ */
 static void keyboard_handle_key(struct wl_listener *listener, void *data)
 {
 	if (keyboard_key_dispatch_depth > 0)
@@ -3577,6 +3590,7 @@ static void tablet_tool_handle_destroy(struct wl_listener *listener, void *data)
 	free(tt);
 }
 
+/** Return existing tablet-tool wrapper from `wtool->data` or create and wire a new one. */
 static struct comp_tablet_tool *tablet_tool_get_or_create(struct comp_server *srv, struct comp_tablet *tab,
 														  struct wlr_tablet_tool *wtool)
 {
@@ -3605,6 +3619,12 @@ static struct comp_tablet_tool *tablet_tool_get_or_create(struct comp_server *sr
 	return tt;
 }
 
+/**
+ * Apply absolute tablet position and route motion.
+ *
+ * When no tablet-v2 target surface is eligible, fall back to compositor
+ * pointer motion so hover feedback still works.
+ */
 static void tablet_tool_position(struct comp_server *server, struct comp_tablet_tool *tt, bool change_x,
 								 bool change_y, double x, double y, uint32_t time_msec)
 {
@@ -4022,6 +4042,7 @@ static void server_new_input(struct wl_listener *listener, void *data)
 	}
 }
 
+/** Translate surface-local coordinates into global compositor layout coordinates. */
 static bool surface_local_to_layout(struct comp_server *server, struct wlr_surface *surface,
 									double sx, double sy, double *lx, double *ly)
 {
@@ -4092,6 +4113,7 @@ static void pointer_constraint_check_region(struct comp_server *server)
 	}
 }
 
+/** Apply pointer-constraint cursor hint (if enabled) as layout-space warp target. */
 static void pointer_constraint_warp_hint(struct comp_server *server,
 										 struct wlr_pointer_constraint_v1 *constraint)
 {
@@ -4107,6 +4129,7 @@ static void pointer_constraint_warp_hint(struct comp_server *server,
 	}
 }
 
+/** Activate/deactivate pointer confinement and keep region/listener state synchronized. */
 static void cursor_constrain(struct comp_server *server, struct wlr_pointer_constraint_v1 *constraint,
 							 double sx, double sy)
 {
@@ -4225,6 +4248,7 @@ static void seat_pointer_focus_change(struct wl_listener *listener, void *data)
 	cursor_constrain(server, constraint, ev->sx, ev->sy);
 }
 
+/** Forward relative-motion protocol events and apply active confinement before cursor move. */
 static void apply_pointer_motion(struct comp_server *server, struct wlr_input_device *dev,
 								 uint32_t time_msec, double dx, double dy, double dx_unaccel, double dy_unaccel)
 {

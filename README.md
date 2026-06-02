@@ -1,6 +1,6 @@
-# stackcomp
+# Stackcomp (WIP Name)
 
-A wlroots-based Wayland compositor with stack, tile, and scroll layouts.
+A stacking, tiling, and scrolling hybrid compositor built from stratch with WL-Roots.
 
 ## Current Features
 
@@ -13,7 +13,7 @@ A wlroots-based Wayland compositor with stack, tile, and scroll layouts.
 
 ## Current Protocol Support
 
-- `zwlr_layer_shell_v1` (tested with Waybar/swaybg)
+- `zwlr_layer_shell_v1` (tested with Waybar & swaybg)
 - `zwlr_screencopy_manager_v1` (tested with grim)
 - `ext_workspace_manager_v1` (tested with Waybar ext/workspaces)
 - `zwlr_foreign_toplevel_manager_v1`

@@ -14,6 +14,12 @@ static int crash_log_fd = -1;
 static stack_t crash_altstack = {0};
 static volatile sig_atomic_t crash_handling;
 
+/**
+ * Append a NUL-terminated string to a bounded buffer.
+ *
+ * The function never writes past `cap` and intentionally leaves NUL
+ * termination to the caller's framing logic.
+ */
 static void append_str(char *buf, size_t cap, size_t *off, const char *s)
 {
     if (!buf || !off || !s || *off >= cap)
@@ -28,6 +34,9 @@ static void append_str(char *buf, size_t cap, size_t *off, const char *s)
     }
 }
 
+/**
+ * Append an unsigned integer as decimal ASCII text.
+ */
 static void append_u64(char *buf, size_t cap, size_t *off, uint64_t v)
 {
     char tmp[32];
@@ -49,6 +58,9 @@ static void append_u64(char *buf, size_t cap, size_t *off, uint64_t v)
     }
 }
 
+/**
+ * Append an unsigned integer as lowercase hexadecimal ASCII text.
+ */
 static void append_hex_u64(char *buf, size_t cap, size_t *off, uint64_t v)
 {
     char tmp[32];
@@ -71,6 +83,12 @@ static void append_hex_u64(char *buf, size_t cap, size_t *off, uint64_t v)
     }
 }
 
+/**
+ * Build and emit the crash marker line to stderr and optional crash log file.
+ *
+ * Uses async-signal-safe syscalls only (`write`), because it runs from a
+ * signal context.
+ */
 static void crash_write_marker(int signo, siginfo_t *info)
 {
     char msg[256];
@@ -90,6 +108,7 @@ static void crash_write_marker(int signo, siginfo_t *info)
     {
         off = sizeof(msg);
     }
+    /* Best effort writes: errors are ignored in crash context. */
     (void)write(STDERR_FILENO, msg, off);
     if (crash_log_fd >= 0)
     {
@@ -97,6 +116,12 @@ static void crash_write_marker(int signo, siginfo_t *info)
     }
 }
 
+/**
+ * Fatal signal handler entry point.
+ *
+ * Prevents recursive handling, emits a marker, restores default behavior for
+ * the signal, and re-raises it so the kernel can produce a core dump.
+ */
 static void crash_signal_handler(int signo, siginfo_t *info, void *ucontext)
 {
     (void)ucontext;
@@ -126,6 +151,9 @@ static void crash_signal_handler(int signo, siginfo_t *info, void *ucontext)
     _exit(128 + signo);
 }
 
+/**
+ * Install one fatal signal with SA_SIGINFO and alternate stack handling.
+ */
 static bool install_one_signal(int signo)
 {
     struct sigaction sa = {0};
@@ -135,6 +163,11 @@ static bool install_one_signal(int signo)
     return sigaction(signo, &sa, NULL) == 0;
 }
 
+/**
+ * Tear down crash handler resources.
+ *
+ * Closes optional log fd and disables/frees the alternate signal stack.
+ */
 void stackcomp_crash_handler_fini(void)
 {
     if (crash_log_fd >= 0)
@@ -144,6 +177,7 @@ void stackcomp_crash_handler_fini(void)
     }
     if (crash_altstack.ss_sp)
     {
+        /* Disable alt stack before freeing backing memory. */
         stack_t disabled = {0};
         disabled.ss_flags = SS_DISABLE;
         (void)sigaltstack(&disabled, NULL);
@@ -153,6 +187,9 @@ void stackcomp_crash_handler_fini(void)
     }
 }
 
+/**
+ * Initialize crash marker output, alternate stack, and fatal signal hooks.
+ */
 bool stackcomp_crash_handler_install(const char *log_path)
 {
     if (log_path && log_path[0])
@@ -165,6 +202,7 @@ bool stackcomp_crash_handler_install(const char *log_path)
         crash_log_fd = fd;
     }
 
+    /* Bigger-than-default alt stack helps when stack state is already bad. */
     void *sp = malloc(SIGSTKSZ * 4);
     if (!sp)
     {

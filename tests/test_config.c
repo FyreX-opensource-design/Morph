@@ -105,6 +105,11 @@ bool server_init(struct comp_server *server)
     return true;
 }
 
+/**
+ * Write `content` to a unique temporary file and return its path.
+ *
+ * Caller owns cleanup of the resulting file path (unlink when done).
+ */
 static bool write_temp_file(const char *content, char *out_path, size_t out_len)
 {
     char tmpl[] = "/tmp/stackcomp-config-test-XXXXXX";
@@ -129,6 +134,11 @@ static bool write_temp_file(const char *content, char *out_path, size_t out_len)
     return true;
 }
 
+/**
+ * Happy-path config parsing test.
+ *
+ * Verifies explicit bind/rule parsing and selected default behavior fallbacks.
+ */
 static int test_valid_config_parse(void)
 {
     const char *cfg_text =
@@ -159,6 +169,7 @@ static int test_valid_config_parse(void)
         return 1;
     }
 
+    /* Parse from disk to exercise the same loader path used in production. */
     struct comp_config *cfg = NULL;
     if (!comp_config_load(path, &cfg))
     {
@@ -183,6 +194,7 @@ static int test_valid_config_parse(void)
         return 1;
     }
 
+    /* Verify that one matching tile_rule mutates float/order as expected. */
     bool float_mode = false;
     int order = 0;
     comp_config_tile_props_for_toplevel(cfg, "mpv", "video", &float_mode, &order);
@@ -194,6 +206,7 @@ static int test_valid_config_parse(void)
         return 1;
     }
 
+    /* strip=no means keep client-side decorations for matching windows. */
     if (comp_config_decoration_prefer_server_side_tile_scroll(cfg, "foot", "terminal"))
     {
         fprintf(stderr, "decoration_rule strip=no should keep client-side mode\n");
@@ -215,6 +228,11 @@ static int test_valid_config_parse(void)
     return 0;
 }
 
+/**
+ * Negative parsing test for tile_grid_move validation.
+ *
+ * `left 0` is invalid because directional counts must be >= 1.
+ */
 static int test_invalid_tile_grid_command(void)
 {
     const char *cfg_text =
@@ -243,6 +261,11 @@ static int test_invalid_tile_grid_command(void)
     return 0;
 }
 
+/**
+ * Missing config file should not hard-fail startup.
+ *
+ * Loader is expected to synthesize defaults when the file is absent.
+ */
 static int test_missing_config_falls_back_to_defaults(void)
 {
     struct comp_config *cfg = NULL;
@@ -262,6 +285,7 @@ static int test_missing_config_falls_back_to_defaults(void)
     return 0;
 }
 
+/** Execute all config parser regression tests; return non-zero on first failure. */
 int main(void)
 {
     if (test_valid_config_parse() != 0)
