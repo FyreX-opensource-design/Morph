@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=stackcomp
+Comment=Custom wlroots-based stacking/tiling compositor
+Exec=stackcomp
+Type=Application
+DesktopNames=stackcomp
+

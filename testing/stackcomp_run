@@ -1,0 +1,118 @@
+#!/bin/sh
+# This is the main startup script for stackcomp. It sets up the environment,
+# starts the compositor, and handles logging. The shutdown script is called
+# automatically when the compositor exits, to clean up any remaining processes.
+#
+# The script is designed to work both in a nested mode (running inside an existing
+# X11 or Wayland session) and in a native mode (running directly on the console).
+#
+# Important: The script relies on environment variables to determine the mode and
+# to configure logging. Make sure to set these variables correctly before running.
+#
+# For nested mode, the script can start test clients instead of the full desktop
+# environment. For native mode, it will start necessary services and components.
+#
+# The script also includes a check for the compositor's exit status to detect crashes
+# and log them appropriately.
+#
+# Additional helper function is defined in scripts/shell-helpers.sh and sourced here. 
+#
+# log_startup <level> <message> is used for logging, and the messages will
+# be written to the startup log file defined in $STACKCOMP_STARTUP_LOG_FILE.
+################################################################################
+
+# Environment variables
+# ==============================================================================
+# Wlroots debugging (1 for a complete Wayland protocol dump)
+export WAYLAND_DEBUG=1
+# Java Tiling & Wayland Fixes
+export _JAVA_AWT_WM_NONREPARENTING=1
+# To prevent Java from failing to recognize the compositor, which can cause
+# windows in window managers (e.g. i3) to be handled incorrectly, WMNAME is set
+# to "LG3D". This is a well-known trick to force Java applications to behave as
+# if they were running under a 3D window manager, which often improves
+# compatibility.
+# To prevent Java LG3D stands for "Project Looking Glass 3D", a highly experimental
+# 3D open-source window manager from Sun Microsystems.
+export WMNAME="LG3D"
+
+# Path Definitions and Log Setup
+# ==============================================================================
+# Note: Use absolute paths under HOME to avoid permission issues in /tmp)
+CONFIG_FILE="$HOME/scratch-compositor/testing/stackcomp.conf"
+LOG_DIR="$HOME/.local/share/stackcomp"
+LOG_FILE="$LOG_DIR/stackcomp.log"
+CRASH_LOG_FILE="$LOG_DIR/stackcomp-crash.log"
+# Create log directory if it does not exist
+mkdir -p "$LOG_DIR"
+
+# Activate Helper functions for logging and launching services
+CURRENT_LOG_FILE="$STACKCOMP_STARTUP_LOG_FILE"
+source "$HOME/scratch-compositor/scripts/shell-helpers.sh"
+
+# Path for the dynamic program list. Used by startup.sh and shutdown.sh to
+# collect programs that must be terminated during shutdown.
+export STACKCOMP_SHUTDOWN_LIST="$LOG_DIR/shutdown_list.txt"
+# Clear shutdown list at startup to avoid leftovers from previous sessions
+> "$STACKCOMP_SHUTDOWN_LIST"
+log_startup INFO "Cleared shutdown list file."
+
+# Current session detection and mode setup
+# ==============================================================================
+if [ -n "$DISPLAY" ]; then
+    # We are in X11. Force compositor to register as "wayland-nested"
+    export WLR_BACKENDS=x11
+    export WLR_WL_SOCKET="wayland-nested"
+    echo "Starting in Nested-Mode under X11..."
+elif [ -n "$WAYLAND_DISPLAY" ]; then
+    # We are in Wayland. Force compositor to register as "wayland-nested" to
+    # avoid collisions with main Wayland session.
+    export WLR_BACKENDS=wayland
+    export WLR_WL_SOCKET="wayland-nested"
+    echo "Starting in Nested-Mode under Wayland..."
+else
+    # We are on the console (TTY)
+    export WLR_BACKENDS=drm,libinput
+fi
+
+# If nested mode, separate logs to prevent main log overwrite
+if [ "$WLR_BACKENDS" = "x11" ] || [ "$WLR_BACKENDS" = "wayland" ]; then
+    export STACKCOMP_STARTUP_LOG_FILE="$LOG_DIR/stackcomp-nested-startup.log"
+    export STACKCOMP_SHUTDOWN_LOG_FILE="$LOG_DIR/stackcomp-nested-shutdown.log"
+else
+    export STACKCOMP_STARTUP_LOG_FILE="$LOG_DIR/stackcomp-startup.log"
+    export STACKCOMP_SHUTDOWN_LOG_FILE="$LOG_DIR/stackcomp-shutdown.log"
+fi
+
+# Startup Summary
+# ==============================================================================
+log_startup INFO "Environment variables summary:"
+log_startup INFO "Starting compositor with WLR_BACKENDS=$WLR_BACKENDS..."
+log_startup INFO "Registered as WLR_WL_SOCKET=$WLR_WL_SOCKET"
+log_startup INFO "Set for Java AWT non-reparenting: _JAVA_AWT_WM_NONREPARENTING=$_JAVA_AWT_WM_NONREPARENTING"
+log_startup INFO "Set WMNAME for Java to $WMNAME"
+
+log_startup INFO "Using config file: $CONFIG_FILE"
+log_startup INFO "Using log file: $LOG_FILE"
+log_startup INFO "Using crash log file: $CRASH_LOG_FILE"
+
+log_startup INFO "Using startup log file: $STACKCOMP_STARTUP_LOG_FILE"
+log_startup INFO "Using shutdown log file: $STACKCOMP_SHUTDOWN_LOG_FILE"
+
+# Compositor start and monitoring
+# ==============================================================================
+# Start compositor (without exec to get exit code)
+log_startup INFO "Execution command: stackcomp -c \"$CONFIG_FILE\" --log-level debug --log-file \"$LOG_FILE\" --crash-log \"$CRASH_LOG_FILE\""
+stackcomp -c "$CONFIG_FILE" --log-level debug --log-file "$LOG_FILE" --crash-log "$CRASH_LOG_FILE"
+EXIT_CODE=$?
+
+# Check exit status to detect crashes
+if [ $EXIT_CODE -eq 0 ]; then
+    log_startup INFO "Compositor exited normally with exit code 0."
+else
+    log_startup ERROR "Compositor crashed or exited with an error! Exit code: $EXIT_CODE"
+    log_startup ERROR "Check the detailed crash log at: $CRASH_LOG_FILE"
+fi
+
+# Since we are not using 'exec', the script continues to run
+# and could, for example, automatically trigger shutdown.sh if needed.
