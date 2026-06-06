@@ -36,8 +36,7 @@ struct wlr_xdg_toplevel_decoration_v1;
 struct wlr_pointer_constraints_v1;
 struct wlr_pointer_constraint_v1;
 struct wlr_relative_pointer_manager_v1;
-struct wlr_xwayland;
-struct wlr_xwayland_surface;
+struct wlr_viewporter;
 struct wlr_tablet_manager_v2;
 struct wlr_tablet;
 struct wlr_tablet_v2_tablet;
@@ -93,9 +92,7 @@ struct comp_layer {
 struct comp_toplevel {
 	struct wl_list link;
 	struct comp_server *server;
-	/** Exactly one of `xdg_toplevel` or `xwayland_surface` is non-NULL. */
 	struct wlr_xdg_toplevel *xdg_toplevel;
-	struct wlr_xwayland_surface *xwayland_surface;
 	struct wlr_scene_tree *scene_tree;
 	/** Tie-break for tiling sort; swapped with another toplevel on Super+drag drop (with tile_order). */
 	uint32_t tile_user_key;
@@ -107,7 +104,6 @@ struct comp_toplevel {
 	bool layout_anim_tracked;
 	/** Virtual workspace index 0 .. COMP_WORKSPACE_COUNT-1. */
 	int workspace;
-	/** Member of `server->toplevels` (Xwayland joins after `associate`). */
 	bool listed;
 	struct wl_listener map;
 	struct wl_listener unmap;
@@ -118,12 +114,6 @@ struct comp_toplevel {
 	struct wl_listener set_title;
 	struct wl_listener set_app_id;
 	struct wl_listener new_popup;
-	/** Xwayland only; WM_CLASS updates (same refresh path as `set_app_id`). */
-	struct wl_listener set_class;
-	struct wl_listener xwayland_associate;
-	struct wl_listener xwayland_dissociate;
-	struct wl_listener xwayland_map_request;
-	struct wl_listener xwayland_request_configure;
 	struct wlr_foreign_toplevel_handle_v1 *foreign_toplevel;
 	struct wl_listener foreign_request_activate;
 	struct wl_listener foreign_request_close;
@@ -165,6 +155,7 @@ struct comp_server {
 	struct wlr_allocator *allocator;
 	struct wlr_session *session;
 	struct wlr_compositor *compositor;
+	struct wlr_viewporter *viewporter;
 	struct wlr_subcompositor *subcompositor;
 	struct wlr_data_device_manager *data_device_mgr;
 	struct wlr_output_layout *output_layout;
@@ -194,9 +185,6 @@ struct comp_server {
 	struct wl_listener new_output;
 	struct wl_listener new_input;
 	struct wl_listener xdg_shell_new_toplevel;
-	struct wlr_xwayland *xwayland;
-	struct wl_listener xwayland_ready;
-	struct wl_listener xwayland_new_surface;
 	struct wlr_xdg_decoration_manager_v1 *xdg_decoration_manager;
 	struct wl_listener new_xdg_decoration;
 	struct wl_listener cursor_motion;

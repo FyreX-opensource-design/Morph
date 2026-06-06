@@ -12,7 +12,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <wlr/types/wlr_xdg_shell.h>
-#include <wlr/xwayland/xwayland.h>
 #include <wlr/util/log.h>
 
 #include "server.h"
@@ -524,8 +523,6 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 				struct comp_toplevel *t = server->focused_toplevel;
 				if (t->xdg_toplevel) {
 					wlr_xdg_toplevel_send_close(t->xdg_toplevel);
-				} else if (t->xwayland_surface) {
-					wlr_xwayland_surface_close(t->xwayland_surface);
 				}
 			}
 			return true;

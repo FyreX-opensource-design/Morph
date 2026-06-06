@@ -28,7 +28,8 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`zwp_tablet_manager_v2`** | `wlr_tablet_v2_create(dpy)` | Tablet/stylus input. |
 | **`wl_seat`** | `wlr_seat_create(dpy, "seat0")` | Pointer, keyboard, touch (when devices present). |
 | **`wl_shm`** / **`linux_dmabuf`** (and related buffer support) | `wlr_renderer_init_wl_display(renderer, dpy)` | Buffer formats for clients (exact globals depend on renderer/backend). |
-| **Xwayland** | `wlr_xwayland_create(dpy, …)` | X11 apps (optional; logged as error if creation fails). |
+| **`wp_viewporter`** | `wlr_viewporter_create(dpy)` | Required for **xwayland-satellite** (X11 → XDG bridge). |
+| **X11 (via satellite)** | `xwayland-satellite` child process | Not in-process Xwayland; stackcomp spawns satellite after startup and sets `DISPLAY`. |
 
 **Not created anywhere in this repo:** primary selection, output management, export-dmabuf, gamma control, idle/keyboard-shortcuts inhibit, text-input/input-method, xdg-activation, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, virtual keyboard/pointer, etc.
 
@@ -85,7 +86,7 @@ A working portal still needs **`xdg-desktop-portal`** + a backend (e.g. **xdg-de
 
 - **Core:** compositor, subcompositor, SHM/dmabuf (via renderer), outputs, seat (pointer/keyboard/touch), data device manager.
 - **Shell:** XDG shell (toplevels + popups), xdg-output, wlr-layer-shell, foreign-toplevel, ext-workspace.
-- **Input extras:** pointer constraints, relative pointer, tablet-v2, Xwayland.
+- **Input extras:** pointer constraints, relative pointer, tablet-v2; X11 via xwayland-satellite.
 - **Decoration / capture:** xdg-decoration, screencopy.
 - **Rendering:** scene graph, output layout, frame loop.
 
