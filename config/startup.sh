@@ -56,10 +56,16 @@ sleep 1
 launch_nokill /usr/libexec/xdg-desktop-portal
 log_startup INFO "Started xdg-desktop-portal instances."
 
-# Optional: force GTK portal usage for Qt apps
+# Optional: force GTK portal usage for desktop apps
 export GTK_USE_PORTAL=1
-log_startup INFO "Set GTK_USE_PORTAL=1 for Qt apps."
 
+# Qt: prefer Wayland, but allow xcb fallback for apps without Wayland plugin.
+export QT_QPA_PLATFORM="wayland;xcb"
+
+# GTK: prefer Wayland, but keep X11 fallback for apps/toolkits that still expect it.
+export GDK_BACKEND="wayland,x11"
+
+log_startup INFO "Set portal vars (QT_QPA_PLATFORM=wayland;xcb, GDK_BACKEND=wayland,x11, GTK_USE_PORTAL=1)."
 
 # Additional autostart services
 # ==============================================================================
