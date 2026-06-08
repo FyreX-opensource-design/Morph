@@ -126,7 +126,6 @@ static struct comp_tablet *comp_tablet_from_wlr(struct comp_server *server, stru
 static struct comp_tablet_tool *tablet_tool_get_or_create(struct comp_server *srv, struct comp_tablet *tab,
 														  struct wlr_tablet_tool *wtool);
 static struct comp_output *comp_output_from_wlr(struct comp_server *server, struct wlr_output *wlr_out);
-static void toplevel_handle_set_class(struct wl_listener *listener, void *data);
 
 /** Remove a listener link only when currently attached to a signal. */
 static void detach_listener_if_linked(struct wl_listener *listener)
@@ -774,26 +773,13 @@ static void popup_unconstrain(struct comp_popup *popup)
 }
 
 /** First popup commit callback: force one unconstrain pass, then detach listener. */
-//static void popup_handle_commit(struct wl_listener *listener, void *data)
-//{
-//	(void)data;
-//	struct comp_popup *popup = wl_container_of(listener, popup, commit);
-//	popup_unconstrain(popup);
-//	wl_list_remove(&popup->commit.link);
-//	popup->commit.notify = NULL;
-//}
-
-/** First popup commit callback: unconstrain once base is initialized. */
 static void popup_handle_commit(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_popup *popup = wl_container_of(listener, popup, commit);
-	if (popup->wlr_popup->base->initial_commit)
-	{
-		popup_unconstrain(popup);
-		wl_list_remove(&popup->commit.link);
-		popup->commit.notify = NULL;
-	}
+	popup_unconstrain(popup);
+	wl_list_remove(&popup->commit.link);
+	popup->commit.notify = NULL;
 }
 
 /** Popup reposition callback: recompute unconstrain box. */
@@ -810,14 +796,18 @@ static void layer_popup_create(struct comp_layer *layer, struct wlr_xdg_popup *w
 /** Unconstrain a layer popup against the current output workarea of its layer parent. */
 static void layer_popup_unconstrain(struct comp_layer_popup *popup)
 {
-	if (!popup || !popup->layer || !popup->wlr_popup || !popup->layer->layer_surface) {
+	if (!popup || !popup->layer || !popup->wlr_popup || !popup->layer->layer_surface)
+	{
 		return;
 	}
 	struct comp_output *out = comp_output_from_wlr(popup->layer->server, popup->layer->layer_surface->output);
 	struct wlr_box box;
-	if (out) {
+	if (out)
+	{
 		box = out->layer_workarea;
-	} else {
+	}
+	else
+	{
 		wlr_output_layout_get_box(popup->layer->server->output_layout,
 								  popup->layer->layer_surface->output, &box);
 	}
@@ -857,7 +847,8 @@ static void layer_popup_handle_destroy(struct wl_listener *listener, void *data)
 	struct comp_layer_popup *popup = wl_container_of(listener, popup, destroy);
 	wl_list_remove(&popup->destroy.link);
 	wl_list_remove(&popup->new_popup.link);
-	if (popup->commit.notify) {
+	if (popup->commit.notify)
+	{
 		wl_list_remove(&popup->commit.link);
 	}
 	wl_list_remove(&popup->reposition.link);
@@ -935,52 +926,58 @@ static void popup_create(struct comp_toplevel *view, struct wlr_xdg_popup *wlr_p
 	wl_signal_add(&wlr_popup->base->surface->events.commit, &popup->commit);
 	popup->reposition.notify = popup_handle_reposition;
 	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
-//	/* Defer unconstrain/configure to first popup commit to avoid early-lifecycle races. */
-//}
-//
-/** Create scene integration and listeners for one layer-surface xdg_popup subtree. */
-//static void layer_popup_create(struct comp_layer *layer, struct wlr_xdg_popup *wlr_popup)
-//{
-//	struct wlr_xdg_surface *parent_xdg = wlr_xdg_surface_try_from_wlr_surface(wlr_popup->parent);
-//
-//	struct comp_layer_popup *popup = calloc(1, sizeof(*popup));
-//	if (!popup) {
-//		return;
-//	}
-//	popup->layer = layer;
-//	popup->wlr_popup = wlr_popup;
-//
-//	struct wlr_scene_tree *parent_tree;
-//	if (parent_xdg && parent_xdg->role == WLR_XDG_SURFACE_ROLE_POPUP) {
-//		parent_tree = parent_xdg->surface->data;
-//		if (!parent_tree) {
-//			free(popup);
-//			return;
-//		}
-//	} else {
-//		/* Top-level layer popups typically have no xdg parent surface. */
-//		parent_tree = layer->scene_layer->tree;
-//	}
-//
-//	struct wlr_scene_tree *tree = wlr_scene_xdg_surface_create(parent_tree, wlr_popup->base);
-//	if (!tree) {
-//		free(popup);
-//		return;
-//	}
-//	wlr_popup->base->surface->data = tree;
-//	wlr_scene_node_raise_to_top(&tree->node);
-//
-//	popup->destroy.notify = layer_popup_handle_destroy;
-//	wl_signal_add(&wlr_popup->events.destroy, &popup->destroy);
-//	popup->new_popup.notify = layer_popup_handle_new_popup;
-//	wl_signal_add(&wlr_popup->base->events.new_popup, &popup->new_popup);
-//	popup->commit.notify = layer_popup_handle_commit;
-//	wl_signal_add(&wlr_popup->base->surface->events.commit, &popup->commit);
-//	popup->reposition.notify = layer_popup_handle_reposition;
-//	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
-//	/* Defer unconstrain/configure to first popup commit to avoid early-lifecycle races. */
-//}
+
 	popup_unconstrain(popup);
+}
+
+/** Create scene integration and listeners for one layer-surface xdg_popup subtree. */
+static void layer_popup_create(struct comp_layer *layer, struct wlr_xdg_popup *wlr_popup)
+{
+	struct wlr_xdg_surface *parent_xdg = wlr_xdg_surface_try_from_wlr_surface(wlr_popup->parent);
+
+	struct comp_layer_popup *popup = calloc(1, sizeof(*popup));
+	if (!popup)
+	{
+		return;
+	}
+	popup->layer = layer;
+	popup->wlr_popup = wlr_popup;
+
+	struct wlr_scene_tree *parent_tree;
+	if (parent_xdg && parent_xdg->role == WLR_XDG_SURFACE_ROLE_POPUP)
+	{
+		parent_tree = parent_xdg->surface->data;
+		if (!parent_tree)
+		{
+			free(popup);
+			return;
+		}
+	}
+	else
+	{
+		/* Top-level layer popups typically have no xdg parent surface. */
+		parent_tree = layer->scene_layer->tree;
+	}
+
+	struct wlr_scene_tree *tree = wlr_scene_xdg_surface_create(parent_tree, wlr_popup->base);
+	if (!tree)
+	{
+		free(popup);
+		return;
+	}
+	wlr_popup->base->surface->data = tree;
+	wlr_scene_node_raise_to_top(&tree->node);
+
+	popup->destroy.notify = layer_popup_handle_destroy;
+	wl_signal_add(&wlr_popup->events.destroy, &popup->destroy);
+	popup->new_popup.notify = layer_popup_handle_new_popup;
+	wl_signal_add(&wlr_popup->base->events.new_popup, &popup->new_popup);
+	popup->commit.notify = layer_popup_handle_commit;
+	wl_signal_add(&wlr_popup->base->surface->events.commit, &popup->commit);
+	popup->reposition.notify = layer_popup_handle_reposition;
+	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
+
+	layer_popup_unconstrain(popup);
 }
 
 /** toplevel new_popup callback: attach popup to this toplevel. */
@@ -994,28 +991,7 @@ static void toplevel_handle_new_popup(struct wl_listener *listener, void *data)
 static void comp_layer_new_popup(struct wl_listener *listener, void *data)
 {
 	struct comp_layer *layer = wl_container_of(listener, layer, new_popup);
-//	layer_popup_create(layer, data);
-	struct wlr_xdg_popup *popup = data;
-	struct comp_output *out = comp_output_from_wlr(layer->server, layer->layer_surface->output);
-	struct wlr_box box;
-	if (out)
-	{
-		box = out->layer_workarea;
-	}
-	else
-	{
-		wlr_output_layout_get_box(layer->server->output_layout, layer->layer_surface->output, &box);
-	}
-	/* wlroots 0.19: unconstrain may schedule configure; popup base must be initialized. */
-	if (popup->base && popup->base->initialized)
-	{
-		wlr_xdg_popup_unconstrain_from_box(popup, &box);
-	}
-	else if (xdg_debug_logs_enabled)
-	{
-		wlr_log(WLR_INFO, "xdgdbg:layer-popup skip unconstrain before initialized");
-	}
-	wlr_scene_xdg_surface_create(layer->scene_layer->tree, popup->base);
+	layer_popup_create(layer, data);
 }
 
 /** layer-shell destroy callback: remove listeners/list entry and free wrapper. */
@@ -1099,7 +1075,7 @@ static void output_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_output *output = wl_container_of(listener, output, destroy);
-//	struct comp_server *server = output->server;
+	struct comp_server *server = output->server;
 	struct comp_toplevel *t;
 	wl_list_for_each(t, &output->server->toplevels, link)
 	{
@@ -1115,7 +1091,7 @@ static void output_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&output->destroy.link);
 	wl_list_remove(&output->link);
 	wlr_scene_output_destroy(output->scene_output);
-	wlr_output_layout_remove(server->output_layout, output->wlr_output);
+	wlr_output_layout_remove(output->server->output_layout, output->wlr_output);
 	/*
 	 * Some nested backends can drop the last output without emitting backend
 	 * destroy immediately (for example closing the host X11 window). In nested
@@ -1131,7 +1107,7 @@ static void output_destroy(struct wl_listener *listener, void *data)
 		 */
 		server_destroy_xwayland(server);
 		wlr_log(WLR_INFO, "Last output removed in nested backend, terminating display loop");
-		wl_display_terminate(server->wl_display);
+		server_request_terminate(server, NULL);
 	}
 	free(output);
 }
@@ -1337,21 +1313,6 @@ static void toplevel_handle_set_app_id(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, set_app_id);
-	toplevel_refresh_tile_props(view);
-	if ((view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL) &&
-		toplevel_surface_mapped(view))
-	{
-		server_arrange_toplevels(view->server);
-	}
-	server_sync_xdg_decorations(view->server);
-	foreign_toplevel_refresh(view);
-}
-
-/** Xwayland WM_CLASS updates reuse the same refresh path as app_id/title changes. */
-static void toplevel_handle_set_class(struct wl_listener *listener, void *data)
-{
-	(void)data;
-	struct comp_toplevel *view = wl_container_of(listener, view, set_class);
 	toplevel_refresh_tile_props(view);
 	if ((view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL) &&
 		toplevel_surface_mapped(view))
@@ -1638,24 +1599,6 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 		detach_listener_if_linked(&view->set_title);
 		detach_listener_if_linked(&view->set_app_id);
 		detach_listener_if_linked(&view->new_popup);
-	}
-	else if (view->xwayland_surface)
-	{
-		detach_listener_if_linked(&view->xwayland_associate);
-		detach_listener_if_linked(&view->xwayland_dissociate);
-		detach_listener_if_linked(&view->xwayland_map_request);
-		detach_listener_if_linked(&view->xwayland_request_configure);
-		if (view->scene_tree)
-		{
-			detach_listener_if_linked(&view->map);
-			detach_listener_if_linked(&view->unmap);
-			detach_listener_if_linked(&view->request_move);
-			detach_listener_if_linked(&view->request_resize);
-			detach_listener_if_linked(&view->set_title);
-			detach_listener_if_linked(&view->set_class);
-			wlr_scene_node_destroy(&view->scene_tree->node);
-			view->scene_tree = NULL;
-		}
 	}
 	detach_listener_if_linked(&view->destroy);
 	if (view->listed)
@@ -3211,6 +3154,10 @@ static void keyboard_handle_modifiers(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_keyboard *kbd = wl_container_of(listener, kbd, modifiers);
+	if (!kbd->server || !kbd->server->seat || kbd->server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_keyboard *wlr_kbd = wlr_keyboard_from_input_device(kbd->dev);
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
 	wlr_seat_keyboard_notify_modifiers(kbd->server->seat, &wlr_kbd->modifiers);
@@ -3404,6 +3351,10 @@ static void tablet_tool_handle_destroy(struct wl_listener *listener, void *data)
 static struct comp_tablet_tool *tablet_tool_get_or_create(struct comp_server *srv, struct comp_tablet *tab,
 														  struct wlr_tablet_tool *wtool)
 {
+	if (!srv || !srv->seat || srv->display_terminate_requested)
+	{
+		return NULL;
+	}
 	if (wtool->data)
 	{
 		return wtool->data;
@@ -3438,6 +3389,10 @@ static struct comp_tablet_tool *tablet_tool_get_or_create(struct comp_server *sr
 static void tablet_tool_position(struct comp_server *server, struct comp_tablet_tool *tt, bool change_x,
 								 bool change_y, double x, double y, uint32_t time_msec)
 {
+	if (!server || !server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	if (!change_x && !change_y)
 	{
 		return;
@@ -3467,6 +3422,10 @@ static void tablet_tool_position(struct comp_server *server, struct comp_tablet_
 static void server_cursor_tablet_tool_axis(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_tablet_tool_axis);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_tablet_tool_axis_event *event = data;
 	struct comp_tablet *tab = comp_tablet_from_wlr(server, event->tablet);
 	if (!tab)
@@ -3520,6 +3479,10 @@ static void server_cursor_tablet_tool_axis(struct wl_listener *listener, void *d
 static void server_cursor_tablet_tool_proximity(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_tablet_tool_proximity);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_tablet_tool_proximity_event *event = data;
 	struct comp_tablet *tab = comp_tablet_from_wlr(server, event->tablet);
 	if (!tab)
@@ -3543,6 +3506,10 @@ static void server_cursor_tablet_tool_proximity(struct wl_listener *listener, vo
 static void server_cursor_tablet_tool_tip(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_tablet_tool_tip);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_tablet_tool_tip_event *event = data;
 	struct comp_tablet *tab = comp_tablet_from_wlr(server, event->tablet);
 	if (!tab)
@@ -3612,6 +3579,10 @@ static void server_cursor_tablet_tool_tip(struct wl_listener *listener, void *da
 static void server_cursor_tablet_tool_button(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_tablet_tool_button);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_tablet_tool_button_event *event = data;
 	struct comp_tablet *tab = comp_tablet_from_wlr(server, event->tablet);
 	if (!tab)
@@ -3645,6 +3616,10 @@ static void server_cursor_tablet_tool_button(struct wl_listener *listener, void 
 static void server_cursor_touch_down(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_touch_down);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_touch_down_event *event = data;
 	double lx, ly;
 	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base, event->x, event->y, &lx, &ly);
@@ -3693,6 +3668,10 @@ static void server_cursor_touch_down(struct wl_listener *listener, void *data)
 static void server_cursor_touch_up(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_touch_up);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_touch_up_event *event = data;
 	if (server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id)
 	{
@@ -3712,6 +3691,10 @@ static void server_cursor_touch_up(struct wl_listener *listener, void *data)
 static void server_cursor_touch_motion(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_touch_motion);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_touch_motion_event *event = data;
 	double lx, ly;
 	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base, event->x, event->y, &lx, &ly);
@@ -3739,6 +3722,10 @@ static void server_cursor_touch_cancel(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_server *server = wl_container_of(listener, server, cursor_touch_cancel);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_touch_cancel_event *event = data;
 	if (server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id)
 	{
@@ -3763,6 +3750,10 @@ static void server_cursor_touch_frame(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_server *server = wl_container_of(listener, server, cursor_touch_frame);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	wlr_seat_touch_notify_frame(server->seat);
 }
 
@@ -4022,6 +4013,10 @@ static void pointer_constraint_handle_destroy(struct wl_listener *listener, void
 static void handle_new_pointer_constraint(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, new_pointer_constraint);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_pointer_constraint_v1 *constraint = data;
 
 	struct comp_pointer_constraint *pc = calloc(1, sizeof(*pc));
@@ -4051,6 +4046,10 @@ static void handle_new_pointer_constraint(struct wl_listener *listener, void *da
 static void seat_pointer_focus_change(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, seat_pointer_focus_change);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_seat_pointer_focus_change_event *ev = data;
 	struct wlr_pointer_constraint_v1 *constraint =
 		wlr_pointer_constraints_v1_constraint_for_surface(server->pointer_constraints,
@@ -4062,6 +4061,11 @@ static void seat_pointer_focus_change(struct wl_listener *listener, void *data)
 static void apply_pointer_motion(struct comp_server *server, struct wlr_input_device *dev,
 								 uint32_t time_msec, double dx, double dy, double dx_unaccel, double dy_unaccel)
 {
+	if (!server || !server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
+
 	if (server->relative_pointer_manager)
 	{
 		wlr_relative_pointer_manager_v1_send_relative_motion(server->relative_pointer_manager,
@@ -4095,6 +4099,11 @@ static void apply_pointer_motion(struct comp_server *server, struct wlr_input_de
  */
 static void process_cursor_motion(struct comp_server *server, uint32_t time_msec)
 {
+	if (!server || !server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
+
 	if (server->grab == COMP_GRAB_MOVE && server->grabbed_toplevel)
 	{
 		struct comp_toplevel *v = server->grabbed_toplevel;
@@ -4191,6 +4200,10 @@ static void server_cursor_motion_absolute(struct wl_listener *listener, void *da
  */
 static void layer_surface_try_keyboard_focus_click(struct comp_server *server, double lx, double ly)
 {
+	if (!server || !server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	double sx, sy;
 	struct wlr_surface *surf = surface_at(server, lx, ly, &sx, &sy);
 	if (!surf)
@@ -4231,6 +4244,10 @@ static void server_cursor_button(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_button);
 	struct wlr_pointer_button_event *ev = data;
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 
 	uint32_t mods = 0;
 	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
@@ -4309,6 +4326,10 @@ static void server_cursor_axis(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_axis);
 	struct wlr_pointer_axis_event *ev = data;
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	wlr_seat_pointer_notify_axis(server->seat, ev->time_msec, ev->orientation,
 								 ev->delta, ev->delta_discrete, ev->source, ev->relative_direction);
 }
@@ -4318,6 +4339,10 @@ static void server_cursor_frame(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_server *server = wl_container_of(listener, server, cursor_frame);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	wlr_seat_pointer_notify_frame(server->seat);
 	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 }
@@ -4326,6 +4351,10 @@ static void server_cursor_frame(struct wl_listener *listener, void *data)
 static void seat_request_cursor(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, seat_request_cursor);
+	if (server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_seat_pointer_request_set_cursor_event *ev = data;
 	wlr_cursor_set_surface(server->cursor, ev->surface, ev->hotspot_x, ev->hotspot_y);
 }
@@ -4334,6 +4363,10 @@ static void seat_request_cursor(struct wl_listener *listener, void *data)
 static void seat_request_set_selection(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, seat_request_set_selection);
+	if (!server->seat || server->display_terminate_requested)
+	{
+		return;
+	}
 	struct wlr_seat_request_set_selection_event *ev = data;
 	wlr_seat_set_selection(server->seat, ev->source, ev->serial);
 }
@@ -4353,7 +4386,7 @@ static void server_backend_destroy(struct wl_listener *listener, void *data)
 	 * exits and the compositor process does not linger in the background.
 	 */
 	wlr_log(WLR_INFO, "Backend destroyed, terminating display loop");
-	wl_display_terminate(server->wl_display);
+	server_request_terminate(server, NULL);
 }
 
 /** Initialize wlroots objects, protocol globals, listeners, and compositor runtime state. */
