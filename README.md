@@ -31,9 +31,26 @@ See `PROTOCOLS.md` for the exact matrix of implemented and missing globals.
 * \[config]: defult config for the compositor
 * \[testing]: testing files for the compositor
 
-# Deps
+# Dependencies
 - `xwayland-satellite` — X11 apps (ATLauncher, etc.) appear as normal XDG windows; started automatically by stackcomp
 - `xorg-xwayland` — pulled in by xwayland-satellite and is needed for X11 client support.
+
+Debian/Ubuntu quick check:
+
+```bash
+apt-cache policy xwayland-satellite
+apt-cache search xwayland-satellite
+```
+
+If no install candidate is available in your configured repositories, build
+`xwayland-satellite` from source and ensure the resulting binary is in your
+`PATH` before launching stackcomp.
+
+Minimal runtime check:
+
+```bash
+command -v xwayland-satellite
+```
 
 Set `STACKCOMP_X11=0` to disable satellite. Display is auto-picked (`:2`..`:99`, first free socket); override with `STACKCOMP_X11_DISPLAY=:12`.
 
