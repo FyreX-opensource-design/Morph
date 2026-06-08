@@ -93,6 +93,8 @@ log_startup INFO "Set portal vars (QT_QPA_PLATFORM=wayland;xcb, GDK_BACKEND=wayl
 # Launch a panel such as yambar or waybar.
 launch sfwbar
 log_startup INFO "Started sfwbar."
+launch waybar -c ./config/waybar-stackcomp.jsonc -s ./config/waybar-stackcomp.css
+log_startup INFO "Started waybar."
 
 # Enable notifications via org.freedesktop.Notifications (e.g. Thunderbird).
 # A notification client such as mako/dunst is required.

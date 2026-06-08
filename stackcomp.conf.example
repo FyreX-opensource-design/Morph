@@ -1,5 +1,8 @@
 # Copy to ~/.config/stackcomp/config or set STACKCOMP_CONFIG / stackcomp -c PATH
 # Full option list: CONFIG.md in this repository.
+# X11 apps use xwayland-satellite (auto-started; DISPLAY auto-picked).
+# _JAVA_AWT_WM_NONREPARENTING=1 is set for the session (helps ATLauncher etc.).
+# Disable satellite: STACKCOMP_X11=0. Other display: STACKCOMP_X11_DISPLAY=:2
 # IPC (layout control from another terminal): on by default under $XDG_RUNTIME_DIR;
 # use stackcomp --no-ipc to disable. stackcomp --layout tile or --scroll talks to a running instance when the socket exists.
 # stackcomp --scroll-move prev|next|left|right|<N> sends scroll viewport steps over IPC (like --tile-move).

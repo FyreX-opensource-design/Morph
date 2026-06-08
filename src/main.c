@@ -5,7 +5,6 @@
 #include <linux/input-event-codes.h>
 #include <math.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -47,7 +46,7 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
-#include <wlr/xwayland/xwayland.h>
+#include <wlr/types/wlr_viewporter.h>
 #include <wlr/util/box.h>
 #include <wlr/util/region.h>
 #include <wlr/util/edges.h>
@@ -127,14 +126,6 @@ static struct comp_tablet *comp_tablet_from_wlr(struct comp_server *server, stru
 static struct comp_tablet_tool *tablet_tool_get_or_create(struct comp_server *srv, struct comp_tablet *tab,
 														  struct wlr_tablet_tool *wtool);
 static struct comp_output *comp_output_from_wlr(struct comp_server *server, struct wlr_output *wlr_out);
-
-static void xwayland_ready(struct wl_listener *listener, void *data);
-static void xwayland_new_surface(struct wl_listener *listener, void *data);
-static void xwayland_handle_associate(struct wl_listener *listener, void *data);
-static void xwayland_handle_dissociate(struct wl_listener *listener, void *data);
-static void xwayland_map_request(struct wl_listener *listener, void *data);
-static void xwayland_request_configure(struct wl_listener *listener, void *data);
-static void xwayland_request_resize(struct wl_listener *listener, void *data);
 static void toplevel_handle_set_class(struct wl_listener *listener, void *data);
 
 /** Remove a listener link only when currently attached to a signal. */
@@ -151,24 +142,10 @@ static void detach_listener_if_linked(struct wl_listener *listener)
 	}
 }
 
-/**
- * Destroy Xwayland after detaching local signal listeners.
- *
- * wlroots asserts that certain Xwayland listener lists are empty at destroy
- * time, so we must remove our `ready` / `new_surface` listeners first.
- */
+/** Kept for teardown call-site stability; Xwayland is managed by satellite. */
 static void server_destroy_xwayland(struct comp_server *server)
 {
-	if (!server || !server->xwayland)
-	{
-		return;
-	}
-	/* wlroots requires empty listener lists on destroy; detach ours first. */
-	detach_listener_if_linked(&server->xwayland_ready);
-	detach_listener_if_linked(&server->xwayland_new_surface);
-	/* Safe to destroy only after listener links are removed. */
-	wlr_xwayland_destroy(server->xwayland);
-	server->xwayland = NULL;
+	(void)server;
 }
 
 /** Detach server-owned global listeners before wlroots object/display teardown. */
@@ -209,20 +186,12 @@ static void server_detach_global_listeners(struct comp_server *server)
 	detach_listener_if_linked(&server->seat_pointer_focus_change);
 	detach_listener_if_linked(&server->new_pointer_constraint);
 	detach_listener_if_linked(&server->pointer_constraint_commit);
-
-	/* Xwayland lifecycle hooks are detached here as a final safety net before teardown. */
-	detach_listener_if_linked(&server->xwayland_ready);
-	detach_listener_if_linked(&server->xwayland_new_surface);
 }
 
 /** Return the root wl_surface for an XDG or Xwayland toplevel, or NULL if unavailable. */
 static struct wlr_surface *toplevel_wlr_surface(const struct comp_toplevel *v)
 {
-	if (v->xdg_toplevel)
-	{
-		return v->xdg_toplevel->base->surface;
-	}
-	return v->xwayland_surface ? v->xwayland_surface->surface : NULL;
+	return v->xdg_toplevel ? v->xdg_toplevel->base->surface : NULL;
 }
 
 /** True when the toplevel has a mapped root surface. */
@@ -235,32 +204,15 @@ static bool toplevel_surface_mapped(const struct comp_toplevel *v)
 /** True when the toplevel is initialized enough for compositor-driven configure requests. */
 static bool toplevel_surface_initialized(const struct comp_toplevel *v)
 {
-	if (v->xdg_toplevel)
-	{
-		return v->xdg_toplevel->base->initialized;
-	}
-	return v->xwayland_surface && v->xwayland_surface->surface;
+	return v->xdg_toplevel && v->xdg_toplevel->base->initialized;
 }
 
 /** Extract normalized title/app fields for config/rule matching across backends. */
 static void toplevel_title_app_for_config(const struct comp_toplevel *v, const char **title_out,
 										  const char **app_out)
 {
-	if (v->xdg_toplevel)
-	{
-		*title_out = v->xdg_toplevel->title ? v->xdg_toplevel->title : "";
-		*app_out = v->xdg_toplevel->app_id ? v->xdg_toplevel->app_id : "";
-	}
-	else if (v->xwayland_surface)
-	{
-		*title_out = v->xwayland_surface->title ? v->xwayland_surface->title : "";
-		*app_out = v->xwayland_surface->class ? v->xwayland_surface->class : "";
-	}
-	else
-	{
-		*title_out = "";
-		*app_out = "";
-	}
+	*title_out = v->xdg_toplevel && v->xdg_toplevel->title ? v->xdg_toplevel->title : "";
+	*app_out = v->xdg_toplevel && v->xdg_toplevel->app_id ? v->xdg_toplevel->app_id : "";
 }
 
 /** Apply activation state using the correct backend path (XDG or Xwayland). */
@@ -270,108 +222,17 @@ static void toplevel_set_activated(struct comp_toplevel *v, bool activated)
 	{
 		wlr_xdg_toplevel_set_activated(v->xdg_toplevel, activated);
 	}
-	else if (v->xwayland_surface)
-	{
-		wlr_xwayland_surface_activate(v->xwayland_surface, activated);
-	}
 }
 
 /** Tile/scroll: resize client; xdg ignores compositor x/y (scene positions the surface). */
 static void toplevel_arrange_tile(struct comp_toplevel *v, int layout_x, int layout_y, int w, int h)
 {
+	(void)layout_x;
+	(void)layout_y;
 	if (v->xdg_toplevel)
 	{
-		(void)layout_x;
-		(void)layout_y;
 		wlr_xdg_toplevel_set_size(v->xdg_toplevel, w, h);
 	}
-	else if (v->xwayland_surface)
-	{
-		wlr_xwayland_surface_configure(v->xwayland_surface, (int16_t)layout_x, (int16_t)layout_y, (uint16_t)w,
-									   (uint16_t)h);
-	}
-}
-
-/** Resolve the current cursor output workarea; falls back to output box or a safe default. */
-static void toplevel_cursor_workarea(struct comp_server *server, struct wlr_box *out)
-{
-	struct wlr_output *wlr_out = wlr_output_layout_output_at(server->output_layout, server->cursor->x,
-															 server->cursor->y);
-	struct comp_output *co = comp_output_from_wlr(server, wlr_out);
-	if (co)
-	{
-		*out = co->layer_workarea;
-		return;
-	}
-	if (wlr_out)
-	{
-		wlr_output_layout_get_box(server->output_layout, wlr_out, out);
-		return;
-	}
-	*out = (struct wlr_box){0, 0, 800, 600};
-}
-
-/**
- * Compute a usable Xwayland size from hints/current geometry and clamp it
- * to the target workarea with conservative minimum bounds.
- */
-static void xwayland_effective_size(struct wlr_xwayland_surface *xs, int area_w, int area_h, int *w, int *h)
-{
-	*w = (int)xs->width;
-	*h = (int)xs->height;
-	if (xs->size_hints)
-	{
-		if (xs->size_hints->base_width > 0)
-		{
-			*w = (int)xs->size_hints->base_width;
-		}
-		if (xs->size_hints->base_height > 0)
-		{
-			*h = (int)xs->size_hints->base_height;
-		}
-	}
-	if (*w <= 0)
-	{
-		*w = area_w > 0 ? area_w : 1280;
-	}
-	if (*h <= 0)
-	{
-		*h = area_h > 0 ? area_h : 720;
-	}
-	if (area_w > 0 && *w > area_w)
-	{
-		*w = area_w;
-	}
-	if (area_h > 0 && *h > area_h)
-	{
-		*h = area_h;
-	}
-	if (*w < 200)
-	{
-		*w = area_w >= 200 ? area_w : 200;
-	}
-	if (*h < 200)
-	{
-		*h = area_h >= 200 ? area_h : 200;
-	}
-}
-
-/** Stack layout: X11 clients need ConfigureNotify with a real size or AWT/Swing stays black. */
-static void xwayland_place_stack(struct comp_toplevel *view)
-{
-	struct wlr_box obox;
-
-	if (!view->xwayland_surface || !view->scene_tree)
-	{
-		return;
-	}
-	toplevel_cursor_workarea(view->server, &obox);
-	int w, h;
-	xwayland_effective_size(view->xwayland_surface, obox.width, obox.height, &w, &h);
-	const int x = obox.x + (obox.width - w) / 2;
-	const int y = obox.y + (obox.height - h) / 2;
-	toplevel_arrange_tile(view, x, y, w, h);
-	wlr_scene_node_set_position(&view->scene_tree->node, x, y);
 }
 
 /** True after `wlr_backend_start` so shutdown hook runs only for a real session. */
@@ -734,10 +595,6 @@ static struct comp_toplevel *toplevel_at(struct comp_server *server, double lx, 
 		{
 			return t;
 		}
-		if (t->xwayland_surface && t->xwayland_surface->surface == root)
-		{
-			return t;
-		}
 	}
 	return NULL;
 }
@@ -917,13 +774,26 @@ static void popup_unconstrain(struct comp_popup *popup)
 }
 
 /** First popup commit callback: force one unconstrain pass, then detach listener. */
+//static void popup_handle_commit(struct wl_listener *listener, void *data)
+//{
+//	(void)data;
+//	struct comp_popup *popup = wl_container_of(listener, popup, commit);
+//	popup_unconstrain(popup);
+//	wl_list_remove(&popup->commit.link);
+//	popup->commit.notify = NULL;
+//}
+
+/** First popup commit callback: unconstrain once base is initialized. */
 static void popup_handle_commit(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_popup *popup = wl_container_of(listener, popup, commit);
-	popup_unconstrain(popup);
-	wl_list_remove(&popup->commit.link);
-	popup->commit.notify = NULL;
+	if (popup->wlr_popup->base->initial_commit)
+	{
+		popup_unconstrain(popup);
+		wl_list_remove(&popup->commit.link);
+		popup->commit.notify = NULL;
+	}
 }
 
 /** Popup reposition callback: recompute unconstrain box. */
@@ -940,18 +810,14 @@ static void layer_popup_create(struct comp_layer *layer, struct wlr_xdg_popup *w
 /** Unconstrain a layer popup against the current output workarea of its layer parent. */
 static void layer_popup_unconstrain(struct comp_layer_popup *popup)
 {
-	if (!popup || !popup->layer || !popup->wlr_popup || !popup->layer->layer_surface)
-	{
+	if (!popup || !popup->layer || !popup->wlr_popup || !popup->layer->layer_surface) {
 		return;
 	}
 	struct comp_output *out = comp_output_from_wlr(popup->layer->server, popup->layer->layer_surface->output);
 	struct wlr_box box;
-	if (out)
-	{
+	if (out) {
 		box = out->layer_workarea;
-	}
-	else
-	{
+	} else {
 		wlr_output_layout_get_box(popup->layer->server->output_layout,
 								  popup->layer->layer_surface->output, &box);
 	}
@@ -991,8 +857,7 @@ static void layer_popup_handle_destroy(struct wl_listener *listener, void *data)
 	struct comp_layer_popup *popup = wl_container_of(listener, popup, destroy);
 	wl_list_remove(&popup->destroy.link);
 	wl_list_remove(&popup->new_popup.link);
-	if (popup->commit.notify)
-	{
+	if (popup->commit.notify) {
 		wl_list_remove(&popup->commit.link);
 	}
 	wl_list_remove(&popup->reposition.link);
@@ -1070,56 +935,52 @@ static void popup_create(struct comp_toplevel *view, struct wlr_xdg_popup *wlr_p
 	wl_signal_add(&wlr_popup->base->surface->events.commit, &popup->commit);
 	popup->reposition.notify = popup_handle_reposition;
 	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
-	/* Defer unconstrain/configure to first popup commit to avoid early-lifecycle races. */
-}
-
+//	/* Defer unconstrain/configure to first popup commit to avoid early-lifecycle races. */
+//}
+//
 /** Create scene integration and listeners for one layer-surface xdg_popup subtree. */
-static void layer_popup_create(struct comp_layer *layer, struct wlr_xdg_popup *wlr_popup)
-{
-	struct wlr_xdg_surface *parent_xdg = wlr_xdg_surface_try_from_wlr_surface(wlr_popup->parent);
-
-	struct comp_layer_popup *popup = calloc(1, sizeof(*popup));
-	if (!popup)
-	{
-		return;
-	}
-	popup->layer = layer;
-	popup->wlr_popup = wlr_popup;
-
-	struct wlr_scene_tree *parent_tree;
-	if (parent_xdg && parent_xdg->role == WLR_XDG_SURFACE_ROLE_POPUP)
-	{
-		parent_tree = parent_xdg->surface->data;
-		if (!parent_tree)
-		{
-			free(popup);
-			return;
-		}
-	}
-	else
-	{
-		/* Top-level layer popups typically have no xdg parent surface. */
-		parent_tree = layer->scene_layer->tree;
-	}
-
-	struct wlr_scene_tree *tree = wlr_scene_xdg_surface_create(parent_tree, wlr_popup->base);
-	if (!tree)
-	{
-		free(popup);
-		return;
-	}
-	wlr_popup->base->surface->data = tree;
-	wlr_scene_node_raise_to_top(&tree->node);
-
-	popup->destroy.notify = layer_popup_handle_destroy;
-	wl_signal_add(&wlr_popup->events.destroy, &popup->destroy);
-	popup->new_popup.notify = layer_popup_handle_new_popup;
-	wl_signal_add(&wlr_popup->base->events.new_popup, &popup->new_popup);
-	popup->commit.notify = layer_popup_handle_commit;
-	wl_signal_add(&wlr_popup->base->surface->events.commit, &popup->commit);
-	popup->reposition.notify = layer_popup_handle_reposition;
-	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
-	/* Defer unconstrain/configure to first popup commit to avoid early-lifecycle races. */
+//static void layer_popup_create(struct comp_layer *layer, struct wlr_xdg_popup *wlr_popup)
+//{
+//	struct wlr_xdg_surface *parent_xdg = wlr_xdg_surface_try_from_wlr_surface(wlr_popup->parent);
+//
+//	struct comp_layer_popup *popup = calloc(1, sizeof(*popup));
+//	if (!popup) {
+//		return;
+//	}
+//	popup->layer = layer;
+//	popup->wlr_popup = wlr_popup;
+//
+//	struct wlr_scene_tree *parent_tree;
+//	if (parent_xdg && parent_xdg->role == WLR_XDG_SURFACE_ROLE_POPUP) {
+//		parent_tree = parent_xdg->surface->data;
+//		if (!parent_tree) {
+//			free(popup);
+//			return;
+//		}
+//	} else {
+//		/* Top-level layer popups typically have no xdg parent surface. */
+//		parent_tree = layer->scene_layer->tree;
+//	}
+//
+//	struct wlr_scene_tree *tree = wlr_scene_xdg_surface_create(parent_tree, wlr_popup->base);
+//	if (!tree) {
+//		free(popup);
+//		return;
+//	}
+//	wlr_popup->base->surface->data = tree;
+//	wlr_scene_node_raise_to_top(&tree->node);
+//
+//	popup->destroy.notify = layer_popup_handle_destroy;
+//	wl_signal_add(&wlr_popup->events.destroy, &popup->destroy);
+//	popup->new_popup.notify = layer_popup_handle_new_popup;
+//	wl_signal_add(&wlr_popup->base->events.new_popup, &popup->new_popup);
+//	popup->commit.notify = layer_popup_handle_commit;
+//	wl_signal_add(&wlr_popup->base->surface->events.commit, &popup->commit);
+//	popup->reposition.notify = layer_popup_handle_reposition;
+//	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
+//	/* Defer unconstrain/configure to first popup commit to avoid early-lifecycle races. */
+//}
+	popup_unconstrain(popup);
 }
 
 /** toplevel new_popup callback: attach popup to this toplevel. */
@@ -1133,7 +994,28 @@ static void toplevel_handle_new_popup(struct wl_listener *listener, void *data)
 static void comp_layer_new_popup(struct wl_listener *listener, void *data)
 {
 	struct comp_layer *layer = wl_container_of(listener, layer, new_popup);
-	layer_popup_create(layer, data);
+//	layer_popup_create(layer, data);
+	struct wlr_xdg_popup *popup = data;
+	struct comp_output *out = comp_output_from_wlr(layer->server, layer->layer_surface->output);
+	struct wlr_box box;
+	if (out)
+	{
+		box = out->layer_workarea;
+	}
+	else
+	{
+		wlr_output_layout_get_box(layer->server->output_layout, layer->layer_surface->output, &box);
+	}
+	/* wlroots 0.19: unconstrain may schedule configure; popup base must be initialized. */
+	if (popup->base && popup->base->initialized)
+	{
+		wlr_xdg_popup_unconstrain_from_box(popup, &box);
+	}
+	else if (xdg_debug_logs_enabled)
+	{
+		wlr_log(WLR_INFO, "xdgdbg:layer-popup skip unconstrain before initialized");
+	}
+	wlr_scene_xdg_surface_create(layer->scene_layer->tree, popup->base);
 }
 
 /** layer-shell destroy callback: remove listeners/list entry and free wrapper. */
@@ -1217,17 +1099,17 @@ static void output_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_output *output = wl_container_of(listener, output, destroy);
-	struct comp_server *server = output->server;
+//	struct comp_server *server = output->server;
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link)
+	wl_list_for_each(t, &output->server->toplevels, link)
 	{
 		if (t->foreign_toplevel)
 		{
 			wlr_foreign_toplevel_handle_v1_output_leave(t->foreign_toplevel, output->wlr_output);
 		}
 	}
-	server_apply_input_device_maps(server);
-	ext_workspace_on_output_remove(server, output->wlr_output);
+	server_apply_input_device_maps(output->server);
+	ext_workspace_on_output_remove(output->server, output->wlr_output);
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->commit.link);
 	wl_list_remove(&output->destroy.link);
@@ -1248,7 +1130,8 @@ static void output_destroy(struct wl_listener *listener, void *data)
 		 * Wayland connection during the subsequent display-loop termination.
 		 */
 		server_destroy_xwayland(server);
-		server_request_terminate(server, "Last output removed in nested backend, terminating display loop");
+		wlr_log(WLR_INFO, "Last output removed in nested backend, terminating display loop");
+		wl_display_terminate(server->wl_display);
 	}
 	free(output);
 }
@@ -1382,6 +1265,12 @@ static void toplevel_apply_decoration_mode(struct comp_toplevel *view)
 	{
 		mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
 	}
+	/* Re-sending the same mode on every commit causes configure storms (X11 via satellite). */
+	if (view->xdg_decoration->current.mode == mode &&
+		view->xdg_decoration->scheduled_mode == mode)
+	{
+		return;
+	}
 	wlr_xdg_toplevel_decoration_v1_set_mode(view->xdg_decoration, mode);
 }
 
@@ -1478,7 +1367,7 @@ static void foreign_toplevel_handle_request_activate(struct wl_listener *listene
 {
 	struct comp_toplevel *view = wl_container_of(listener, view, foreign_request_activate);
 	struct wlr_foreign_toplevel_handle_v1_activated_event *ev = data;
-	if (!view || (!view->xdg_toplevel && !view->xwayland_surface) || !toplevel_surface_mapped(view))
+	if (!view || !view->xdg_toplevel || !toplevel_surface_mapped(view))
 	{
 		return;
 	}
@@ -1499,18 +1388,11 @@ static void foreign_toplevel_handle_request_close(struct wl_listener *listener, 
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, foreign_request_close);
-	if (!view || (!view->xdg_toplevel && !view->xwayland_surface))
+	if (!view || !view->xdg_toplevel)
 	{
 		return;
 	}
-	if (view->xdg_toplevel)
-	{
-		wlr_xdg_toplevel_send_close(view->xdg_toplevel);
-	}
-	else
-	{
-		wlr_xwayland_surface_close(view->xwayland_surface);
-	}
+	wlr_xdg_toplevel_send_close(view->xdg_toplevel);
 }
 
 /** Sort helper for tiled views: explicit rule order first, stable user key second. */
@@ -1614,31 +1496,15 @@ static struct comp_output *toplevel_tile_output(struct comp_toplevel *t)
 	{
 		return comp_output_from_wlr(server, primary_wlr_output(server));
 	}
-	if (t->xdg_toplevel)
+	const struct wlr_box *geo = &t->xdg_toplevel->base->geometry;
+	const double cx = (double)t->scene_tree->node.x + (double)geo->width * 0.5;
+	const double cy = (double)t->scene_tree->node.y + (double)geo->height * 0.5;
+	struct comp_output *o;
+	wl_list_for_each(o, &server->outputs, link)
 	{
-		const struct wlr_box *geo = &t->xdg_toplevel->base->geometry;
-		const double cx = (double)t->scene_tree->node.x + (double)geo->width * 0.5;
-		const double cy = (double)t->scene_tree->node.y + (double)geo->height * 0.5;
-		struct comp_output *o;
-		wl_list_for_each(o, &server->outputs, link)
+		if (wlr_box_contains_point(&o->layer_workarea, cx, cy))
 		{
-			if (wlr_box_contains_point(&o->layer_workarea, cx, cy))
-			{
-				return o;
-			}
-		}
-	}
-	else
-	{
-		const double cx = (double)t->scene_tree->node.x + (double)t->xwayland_surface->width * 0.5;
-		const double cy = (double)t->scene_tree->node.y + (double)t->xwayland_surface->height * 0.5;
-		struct comp_output *o;
-		wl_list_for_each(o, &server->outputs, link)
-		{
-			if (wlr_box_contains_point(&o->layer_workarea, cx, cy))
-			{
-				return o;
-			}
+			return o;
 		}
 	}
 	return comp_output_from_wlr(server, primary_wlr_output(server));
@@ -1837,8 +1703,13 @@ static void toplevel_commit(struct wl_listener *listener, void *data)
 	/* wlroots 0.19 asserts if we schedule configure before initialized. */
 	if (xdg->initial_commit && xdg->initialized)
 	{
-		log_xdg_state("commit:set_size0x0", view);
-		wlr_xdg_toplevel_set_size(view->xdg_toplevel, 0, 0);
+		const struct wlr_box *geo = &xdg->geometry;
+		/* xwayland-satellite already negotiates X11 size; 0x0 reconfigure breaks splash/dialogs. */
+		if (geo->width <= 0 || geo->height <= 0)
+		{
+			log_xdg_state("commit:set_size0x0", view);
+			wlr_xdg_toplevel_set_size(view->xdg_toplevel, 0, 0);
+		}
 	}
 	toplevel_apply_decoration_mode(view);
 }
@@ -1848,20 +1719,10 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, map);
-	int gw;
-	int gh;
-	if (view->xdg_toplevel)
-	{
-		log_xdg_state("map", view);
-		struct wlr_box *geo = &view->xdg_toplevel->base->geometry;
-		gw = geo->width;
-		gh = geo->height;
-	}
-	else
-	{
-		gw = (int)view->xwayland_surface->width;
-		gh = (int)view->xwayland_surface->height;
-	}
+	log_xdg_state("map", view);
+	const struct wlr_box *geo = &view->xdg_toplevel->base->geometry;
+	const int gw = geo->width;
+	const int gh = geo->height;
 	struct comp_output *o;
 	wl_list_for_each(o, &view->server->outputs, link)
 	{
@@ -1872,19 +1733,25 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 	}
 	foreign_toplevel_refresh(view);
 
-	struct wlr_box obox;
-	toplevel_cursor_workarea(view->server, &obox);
+	struct wlr_output *out = wlr_output_layout_output_at(
+		view->server->output_layout, view->server->cursor->x, view->server->cursor->y);
+	struct wlr_box obox = {0, 0, 800, 600};
+	struct comp_output *co = comp_output_from_wlr(view->server, out);
+	if (co)
+	{
+		obox = co->layer_workarea;
+	}
+	else if (out)
+	{
+		wlr_output_layout_get_box(view->server->output_layout, out, &obox);
+	}
 	toplevel_refresh_tile_props(view);
 	if (view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL)
 	{
 		if (view->tile_float)
 		{
-			int x = obox.x + (obox.width - gw) / 2;
-			int y = obox.y + (obox.height - gh) / 2;
-			if (view->xwayland_surface)
-			{
-				toplevel_arrange_tile(view, x, y, gw > 0 ? gw : obox.width, gh > 0 ? gh : obox.height);
-			}
+			const int x = obox.x + (obox.width - gw) / 2;
+			const int y = obox.y + (obox.height - gh) / 2;
 			wlr_scene_node_set_position(&view->scene_tree->node, x, y);
 			wlr_scene_node_raise_to_top(&view->scene_tree->node);
 			focus_toplevel(view->server, view);
@@ -1899,16 +1766,9 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 		server_sync_xdg_decorations(view->server);
 		return;
 	}
-	if (view->xwayland_surface)
-	{
-		xwayland_place_stack(view);
-	}
-	else
-	{
-		int x = obox.x + (obox.width - gw) / 2;
-		int y = obox.y + (obox.height - gh) / 2;
-		wlr_scene_node_set_position(&view->scene_tree->node, x, y);
-	}
+	const int x = obox.x + (obox.width - gw) / 2;
+	const int y = obox.y + (obox.height - gh) / 2;
+	wlr_scene_node_set_position(&view->scene_tree->node, x, y);
 	wlr_scene_node_raise_to_top(&view->scene_tree->node);
 	focus_toplevel(view->server, view);
 	server_workspace_apply_visibility(view->server);
@@ -1942,229 +1802,72 @@ static void toplevel_request_resize(struct wl_listener *listener, void *data)
 	begin_resize(server, view, ev->edges);
 }
 
-/*
- * wlroots assigns display_name as soon as the X socket exists; clients need DISPLAY
- * before the ready event (especially with lazy Xwayland). Unset XAUTHORITY so a stale
- * cookie from SDDM/Xorg (:0) does not block connections to this compositor's Xwayland.
- */
-static void server_export_xwayland_env(struct comp_server *server)
+static bool x11_display_socket_busy(int num)
 {
-	if (!server->xwayland || !server->xwayland->display_name)
+	char path[64];
+	if (snprintf(path, sizeof(path), "/tmp/.X11-unix/X%d", num) >= (int)sizeof(path))
+	{
+		return true;
+	}
+	return access(path, F_OK) == 0;
+}
+
+/** First free display >= 2 (:0/:1 are often taken by Xorg or a parent compositor). */
+static int x11_display_pick_free(void)
+{
+	for (int n = 2; n < 100; n++)
+	{
+		if (!x11_display_socket_busy(n))
+		{
+			return n;
+		}
+	}
+	return -1;
+}
+
+/** Disable with STACKCOMP_X11=0. Override display with STACKCOMP_X11_DISPLAY (e.g. :12). */
+static void spawn_xwayland_satellite(const char *wayland_display)
+{
+	const char *disable = getenv("STACKCOMP_X11");
+	if (disable && disable[0] && strcmp(disable, "0") == 0)
 	{
 		return;
 	}
+
+	static char display_buf[16];
+	const char *disp = getenv("STACKCOMP_X11_DISPLAY");
+	if (!disp || !disp[0])
+	{
+		const int n = x11_display_pick_free();
+		if (n < 0)
+		{
+			wlr_log(WLR_ERROR, "No free X display for xwayland-satellite (tried :2..:99)");
+			return;
+		}
+		snprintf(display_buf, sizeof(display_buf), ":%d", n);
+		disp = display_buf;
+	}
+
+	pid_t pid = fork();
+	if (pid < 0)
+	{
+		wlr_log_errno(WLR_ERROR, "fork xwayland-satellite");
+		return;
+	}
+	if (pid == 0)
+	{
+		setenv("WAYLAND_DISPLAY", wayland_display, 1);
+		unsetenv("XAUTHORITY");
+		setenv("_JAVA_AWT_WM_NONREPARENTING", "1", 1);
+		execlp("xwayland-satellite", "xwayland-satellite", disp, NULL);
+		wlr_log_errno(WLR_ERROR, "exec xwayland-satellite");
+		_exit(127);
+	}
+
 	unsetenv("XAUTHORITY");
-	setenv("DISPLAY", server->xwayland->display_name, 1);
-	wlr_log(WLR_INFO, "Xwayland DISPLAY=%s (XAUTHORITY unset for local socket auth)",
-			server->xwayland->display_name);
-}
-
-/** Xwayland ready callback: attach compositor seat to Xwayland server. */
-static void xwayland_ready(struct wl_listener *listener, void *data)
-{
-	(void)data;
-	struct comp_server *server = wl_container_of(listener, server, xwayland_ready);
-	if (!server->xwayland)
-	{
-		return;
-	}
-	wlr_xwayland_set_seat(server->xwayland, server->seat);
-	wlr_log(WLR_INFO, "Xwayland ready");
-}
-
-/** Xwayland unlinked from wl_surface: detach scene/listeners while keeping the view object alive. */
-static void xwayland_handle_dissociate(struct wl_listener *listener, void *data)
-{
-	(void)data;
-	struct comp_toplevel *view = wl_container_of(listener, view, xwayland_dissociate);
-	if (!view->scene_tree)
-	{
-		return;
-	}
-	if (view->server->focused_toplevel == view)
-	{
-		view->server->focused_toplevel = NULL;
-		wlr_seat_keyboard_notify_clear_focus(view->server->seat);
-	}
-	if (view->server->grabbed_toplevel == view)
-	{
-		view->server->grabbed_toplevel = NULL;
-		view->server->grab = COMP_GRAB_NONE;
-		view->server->swallow_left_release = false;
-	}
-	wl_list_remove(&view->map.link);
-	wl_list_remove(&view->unmap.link);
-	wl_list_remove(&view->request_move.link);
-	wl_list_remove(&view->request_resize.link);
-	wl_list_remove(&view->set_title.link);
-	wl_list_remove(&view->set_class.link);
-	wl_list_remove(&view->xwayland_map_request.link);
-	wl_list_remove(&view->xwayland_request_configure.link);
-	wlr_scene_node_destroy(&view->scene_tree->node);
-	view->scene_tree = NULL;
-	if (view->listed)
-	{
-		wl_list_remove(&view->link);
-		view->listed = false;
-	}
-	if ((view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL) &&
-		view->server->grab != COMP_GRAB_MOVE)
-	{
-		server_arrange_toplevels(view->server);
-	}
-	foreign_toplevel_refresh(view);
-}
-
-/** Xwayland resize request callback honoring layout float restrictions. */
-static void xwayland_request_resize(struct wl_listener *listener, void *data)
-{
-	struct comp_toplevel *view = wl_container_of(listener, view, request_resize);
-	struct wlr_xwayland_resize_event *ev = data;
-	struct comp_server *server = view->server;
-
-	if (!toplevel_surface_mapped(view))
-	{
-		return;
-	}
-	if ((server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) && !view->tile_float)
-	{
-		return;
-	}
-	focus_toplevel(server, view);
-	begin_resize(server, view, ev->edges);
-}
-
-/** Xwayland map_request callback: allow map only where layout policy permits. */
-static void xwayland_map_request(struct wl_listener *listener, void *data)
-{
-	(void)data;
-	struct comp_toplevel *view = wl_container_of(listener, view, xwayland_map_request);
-	struct comp_server *server = view->server;
-
-	if (!view->xwayland_surface || view->xwayland_surface->override_redirect)
-	{
-		return;
-	}
-	if (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL)
-	{
-		if (!view->tile_float)
-		{
-			return;
-		}
-	}
-	xwayland_place_stack(view);
-}
-
-/** Xwayland request_configure callback: apply requested/fallback geometry safely. */
-static void xwayland_request_configure(struct wl_listener *listener, void *data)
-{
-	struct comp_toplevel *view = wl_container_of(listener, view, xwayland_request_configure);
-	struct wlr_xwayland_surface_configure_event *ev = data;
-	struct comp_server *server = view->server;
-
-	if (!view->xwayland_surface || !view->scene_tree)
-	{
-		return;
-	}
-	if (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL)
-	{
-		if (!view->tile_float)
-		{
-			return;
-		}
-	}
-
-	int w = ev->width > 0 ? (int)ev->width : (int)view->xwayland_surface->width;
-	int h = ev->height > 0 ? (int)ev->height : (int)view->xwayland_surface->height;
-	int x = (int)ev->x;
-	int y = (int)ev->y;
-	struct wlr_box obox;
-	toplevel_cursor_workarea(server, &obox);
-	if (w <= 0 || h <= 0)
-	{
-		xwayland_effective_size(view->xwayland_surface, obox.width, obox.height, &w, &h);
-	}
-	if (!(ev->mask & XCB_CONFIG_WINDOW_X) || !(ev->mask & XCB_CONFIG_WINDOW_Y))
-	{
-		x = obox.x + (obox.width - w) / 2;
-		y = obox.y + (obox.height - h) / 2;
-	}
-	toplevel_arrange_tile(view, x, y, w, h);
-	wlr_scene_node_set_position(&view->scene_tree->node, x, y);
-}
-
-/** Xwayland associate: create scene node and attach all runtime listeners. */
-static void xwayland_handle_associate(struct wl_listener *listener, void *data)
-{
-	(void)data;
-	struct comp_toplevel *view = wl_container_of(listener, view, xwayland_associate);
-	struct comp_server *server = view->server;
-	struct wlr_xwayland_surface *xsurface = view->xwayland_surface;
-
-	view->scene_tree = wlr_scene_tree_create(server->windows_tree);
-	if (!view->scene_tree)
-	{
-		return;
-	}
-	view->scene_tree->node.data = view;
-	wlr_scene_surface_create(view->scene_tree, xsurface->surface);
-
-	view->foreign_toplevel = server->foreign_toplevel_manager ? wlr_foreign_toplevel_handle_v1_create(server->foreign_toplevel_manager) : NULL;
-	if (view->foreign_toplevel)
-	{
-		view->foreign_request_activate.notify = foreign_toplevel_handle_request_activate;
-		wl_signal_add(&view->foreign_toplevel->events.request_activate, &view->foreign_request_activate);
-		view->foreign_request_close.notify = foreign_toplevel_handle_request_close;
-		wl_signal_add(&view->foreign_toplevel->events.request_close, &view->foreign_request_close);
-	}
-
-	view->set_title.notify = toplevel_handle_set_title;
-	wl_signal_add(&xsurface->events.set_title, &view->set_title);
-	view->set_class.notify = toplevel_handle_set_class;
-	wl_signal_add(&xsurface->events.set_class, &view->set_class);
-	view->map.notify = toplevel_map;
-	wl_signal_add(&xsurface->surface->events.map, &view->map);
-	view->unmap.notify = toplevel_unmap;
-	wl_signal_add(&xsurface->surface->events.unmap, &view->unmap);
-	view->request_move.notify = toplevel_request_move;
-	wl_signal_add(&xsurface->events.request_move, &view->request_move);
-	view->request_resize.notify = xwayland_request_resize;
-	wl_signal_add(&xsurface->events.request_resize, &view->request_resize);
-	view->xwayland_map_request.notify = xwayland_map_request;
-	wl_signal_add(&xsurface->events.map_request, &view->xwayland_map_request);
-	view->xwayland_request_configure.notify = xwayland_request_configure;
-	wl_signal_add(&xsurface->events.request_configure, &view->xwayland_request_configure);
-
-	wl_list_insert(server->toplevels.prev, &view->link);
-	view->listed = true;
-	foreign_toplevel_refresh(view);
-}
-
-/** Create per-surface compositor view state for a newly announced Xwayland surface. */
-static void xwayland_new_surface(struct wl_listener *listener, void *data)
-{
-	struct comp_server *server = wl_container_of(listener, server, xwayland_new_surface);
-	struct wlr_xwayland_surface *xsurface = data;
-
-	struct comp_toplevel *view = calloc(1, sizeof(*view));
-	if (!view)
-	{
-		return;
-	}
-	view->server = server;
-	view->xwayland_surface = xsurface;
-	view->xdg_toplevel = NULL;
-	view->tile_user_key = ++tile_user_key_gen;
-	view->tile_float = false;
-	view->tile_order = 0;
-	view->workspace = server->current_workspace;
-
-	view->xwayland_associate.notify = xwayland_handle_associate;
-	wl_signal_add(&xsurface->events.associate, &view->xwayland_associate);
-	view->xwayland_dissociate.notify = xwayland_handle_dissociate;
-	wl_signal_add(&xsurface->events.dissociate, &view->xwayland_dissociate);
-	view->destroy.notify = toplevel_destroy;
-	wl_signal_add(&xsurface->events.destroy, &view->destroy);
+	setenv("DISPLAY", disp, 1);
+	setenv("_JAVA_AWT_WM_NONREPARENTING", "1", 1);
+	wlr_log(WLR_INFO, "xwayland-satellite on DISPLAY=%s (pid %d)", disp, pid);
 }
 
 /** Create per-toplevel compositor view state for a new xdg_toplevel. */
@@ -2176,7 +1879,6 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	struct comp_toplevel *view = calloc(1, sizeof(*view));
 	view->server = server;
 	view->xdg_toplevel = xdg_toplevel;
-	view->xwayland_surface = NULL;
 	view->scene_tree = wlr_scene_xdg_surface_create(server->windows_tree, xdg_toplevel->base);
 	assert(view->scene_tree);
 	view->scene_tree->node.data = view;
@@ -2297,21 +1999,11 @@ static void begin_resize(struct comp_server *server, struct comp_toplevel *view,
 	server->grab_cursor_y = server->cursor->y;
 	server->resize_edges = edges;
 
-	if (view->xdg_toplevel)
-	{
-		struct wlr_box geo = view->xdg_toplevel->base->geometry;
-		server->grab_view_x = view->scene_tree->node.x + geo.x;
-		server->grab_view_y = view->scene_tree->node.y + geo.y;
-		server->grab_view_width = geo.width;
-		server->grab_view_height = geo.height;
-	}
-	else
-	{
-		server->grab_view_x = view->scene_tree->node.x;
-		server->grab_view_y = view->scene_tree->node.y;
-		server->grab_view_width = view->xwayland_surface->width;
-		server->grab_view_height = view->xwayland_surface->height;
-	}
+	struct wlr_box geo = view->xdg_toplevel->base->geometry;
+	server->grab_view_x = view->scene_tree->node.x + geo.x;
+	server->grab_view_y = view->scene_tree->node.y + geo.y;
+	server->grab_view_width = geo.width;
+	server->grab_view_height = geo.height;
 	server->swallow_left_release = false;
 }
 
@@ -3519,11 +3211,6 @@ static void keyboard_handle_modifiers(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_keyboard *kbd = wl_container_of(listener, kbd, modifiers);
-	/* Skip modifier propagation once shutdown has started. */
-	if (!kbd->server || !kbd->server->seat || kbd->server->display_terminate_requested)
-	{
-		return;
-	}
 	struct wlr_keyboard *wlr_kbd = wlr_keyboard_from_input_device(kbd->dev);
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
 	wlr_seat_keyboard_notify_modifiers(kbd->server->seat, &wlr_kbd->modifiers);
@@ -4665,7 +4352,8 @@ static void server_backend_destroy(struct wl_listener *listener, void *data)
 	 * when the host window is closed. Terminating here ensures wl_display_run()
 	 * exits and the compositor process does not linger in the background.
 	 */
-	server_request_terminate(server, "Backend destroyed, terminating display loop");
+	wlr_log(WLR_INFO, "Backend destroyed, terminating display loop");
+	wl_display_terminate(server->wl_display);
 }
 
 /** Initialize wlroots objects, protocol globals, listeners, and compositor runtime state. */
@@ -4698,6 +4386,12 @@ bool server_init(struct comp_server *server)
 
 	struct wl_display *dpy = server->wl_display;
 	server->compositor = wlr_compositor_create(dpy, 6, server->renderer);
+	server->viewporter = wlr_viewporter_create(dpy);
+	if (!server->viewporter)
+	{
+		wlr_log(WLR_ERROR, "Failed to create wlr_viewporter (required for xwayland-satellite)");
+		return false;
+	}
 	server->subcompositor = wlr_subcompositor_create(dpy);
 	server->data_device_mgr = wlr_data_device_manager_create(dpy);
 	server->output_layout = wlr_output_layout_create(dpy);
@@ -4794,22 +4488,6 @@ bool server_init(struct comp_server *server)
 	}
 	wl_list_init(&server->tablets);
 	wl_list_init(&server->tracked_inputs);
-
-	/* Eager start: lazy mode delays Xwayland until a client connects, but DISPLAY is
-	 * only useful once exported below; startup hooks and terminals need it immediately. */
-	server->xwayland = wlr_xwayland_create(dpy, server->compositor, false);
-	if (!server->xwayland)
-	{
-		wlr_log(WLR_ERROR, "Could not create Xwayland object");
-	}
-	else
-	{
-		server_export_xwayland_env(server);
-		server->xwayland_ready.notify = xwayland_ready;
-		wl_signal_add(&server->xwayland->events.ready, &server->xwayland_ready);
-		server->xwayland_new_surface.notify = xwayland_new_surface;
-		wl_signal_add(&server->xwayland->events.new_surface, &server->xwayland_new_surface);
-	}
 
 	server->cursor_motion.notify = server_cursor_motion;
 	wl_signal_add(&server->cursor->events.motion, &server->cursor_motion);
@@ -4928,6 +4606,7 @@ static void print_usage(const char *argv0)
 /** Process CLI/IPC startup flow, initialize compositor, and run Wayland event loop. */
 int main(int argc, char **argv)
 {
+	wlr_log_init(WLR_INFO, NULL);
 	enum wlr_log_importance startup_log_level = WLR_INFO;
 	const char *startup_log_file_path = NULL;
 	const char *startup_crash_log_path = NULL;
@@ -5468,9 +5147,10 @@ int main(int argc, char **argv)
 	/*
 	 * Do not set QT_QPA_PLATFORM globally: many bundles (e.g. Qt AppImages) ship only the
 	 * xcb plugin; forcing "wayland" makes Qt abort before falling back. Native Wayland Qt
-	 * apps still see WAYLAND_DISPLAY; with Xwayland, DISPLAY is valid for xcb.
+	 * apps still see WAYLAND_DISPLAY; X11 apps use DISPLAY from xwayland-satellite.
 	 */
 	wlr_log(WLR_INFO, "Running compositor on WAYLAND_DISPLAY=%s", socket);
+	spawn_xwayland_satellite(socket);
 	comp_config_run_startup(server.config);
 	if (crash_test_from_argv)
 	{
