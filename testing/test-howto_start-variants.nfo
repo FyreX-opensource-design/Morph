@@ -192,3 +192,36 @@ K) Suggested test sequence
 5) STACKCOMP_CFG=/path/to/alt.conf ./testing/stackcomp_run
 6) Optional nested run with STACKCOMP_X11=0 and then STACKCOMP_X11=1
 
+
+L) 3-minute smoke check (before push)
+-------------------------------------
+Run once:
+  LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
+
+1) Verify invalid env fallback + warning logs:
+  STACKCOMP_DBG=abc STACKCOMP_X11=maybe STACKCOMP_X11_DISPLAY=foo ./testing/stackcomp_run
+  rg -n "invalid STACKCOMP_DBG|invalid STACKCOMP_X11|invalid STACKCOMP_X11_DISPLAY" "$LOG_BASE"/stackcomp*-startup.log
+
+2) Verify shutdown list is runtime state under XDG state path:
+  ls -l "$LOG_BASE"/shutdown_list.nfo
+
+3) Verify shutdown hook path/result:
+  rg -n "Triggering session shutdown script|session cleanup completed|No programs registered to kill|Performing dynamic session cleanup" "$LOG_BASE"/stackcomp*-startup.log "$LOG_BASE"/stackcomp*-shutdown.log
+
+4) Fast failure scan if start failed:
+  rg -n -i "error|failed|crash|segv|signal|backtrace" "$LOG_BASE"/*.log
+
+
+M) Grep/RG quick filters for crash triage
+-----------------------------------------
+If you prefer grep, replace rg -n with grep -nE.
+
+Launcher decision lines:
+  rg -n "Environment source|Selected session mode|X11 probe details|WLR_BACKENDS|WLR_WL_SOCKET|STACKCOMP_DBG|STACKCOMP_X11|STACKCOMP_X11_DISPLAY|Config file path|Shutdown list file" "$LOG_BASE"/stackcomp*-startup.log
+
+xwayland-satellite and display related:
+  rg -n "xwayland-satellite|DISPLAY=|WAYLAND_DISPLAY=|No free X display" "$LOG_BASE"/*.log
+
+Shutdown registration/readback hints:
+  rg -n "registered for automatic shutdown|Performing dynamic session cleanup|Sent SIGTERM|forcing SIGKILL|session cleanup completed" "$LOG_BASE"/stackcomp*-startup.log "$LOG_BASE"/stackcomp*-shutdown.log
+
