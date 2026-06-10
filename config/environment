@@ -13,15 +13,22 @@
 #STACKCOMP_CFG=/etc/stackcomp/stackcomp.conf
 
 # Debug mode selector (0,1,2)
-#STACKCOMP_DBG=1
+STACKCOMP_DBG=2
 
 # wlroots/log verbosity helpers
-#WAYLAND_DEBUG=1
-#WLR_LOGTS=1
+WAYLAND_DEBUG=1
+WLR_LOGTS=1
 
 # Java/X11 compatibility helpers
-#_JAVA_AWT_WM_NONREPARENTING=1
+_JAVA_AWT_WM_NONREPARENTING=1
 #WMNAME=LG3D
+
+# XKB defaults forwarded into compositor keyboard setup.
+# Leave commented to use system defaults from libxkbcommon.
+XKB_DEFAULT_LAYOUT=de,us
+XKB_DEFAULT_MODEL=pc105
+#XKB_DEFAULT_VARIANT=
+XKB_DEFAULT_OPTIONS=grp:alt_shift_toggle
 
 # X11 bridge controls (xwayland-satellite in compositor)
 # Empty STACKCOMP_X11 means session-aware default in launcher.

@@ -3783,11 +3783,58 @@ static void server_new_input(struct wl_listener *listener, void *data)
 		kbd->server = server;
 		kbd->dev = dev;
 
+		const char *xkb_layout = getenv("XKB_DEFAULT_LAYOUT");
+		const char *xkb_model = getenv("XKB_DEFAULT_MODEL");
+		const char *xkb_variant = getenv("XKB_DEFAULT_VARIANT");
+		const char *xkb_options = getenv("XKB_DEFAULT_OPTIONS");
+		if (xkb_layout && !xkb_layout[0])
+		{
+			xkb_layout = NULL;
+		}
+		if (xkb_model && !xkb_model[0])
+		{
+			xkb_model = NULL;
+		}
+		if (xkb_variant && !xkb_variant[0])
+		{
+			xkb_variant = NULL;
+		}
+		if (xkb_options && !xkb_options[0])
+		{
+			xkb_options = NULL;
+		}
+		if (xkb_layout || xkb_model || xkb_variant || xkb_options)
+		{
+			wlr_log(WLR_INFO,
+					"XKB rules from environment: layout='%s' model='%s' variant='%s' options='%s'",
+					xkb_layout ? xkb_layout : "",
+					xkb_model ? xkb_model : "",
+					xkb_variant ? xkb_variant : "",
+					xkb_options ? xkb_options : "");
+		}
+		struct xkb_rule_names rules = {
+			.layout = xkb_layout,
+			.model = xkb_model,
+			.variant = xkb_variant,
+			.options = xkb_options,
+		};
+
 		struct xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-		struct xkb_keymap *map = xkb_keymap_new_from_names(ctx, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
+		if (!ctx)
+		{
+			wlr_log(WLR_ERROR, "Failed to create XKB context");
+			exit(1);
+		}
+		struct xkb_keymap *map = xkb_keymap_new_from_names(ctx, &rules, XKB_KEYMAP_COMPILE_NO_FLAGS);
 		if (!map)
 		{
-			wlr_log(WLR_ERROR, "Failed to compile XKB keymap");
+			wlr_log(WLR_ERROR,
+					"Failed to compile XKB keymap (layout='%s' model='%s' variant='%s' options='%s')",
+					xkb_layout ? xkb_layout : "",
+					xkb_model ? xkb_model : "",
+					xkb_variant ? xkb_variant : "",
+					xkb_options ? xkb_options : "");
+			xkb_context_unref(ctx);
 			exit(1);
 		}
 		wlr_keyboard_set_keymap(wlr_kbd, map);

@@ -4,87 +4,17 @@ This document describes the runtime launcher behavior of
 testing/stackcomp_run.
 
 Use this guide for:
-- environment-variable based startup control
 - release versus debug launcher modes
-- config path override behavior
 - runtime log location and shutdown list behavior
 
 ## Scope
 
 The compositor INI syntax is documented in CONFIG.md.
-This file covers launcher behavior only.
+This file covers launcher runtime flow and files only.
 
-## Resolution Order
+For all environment variables and examples (including XKB settings), see:
 
-Launcher settings are resolved in this order:
-
-1. Caller environment (for example VAR=value ./testing/stackcomp_run)
-2. STACKCOMP_ENV_FILE (if set and readable)
-3. config/environment (if present)
-4. Built-in defaults in testing/stackcomp_run
-
-config/environment is override-oriented. Values can stay commented out.
-
-## Supported Variables
-
-### STACKCOMP_DBG
-
-Controls launcher runtime mode:
-
-- 0: release mode
-  - --log-level error
-  - --no-crash-handler
-- 1: release-debug mode
-  - --log-level info
-  - crash handler remains off
-- 2: debug mode
-  - --log-level debug
-  - crash handler on with --crash-log
-
-Invalid values fall back to the launcher default (currently 0) and emit a warning.
-
-### STACKCOMP_CFG
-
-Optional alternate config file path passed as -c.
-
-- If readable: used directly
-- If not readable: launcher falls back to default config path and logs fallback
-
-### STACKCOMP_X11
-
-Controls xwayland-satellite startup in compositor:
-
-- 0: disable satellite
-- 1: enable satellite
-
-If unset, launcher applies session-aware defaults:
-
-- nested backends (x11/wayland): default 0
-- native backend (drm,libinput): default 1
-
-### STACKCOMP_X11_DISPLAY
-
-Optional forced display number for satellite, for example :12.
-
-### STACKCOMP_LOG_DIR
-
-Optional runtime log directory override.
-
-Default if unset:
-
-- $XDG_STATE_HOME/stackcomp
-- fallback: ~/.local/state/stackcomp
-
-Note:
-
-- The `stackcomp` suffix is a fixed project runtime namespace.
-- It does not depend on where the launcher script is installed or what it is renamed to.
-- Override with STACKCOMP_LOG_DIR if you want a different runtime path.
-
-### STACKCOMP_ENV_FILE
-
-Optional path to environment override file.
-If set and readable, it is sourced before launcher defaults are applied.
+- config/ENVIRONMENT.md
 
 ## Runtime Files
 
@@ -150,4 +80,5 @@ Custom log directory:
 
 - CONFIG.md for compositor INI syntax
 - README.md for quick project overview and entrypoints
+- config/ENVIRONMENT.md for runtime environment variables and XKB settings
 - testing/test-howto_start-variants.nfo for test-oriented command sequence

@@ -9,6 +9,7 @@ A stacking, tiling, and scrolling hybrid compositor built from stratch with WL-R
 - Tiling rules (`[tile_rule]`) and decoration rules (`[decoration_rule]`) by regex.
 - Layer-shell workarea handling via exclusive zones.
 - Optional Xwayland support for X11 clients.
+- Environment-driven launcher/runtime settings, including XKB keyboard defaults.
 
 # Current repo structure
 * \[config]: defult config for the compositor
@@ -148,6 +149,7 @@ STACKCOMP_CFG=/etc/stackcomp/stackcomp.conf STACKCOMP_DBG=1 ./testing/stackcomp_
 For full launcher behavior and all options, see:
 
 - `testing/LAUNCHER.md`
+- `config/ENVIRONMENT.md` (environment variables, including XKB settings)
 
 ## Tests
 
