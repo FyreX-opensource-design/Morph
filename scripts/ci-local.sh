@@ -12,4 +12,7 @@ meson compile -C "${build_dir}"
 echo "[ci-local] test: ${build_dir}"
 meson test -C "${build_dir}" --print-errorlogs
 
+echo "[ci-local] nested smoke"
+bash ./scripts/test-nested-smoke.sh "${build_dir}"
+
 echo "[ci-local] ok"
