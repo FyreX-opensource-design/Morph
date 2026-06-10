@@ -743,13 +743,17 @@ static void comp_layer_commit(struct wl_listener *listener, void *data)
 	}
 }
 
-/** Unconstrain popup geometry against the output workarea of its parent toplevel. */
-static void popup_unconstrain(struct comp_popup *popup)
+/** Unconstrain popup geometry once the popup xdg surface is initialized. */
+static bool popup_unconstrain(struct comp_popup *popup)
 {
 	struct comp_toplevel *view = popup->view;
 	if (!view->xdg_toplevel || !view->scene_tree)
 	{
-		return;
+		return false;
+	}
+	if (!popup->wlr_popup || !popup->wlr_popup->base || !popup->wlr_popup->base->initialized)
+	{
+		return false;
 	}
 	struct wlr_xdg_surface *toplevel = view->xdg_toplevel->base;
 	struct comp_output *out = toplevel_tile_output(view);
@@ -764,12 +768,8 @@ static void popup_unconstrain(struct comp_popup *popup)
 		.width = usable.width,
 		.height = usable.height,
 	};
-	/*
-	 * For xdg_popup, unconstrain drives configure emission. Gating on initialized
-	 * can suppress the initial configure and later trigger protocol errors when
-	 * the client commits a buffer.
-	 */
 	wlr_xdg_popup_unconstrain_from_box(popup->wlr_popup, &box);
+	return true;
 }
 
 /** First popup commit callback: force one unconstrain pass, then detach listener. */
@@ -777,7 +777,10 @@ static void popup_handle_commit(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_popup *popup = wl_container_of(listener, popup, commit);
-	popup_unconstrain(popup);
+	if (!popup_unconstrain(popup))
+	{
+		return;
+	}
 	wl_list_remove(&popup->commit.link);
 	popup->commit.notify = NULL;
 }
@@ -787,18 +790,22 @@ static void popup_handle_reposition(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_popup *popup = wl_container_of(listener, popup, reposition);
-	popup_unconstrain(popup);
+	(void)popup_unconstrain(popup);
 }
 
 static void popup_create(struct comp_toplevel *view, struct wlr_xdg_popup *wlr_popup);
 static void layer_popup_create(struct comp_layer *layer, struct wlr_xdg_popup *wlr_popup);
 
-/** Unconstrain a layer popup against the current output workarea of its layer parent. */
-static void layer_popup_unconstrain(struct comp_layer_popup *popup)
+/** Unconstrain a layer popup once the popup xdg surface is initialized. */
+static bool layer_popup_unconstrain(struct comp_layer_popup *popup)
 {
 	if (!popup || !popup->layer || !popup->wlr_popup || !popup->layer->layer_surface)
 	{
-		return;
+		return false;
+	}
+	if (!popup->wlr_popup->base || !popup->wlr_popup->base->initialized)
+	{
+		return false;
 	}
 	struct comp_output *out = comp_output_from_wlr(popup->layer->server, popup->layer->layer_surface->output);
 	struct wlr_box box;
@@ -811,8 +818,8 @@ static void layer_popup_unconstrain(struct comp_layer_popup *popup)
 		wlr_output_layout_get_box(popup->layer->server->output_layout,
 								  popup->layer->layer_surface->output, &box);
 	}
-	/* Same rationale as toplevel popups: do not gate away initial configure. */
 	wlr_xdg_popup_unconstrain_from_box(popup->wlr_popup, &box);
+	return true;
 }
 
 /** First layer popup commit callback: force one unconstrain pass, then detach listener. */
@@ -820,7 +827,10 @@ static void layer_popup_handle_commit(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_layer_popup *popup = wl_container_of(listener, popup, commit);
-	layer_popup_unconstrain(popup);
+	if (!layer_popup_unconstrain(popup))
+	{
+		return;
+	}
 	wl_list_remove(&popup->commit.link);
 	popup->commit.notify = NULL;
 }
@@ -830,7 +840,7 @@ static void layer_popup_handle_reposition(struct wl_listener *listener, void *da
 {
 	(void)data;
 	struct comp_layer_popup *popup = wl_container_of(listener, popup, reposition);
-	layer_popup_unconstrain(popup);
+	(void)layer_popup_unconstrain(popup);
 }
 
 /** Nested layer popup callback: create child popup scene node. */
@@ -926,8 +936,6 @@ static void popup_create(struct comp_toplevel *view, struct wlr_xdg_popup *wlr_p
 	wl_signal_add(&wlr_popup->base->surface->events.commit, &popup->commit);
 	popup->reposition.notify = popup_handle_reposition;
 	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
-
-	popup_unconstrain(popup);
 }
 
 /** Create scene integration and listeners for one layer-surface xdg_popup subtree. */
@@ -976,8 +984,6 @@ static void layer_popup_create(struct comp_layer *layer, struct wlr_xdg_popup *w
 	wl_signal_add(&wlr_popup->base->surface->events.commit, &popup->commit);
 	popup->reposition.notify = layer_popup_handle_reposition;
 	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
-
-	layer_popup_unconstrain(popup);
 }
 
 /** toplevel new_popup callback: attach popup to this toplevel. */

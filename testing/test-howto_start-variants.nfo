@@ -182,6 +182,7 @@ Check startup core lines:
 Check crash markers only:
   rg -n -i "crash|segv|signal|backtrace" "$LOG_BASE"/stackcomp-crash.log
 
+Also needed: the last 120 lines from startup log.
 
 K) Suggested test sequence
 --------------------------
