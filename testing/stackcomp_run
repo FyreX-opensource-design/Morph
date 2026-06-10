@@ -7,16 +7,19 @@
 # - Sources shared helpers from scripts/shell-helpers.sh.
 # - Uses log_startup <level> <message> to write to
 #   $STACKCOMP_STARTUP_LOG_FILE.
-# - Starts shutdown script automatically after compositor exits.
+# - Starts shutdown script only on compositor error exit.
 ################################################################################
 
 # Get the root path of the project
+# ==============================================================================
 REAL_SCRIPT_PATH=$(readlink -f "$0")
 FILE_DIR=$(dirname "$REAL_SCRIPT_PATH")
 COMP_ROOT_DIR=$(dirname "$FILE_DIR")
 export COMP_ROOT_DIR
 
+
 # Load environment defaults/overrides.
+# ==============================================================================
 # Override the file path with STACKCOMP_ENV_FILE if needed.
 ENV_FILE="${STACKCOMP_ENV_FILE:-$COMP_ROOT_DIR/config/environment}"
 ENV_FILE_NOTE="defaults-only (no environment file found)"
@@ -68,7 +71,9 @@ if [ -n "${XKB_DEFAULT_MODEL+x}" ]; then export XKB_DEFAULT_MODEL; fi
 if [ -n "${XKB_DEFAULT_VARIANT+x}" ]; then export XKB_DEFAULT_VARIANT; fi
 if [ -n "${XKB_DEFAULT_OPTIONS+x}" ]; then export XKB_DEFAULT_OPTIONS; fi
 
+
 # Load shared helper functions before first use.
+# ==============================================================================
 . "$COMP_ROOT_DIR/scripts/shell-helpers.sh"
 
 
@@ -133,9 +138,9 @@ else
 fi
 
 # Session-aware default for xwayland-satellite behavior.
+# ==============================================================================
 # Keep native sessions X11-capable by default, but avoid unnecessary bridge
 # startup in nested sessions unless explicitly requested.
-# ==============================================================================
 STACKCOMP_X11_NOTE=""
 if [ "$WLR_BACKENDS" = "x11" ] || [ "$WLR_BACKENDS" = "wayland" ]; then
     STACKCOMP_X11_SESSION_DEFAULT=0
@@ -176,6 +181,8 @@ if [ -n "$STACKCOMP_X11_DISPLAY" ]; then
     export STACKCOMP_X11_DISPLAY
 fi
 
+# Log settings
+# ==============================================================================
 STACKCOMP_LOG_LEVEL="error"
 STACKCOMP_ENABLE_CRASH_HANDLER=0
 case "$STACKCOMP_DBG" in
@@ -207,6 +214,7 @@ STARTUP_LOG_BASELINE=$(line_count_or_zero "$STACKCOMP_STARTUP_LOG_FILE")
 CORE_LOG_BASELINE=$(line_count_or_zero "$LOG_FILE")
 CRASH_LOG_BASELINE=$(line_count_or_zero "$CRASH_LOG_FILE")
 
+
 # Dynamic program list shared by startup.sh and shutdown.sh for shutdown cleanup.
 # ==============================================================================
 export STACKCOMP_SHUTDOWN_LIST="$STATE_DIR/shutdown_list.nfo"
@@ -237,6 +245,7 @@ log_startup INFO "Crash log file path:          $CRASH_LOG_FILE"
 log_startup INFO "Startup log file:             $STACKCOMP_STARTUP_LOG_FILE"
 log_startup INFO "Shutdown log file:            $STACKCOMP_SHUTDOWN_LOG_FILE"
 log_startup INFO "Shutdown list file:           $STACKCOMP_SHUTDOWN_LIST"
+
 if [ -n "$STACKCOMP_DBG_NOTE" ]; then
     log_startup WARN "$STACKCOMP_DBG_NOTE"
 fi
@@ -295,9 +304,13 @@ fi
 
 # Automatically trigger the shutdown script
 # ==============================================================================
-log_startup INFO "Triggering session shutdown script..."
-if [ -f "$COMP_ROOT_DIR/config/shutdown.sh" ]; then
-    "$COMP_ROOT_DIR/config/shutdown.sh"
+if [ "$EXIT_CODE" -ne 0 ]; then
+    log_startup INFO "Compositor exited with rc=$EXIT_CODE; triggering session shutdown script..."
+    if [ -f "$COMP_ROOT_DIR/config/shutdown.sh" ]; then
+        "$COMP_ROOT_DIR/config/shutdown.sh"
+    else
+        log_startup WARN "shutdown.sh not found at expected path!"
+    fi
 else
-    log_startup WARN "shutdown.sh not found at expected path!"
+    log_startup INFO "Compositor exited cleanly; relying on config shutdown hooks."
 fi
