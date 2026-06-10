@@ -116,6 +116,7 @@ static bool server_reload_config(struct comp_server *server);
 static struct comp_toplevel **tile_sorted_views(struct comp_server *server, size_t *n_out);
 static int tile_sorted_index(struct comp_toplevel **arr, size_t n, struct comp_toplevel *v);
 static void toplevel_apply_decoration_mode(struct comp_toplevel *view);
+static void toplevel_apply_requested_maximize(struct comp_toplevel *view);
 static struct comp_output *toplevel_tile_output(struct comp_toplevel *t);
 static void foreign_toplevel_refresh(struct comp_toplevel *view);
 static void foreign_toplevel_sync_all(struct comp_server *server);
@@ -221,6 +222,28 @@ static void toplevel_set_activated(struct comp_toplevel *v, bool activated)
 	{
 		wlr_xdg_toplevel_set_activated(v->xdg_toplevel, activated);
 	}
+}
+
+/** Minimized views are hidden until explicit re-activation. */
+static void toplevel_set_minimized(struct comp_toplevel *view, bool minimized)
+{
+	if (!view || view->minimized == minimized)
+	{
+		return;
+	}
+	view->minimized = minimized;
+	if (minimized && view->server->focused_toplevel == view)
+	{
+		view->server->focused_toplevel = NULL;
+		wlr_seat_keyboard_notify_clear_focus(view->server->seat);
+	}
+	server_workspace_apply_visibility(view->server);
+	if ((view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL) &&
+		view->server->grab != COMP_GRAB_MOVE)
+	{
+		server_arrange_toplevels(view->server);
+	}
+	foreign_toplevel_refresh(view);
 }
 
 /** Tile/scroll: resize client; xdg ignores compositor x/y (scene positions the surface). */
@@ -426,7 +449,12 @@ static void foreign_toplevel_refresh(struct comp_toplevel *view)
 	wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel, app_id);
 	const bool activated = view->server->focused_toplevel == view && toplevel_surface_mapped(view) &&
 						   view->workspace == view->server->current_workspace;
+	const bool maximized = view->xdg_toplevel && view->xdg_toplevel->current.maximized;
+	const bool fullscreen = view->xdg_toplevel && view->xdg_toplevel->current.fullscreen;
 	wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, activated);
+	wlr_foreign_toplevel_handle_v1_set_maximized(view->foreign_toplevel, maximized);
+	wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel, fullscreen);
+	wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, view->minimized);
 }
 
 /** Refresh foreign-toplevel metadata for all known toplevels. */
@@ -1346,6 +1374,10 @@ static void foreign_toplevel_handle_request_activate(struct wl_listener *listene
 	{
 		server_workspace_go(view->server, view->workspace);
 	}
+	if (view->minimized)
+	{
+		toplevel_set_minimized(view, false);
+	}
 	focus_toplevel(view->server, view);
 	foreign_toplevel_sync_all(view->server);
 }
@@ -1405,7 +1437,7 @@ static struct comp_toplevel **tile_sorted_views(struct comp_server *server, size
 	struct comp_toplevel *t;
 	wl_list_for_each(t, &server->toplevels, link)
 	{
-		if (!toplevel_surface_mapped(t) || t->tile_float)
+		if (!toplevel_surface_mapped(t) || t->tile_float || t->minimized)
 		{
 			continue;
 		}
@@ -1427,7 +1459,7 @@ static struct comp_toplevel **tile_sorted_views(struct comp_server *server, size
 	size_t i = 0;
 	wl_list_for_each(t, &server->toplevels, link)
 	{
-		if (!toplevel_surface_mapped(t) || t->tile_float)
+		if (!toplevel_surface_mapped(t) || t->tile_float || t->minimized)
 		{
 			continue;
 		}
@@ -1602,6 +1634,9 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 		detach_listener_if_linked(&view->commit);
 		detach_listener_if_linked(&view->request_move);
 		detach_listener_if_linked(&view->request_resize);
+		detach_listener_if_linked(&view->request_maximize);
+		detach_listener_if_linked(&view->request_fullscreen);
+		detach_listener_if_linked(&view->request_minimize);
 		detach_listener_if_linked(&view->set_title);
 		detach_listener_if_linked(&view->set_app_id);
 		detach_listener_if_linked(&view->new_popup);
@@ -1668,6 +1703,8 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, map);
+	view->minimized = false;
+	view->has_restore = false;
 	log_xdg_state("map", view);
 	const struct wlr_box *geo = &view->xdg_toplevel->base->geometry;
 	const int gw = geo->width;
@@ -1695,6 +1732,10 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 		wlr_output_layout_get_box(view->server->output_layout, out, &obox);
 	}
 	toplevel_refresh_tile_props(view);
+	if (view->xdg_toplevel->requested.maximized)
+	{
+		toplevel_apply_requested_maximize(view);
+	}
 	if (view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL)
 	{
 		if (view->tile_float)
@@ -1749,6 +1790,119 @@ static void toplevel_request_resize(struct wl_listener *listener, void *data)
 	}
 	focus_toplevel(server, view);
 	begin_resize(server, view, ev->edges);
+}
+
+/** Apply current maximize request when surface is initialized. */
+static void toplevel_apply_requested_maximize(struct comp_toplevel *view)
+{
+	if (!view || !view->xdg_toplevel)
+	{
+		return;
+	}
+	if (!toplevel_surface_initialized(view))
+	{
+		/* Some clients request maximize before first commit; configuring here would assert in wlroots. */
+		return;
+	}
+	const bool want_max = view->xdg_toplevel->requested.maximized;
+	const bool was_max = view->xdg_toplevel->current.maximized;
+	wlr_xdg_toplevel_set_maximized(view->xdg_toplevel, want_max);
+	if (want_max)
+	{
+		if (!was_max)
+		{
+			view->restore_x = view->scene_tree->node.x;
+			view->restore_y = view->scene_tree->node.y;
+			view->has_restore = true;
+		}
+		struct wlr_output *out = wlr_output_layout_output_at(
+			view->server->output_layout, view->server->cursor->x, view->server->cursor->y);
+		struct wlr_box obox = {0, 0, 800, 600};
+		struct comp_output *co = comp_output_from_wlr(view->server, out);
+		if (co)
+		{
+			obox = co->layer_workarea;
+		}
+		else if (out)
+		{
+			wlr_output_layout_get_box(view->server->output_layout, out, &obox);
+		}
+		wlr_xdg_toplevel_set_size(view->xdg_toplevel, obox.width, obox.height);
+		if (view->server->layout == COMP_LAYOUT_STACK || view->tile_float)
+		{
+			wlr_scene_node_set_position(&view->scene_tree->node, obox.x, obox.y);
+		}
+	}
+	else
+	{
+		/* Let client restore its natural size on unmaximize; forcing 0x0 can cause a visible 0,0 flicker. */
+		if (view->has_restore && (view->server->layout == COMP_LAYOUT_STACK || view->tile_float))
+		{
+			wlr_scene_node_set_position(&view->scene_tree->node, view->restore_x, view->restore_y);
+		}
+	}
+	foreign_toplevel_refresh(view);
+}
+
+/** Ack maximize requests from clients and apply output workarea geometry. */
+static void toplevel_request_maximize(struct wl_listener *listener, void *data)
+{
+	(void)data;
+	struct comp_toplevel *view = wl_container_of(listener, view, request_maximize);
+	toplevel_apply_requested_maximize(view);
+}
+
+/** Ack fullscreen requests and align position/size to target output geometry. */
+static void toplevel_request_fullscreen(struct wl_listener *listener, void *data)
+{
+	(void)data;
+	struct comp_toplevel *view = wl_container_of(listener, view, request_fullscreen);
+	if (!view || !view->xdg_toplevel)
+	{
+		return;
+	}
+	if (!toplevel_surface_initialized(view))
+	{
+		return;
+	}
+	const bool want_fullscreen = view->xdg_toplevel->requested.fullscreen;
+	wlr_xdg_toplevel_set_fullscreen(view->xdg_toplevel, want_fullscreen);
+	if (want_fullscreen)
+	{
+		struct wlr_output *out = view->xdg_toplevel->requested.fullscreen_output;
+		if (!out)
+		{
+			out = wlr_output_layout_output_at(view->server->output_layout,
+											  view->server->cursor->x, view->server->cursor->y);
+		}
+		struct wlr_box obox = {0, 0, 800, 600};
+		if (out)
+		{
+			wlr_output_layout_get_box(view->server->output_layout, out, &obox);
+		}
+		wlr_xdg_toplevel_set_size(view->xdg_toplevel, obox.width, obox.height);
+		if (view->server->layout == COMP_LAYOUT_STACK || view->tile_float)
+		{
+			wlr_scene_node_set_position(&view->scene_tree->node, obox.x, obox.y);
+		}
+	}
+	else
+	{
+		wlr_xdg_toplevel_set_size(view->xdg_toplevel, 0, 0);
+	}
+	foreign_toplevel_refresh(view);
+}
+
+/** Minimize requests hide the scene node until an explicit activate/unminimize. */
+static void toplevel_request_minimize(struct wl_listener *listener, void *data)
+{
+	(void)data;
+	struct comp_toplevel *view = wl_container_of(listener, view, request_minimize);
+	if (!view || !view->xdg_toplevel)
+	{
+		return;
+	}
+	toplevel_set_minimized(view, view->xdg_toplevel->requested.minimized);
 }
 
 static bool x11_display_socket_busy(int num)
@@ -1861,8 +2015,37 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	wl_signal_add(&xdg_toplevel->events.request_move, &view->request_move);
 	view->request_resize.notify = toplevel_request_resize;
 	wl_signal_add(&xdg_toplevel->events.request_resize, &view->request_resize);
+	view->request_maximize.notify = toplevel_request_maximize;
+	wl_signal_add(&xdg_toplevel->events.request_maximize, &view->request_maximize);
+	view->request_fullscreen.notify = toplevel_request_fullscreen;
+	wl_signal_add(&xdg_toplevel->events.request_fullscreen, &view->request_fullscreen);
+	view->request_minimize.notify = toplevel_request_minimize;
+	wl_signal_add(&xdg_toplevel->events.request_minimize, &view->request_minimize);
 	view->new_popup.notify = toplevel_handle_new_popup;
 	wl_signal_add(&xdg_toplevel->base->events.new_popup, &view->new_popup);
+	/* wlroots asserts here on older xdg-shell versions; gate capabilities by negotiated version. */
+	const uint32_t shell_ver = (xdg_toplevel->base && xdg_toplevel->base->client &&
+								xdg_toplevel->base->client->shell)
+								   ? xdg_toplevel->base->client->shell->version
+								   : 0;
+	if (shell_ver >= XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION)
+	{
+		wlr_xdg_toplevel_set_wm_capabilities(
+			xdg_toplevel,
+			WLR_XDG_TOPLEVEL_WM_CAPABILITIES_WINDOW_MENU |
+				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE |
+				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN |
+				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE);
+		if (xdg_debug_logs_enabled)
+		{
+			wlr_log(WLR_INFO, "xdgdbg:wm_caps enabled shell_v=%u", shell_ver);
+		}
+	}
+	else if (xdg_debug_logs_enabled)
+	{
+		wlr_log(WLR_INFO, "xdgdbg:wm_caps skipped shell_v=%u (< %u)", shell_ver,
+				XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION);
+	}
 	wl_list_insert(server->toplevels.prev, &view->link);
 	view->listed = true;
 	foreign_toplevel_refresh(view);
@@ -2110,7 +2293,7 @@ void server_workspace_apply_visibility(struct comp_server *server)
 			wlr_scene_node_set_enabled(&t->scene_tree->node, false);
 			continue;
 		}
-		const bool vis = t->workspace == server->current_workspace;
+		const bool vis = t->workspace == server->current_workspace && !t->minimized;
 		wlr_scene_node_set_enabled(&t->scene_tree->node, vis);
 	}
 }
@@ -2145,7 +2328,7 @@ void server_workspace_go(struct comp_server *server, int idx)
 	wl_list_for_each(t, &server->toplevels, link)
 	{
 		if (t->workspace == server->current_workspace && toplevel_surface_mapped(t) &&
-			toplevel_surface_initialized(t))
+			toplevel_surface_initialized(t) && !t->minimized)
 		{
 			pick = t;
 			break;

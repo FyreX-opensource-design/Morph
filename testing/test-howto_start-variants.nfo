@@ -226,3 +226,20 @@ xwayland-satellite and display related:
 Shutdown registration/readback hints:
   rg -n "registered for automatic shutdown|Performing dynamic session cleanup|Sent SIGTERM|forcing SIGKILL|session cleanup completed" "$LOG_BASE"/stackcomp*-startup.log "$LOG_BASE"/stackcomp*-shutdown.log
 
+Bitte jetzt testen
+
+App mit CSD-Titelleiste starten (z. B. GTK/Qt/Java).
+Maximize, Minimize, Close über Buttons testen.
+Danach minimiertes Fenster über Panel/Taskbar wieder aktivieren.
+Wenn noch ein Edge Case bleibt (z. B. weiterhin zu große Maximized-Geometrie bei Reopen), dann schick mir bitte direkt nach einem reproduzierten Lauf diese Ausgaben:
+
+LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
+rg -n -i "request_maximize|request_minimize|request_fullscreen|maximized|fullscreen|arrange|layer_workarea|geometry|configure" "$LOG_BASE"/stackcomp*.log
+tail -n 250 "$LOG_BASE"/stackcomp*-startup.log
+tail -n 250 "$LOG_BASE"/stackcomp.log
+
+Dann gehe ich auf den zweiten Fix-Schritt für die Restore/Maximize-Geometrie.
+
+LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
+tail -n 200 "$LOG_BASE"/stackcomp-startup.log
+tail -n 120 "$LOG_BASE"/stackcomp-crash.log

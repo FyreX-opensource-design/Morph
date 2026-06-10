@@ -15,6 +15,9 @@
 # Debug mode selector (0,1,2)
 STACKCOMP_DBG=2
 
+# Optional XDG lifecycle debug logs in compositor (0=off, 1=on)
+STACKCOMP_DEBUG_XDG=1
+
 # wlroots/log verbosity helpers
 WAYLAND_DEBUG=1
 WLR_LOGTS=1

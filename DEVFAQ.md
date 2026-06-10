@@ -147,3 +147,31 @@ Interpretation:
 
 - If stackcomp exits with code 0 and no follow-up fatal signal/assertion appears, this line is considered harmless.
 - Investigate further only if it occurs repeatedly during normal runtime or is followed by new crashes.
+
+## 11) Why does yEd / some Java apps only show a close button?
+
+Some Java applications under native Wayland stackcomp sessions (for example yEd) only expose a close button in the titlebar, while minimize/maximize are missing.
+
+Observed behavior:
+
+- the app starts normally under stackcomp
+- the window closes correctly
+- minimize/maximize buttons are not offered by the client titlebar
+
+Cause:
+
+- the client negotiates xdg-shell version 3
+- stackcomp can only advertise `wm_capabilities` starting at xdg-shell version 5
+- with version 3, the compositor cannot legally signal maximize/minimize support
+
+Current status:
+
+- this cannot be fixed cleanly in the existing client-side decoration path alone
+- a real fix would require server-side decorations (SSD) with compositor-drawn window controls
+- stackcomp does not currently implement SSD decoration
+
+In short:
+
+- close works because it is supported by xdg-shell v3
+- minimize/maximize are unavailable because the protocol version is too old
+- the proper long-term solution is SSD, not another xdg-shell workaround

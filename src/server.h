@@ -117,9 +117,16 @@ struct comp_toplevel
 	struct wl_listener destroy;
 	struct wl_listener request_move;
 	struct wl_listener request_resize;
+	struct wl_listener request_maximize;
+	struct wl_listener request_fullscreen;
+	struct wl_listener request_minimize;
 	struct wl_listener set_title;
 	struct wl_listener set_app_id;
 	struct wl_listener new_popup;
+	bool minimized;
+	int restore_x;
+	int restore_y;
+	bool has_restore;
 	struct wlr_foreign_toplevel_handle_v1 *foreign_toplevel;
 	struct wl_listener foreign_request_activate;
 	struct wl_listener foreign_request_close;

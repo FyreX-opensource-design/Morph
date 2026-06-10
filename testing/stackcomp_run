@@ -71,6 +71,9 @@ if [ -n "${XKB_DEFAULT_MODEL+x}" ]; then export XKB_DEFAULT_MODEL; fi
 if [ -n "${XKB_DEFAULT_VARIANT+x}" ]; then export XKB_DEFAULT_VARIANT; fi
 if [ -n "${XKB_DEFAULT_OPTIONS+x}" ]; then export XKB_DEFAULT_OPTIONS; fi
 
+# Optional compositor XDG lifecycle debug flag.
+if [ -n "${STACKCOMP_DEBUG_XDG+x}" ]; then export STACKCOMP_DEBUG_XDG; fi
+
 
 # Load shared helper functions before first use.
 # ==============================================================================

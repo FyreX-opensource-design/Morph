@@ -79,6 +79,15 @@ Note:
 Optional path to environment override file.
 If set and readable, it is sourced before launcher defaults are applied.
 
+### STACKCOMP_DEBUG_XDG
+
+Optional verbose XDG lifecycle debug flag forwarded to stackcomp.
+
+- unset or `0`: disabled
+- non-empty and not `0`: enabled
+
+Use this when debugging early xdg_toplevel requests/state transitions.
+
 ## XKB Variables
 
 These variables are read by stackcomp keyboard initialization via getenv().
