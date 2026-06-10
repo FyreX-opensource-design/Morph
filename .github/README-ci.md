@@ -74,8 +74,10 @@ This runs:
 
 Nested smoke details:
 
-- Uses an existing reachable X11 `DISPLAY` when available.
-- Falls back to `xvfb-run` for headless runner environments.
+- Detects runtime system in this order: Wayland, X11, then TTY-like fallback.
+- On Wayland (`WAYLAND_DISPLAY` socket reachable), forces Wayland nested mode.
+- On X11 (reachable `DISPLAY`), uses X11 nested mode.
+- On TTY-like environments, falls back to `xvfb-run` for X11 nested smoke.
 - Verifies launcher nested startup/shutdown log markers.
 - Skips only when neither a reachable `DISPLAY` nor `xvfb-run` is available.
 

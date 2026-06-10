@@ -31,15 +31,29 @@ if [[ -n "${DISPLAY:-}" ]]; then
   fi
 fi
 
+has_wayland=0
+if [[ -n "${WAYLAND_DISPLAY:-}" && -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  if [[ -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]]; then
+    has_wayland=1
+  fi
+fi
+
 run_cmd=(env STACKCOMP_LOG_DIR="${log_dir}" STACKCOMP_DBG=1 STACKCOMP_X11=0)
-if [[ "${has_display}" -eq 1 ]]; then
-  echo "[nested-smoke] using existing DISPLAY=${DISPLAY}"
+session_kind=""
+if [[ "${has_wayland}" -eq 1 ]]; then
+  session_kind="wayland"
+  echo "[nested-smoke] detected wayland session (WAYLAND_DISPLAY=${WAYLAND_DISPLAY})"
+  run_cmd+=(DISPLAY= WAYLAND_DISPLAY="${WAYLAND_DISPLAY}")
+elif [[ "${has_display}" -eq 1 ]]; then
+  session_kind="x11"
+  echo "[nested-smoke] detected x11 session (DISPLAY=${DISPLAY})"
 else
+  session_kind="tty"
   if ! command -v xvfb-run >/dev/null 2>&1; then
-    echo "[nested-smoke] SKIP: no reachable DISPLAY and xvfb-run is missing"
+    echo "[nested-smoke] SKIP: neither wayland nor reachable DISPLAY found, and xvfb-run is missing"
     exit 0
   fi
-  echo "[nested-smoke] using xvfb-run"
+  echo "[nested-smoke] detected tty-like session, using xvfb-run"
   run_cmd+=(xvfb-run -a -s "-screen 0 1280x720x24")
 fi
 run_cmd+=("${launcher}")
@@ -80,10 +94,18 @@ set -e
 
 echo "[nested-smoke] launcher exit code: ${rc}"
 
-if ! rg -n "Selected session mode:\s+nested-|WLR_BACKENDS:\s+x11|WLR_BACKENDS:\s+wayland" "${startup_log}" >/dev/null; then
-  echo "[nested-smoke] expected nested mode markers missing in startup log" >&2
-  tail -n 120 "${startup_log}" >&2 || true
-  exit 1
+if [[ "${session_kind}" = "wayland" ]]; then
+  if ! rg -n "Selected session mode:\s+nested-wayland|WLR_BACKENDS:\s+wayland" "${startup_log}" >/dev/null; then
+    echo "[nested-smoke] expected wayland nested markers missing in startup log" >&2
+    tail -n 120 "${startup_log}" >&2 || true
+    exit 1
+  fi
+else
+  if ! rg -n "Selected session mode:\s+nested-x11|WLR_BACKENDS:\s+x11" "${startup_log}" >/dev/null; then
+    echo "[nested-smoke] expected x11 nested markers missing in startup log" >&2
+    tail -n 120 "${startup_log}" >&2 || true
+    exit 1
+  fi
 fi
 
 if ! rg -n "Compositor exited with rc=|Compositor crashed or exited with an error" "${startup_log}" >/dev/null; then
