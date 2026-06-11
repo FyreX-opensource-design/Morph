@@ -141,8 +141,6 @@ output = DP-2
 type = tablet
 ```
 
----
-
 ## Actions reference
 
 Unless noted, tiling-related actions are **no-ops** when not in **tile** layout, when there is **no focused** toplevel, when the focused surface is **unmapped**, or when the focused window is a **tile float** (floating within tile mode).

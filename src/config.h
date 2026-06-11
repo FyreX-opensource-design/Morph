@@ -131,18 +131,18 @@ bool comp_keybind_when_ok(const struct comp_keybind *bind);
  * from the keyboard *before* wlr_keyboard_notify_key() updates XKB state.
  */
 bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *server,
-	bool key_pressed, uint32_t mods_filtered, xkb_keysym_t sym);
+							  bool key_pressed, uint32_t mods_filtered, xkb_keysym_t sym);
 
 /**
  * Resolve tile_rule settings for a toplevel from WM app_id and title (may be NULL).
  * Uses the first matching [tile_rule] in config file order.
  */
 void comp_config_tile_props_for_toplevel(const struct comp_config *cfg, const char *app_id,
-	const char *title, bool *out_float_in_tile, int *out_order);
+										 const char *title, bool *out_float_in_tile, int *out_order);
 
 /**
  * Whether xdg-decoration should use server-side mode in tile/scroll for this app (hide client title bar).
  * Stack layout and tile-float windows always use client-side decorations regardless.
  */
 bool comp_config_decoration_prefer_server_side_tile_scroll(const struct comp_config *cfg, const char *app_id,
-	const char *title);
+														   const char *title);

@@ -243,3 +243,49 @@ Dann gehe ich auf den zweiten Fix-Schritt für die Restore/Maximize-Geometrie.
 LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
 tail -n 200 "$LOG_BASE"/stackcomp-startup.log
 tail -n 120 "$LOG_BASE"/stackcomp-crash.log
+
+
+N) Manuelle Resize-Checkliste (Kanten/Ecken)
+--------------------------------------------
+Diese kurze Checkliste ist fuer den neuen Maus-Resize-Pfad gedacht.
+
+1) Basis-Start
+  - stackcomp normal starten
+  - 2-3 Fenster oeffnen (z. B. Terminal, Browser, LibreOffice)
+  - Erwartung: stabiler Betrieb ohne Hangs
+
+2) Resize-Cursor (8 Zonen)
+  - Maus langsam an: links, rechts, oben, unten,
+    oben-links, oben-rechts, unten-links, unten-rechts
+  - Erwartung: Cursorform passt zur jeweiligen Kante/Ecke
+
+3) Resize-Drag
+  - An jeder Kante/Ecke: Klick+Hold+Ziehen
+  - Erwartung: Fenstergroesse folgt direkt, ohne Spruenge
+
+4) Min-Groesse / Clamp
+  - Fenster sehr klein ziehen
+  - Erwartung: kein negativer/instabiler Zustand, weiterhin bedienbar
+
+5) Move-Regression
+  - Fensterbewegung wie gewohnt testen
+  - Erwartung: Move unveraendert funktionsfaehig
+
+6) Layout-spezifisch pruefen
+  - In tile/scroll: normale tiled Fenster nicht frei edge-resizable (by design)
+  - Tile-float Fenster sollen edge-resizable bleiben
+
+7) Maximize/Normalize + Resize
+  - Maximieren, normalisieren, danach wieder manuell resizen
+  - Erwartung: kein 0,0-Flicker, Geometrie bleibt plausibel
+
+8) Konfig-Wert pruefen
+  - derzeit entfällt (Resize-Rand ist fest im Compositor definiert)
+
+9) Kurzer Regression-Check
+  - scripts/test-nested-smoke.sh build
+  - Erwartung: erfolgreicher Durchlauf
+
+LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
+rg -n "grab=|resize|cursor|request_set_cursor|button" "$LOG_BASE"/stackcomp*.log > rg_grab.txt
+tail -n 200 "$LOG_BASE"/stackcomp-startup.log > tail_startup.txt
