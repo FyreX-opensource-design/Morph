@@ -17,6 +17,7 @@ vgcore.*
 
 # KI files
 copilot-instructions.md
+.codexrules
 
 # Vscode folder
 .vscode/

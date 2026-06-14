@@ -4335,7 +4335,7 @@ static void print_usage(const char *argv0) {
 	printf("  --tile-move ARG            prev|next|left|right|first|last|N\n");
 	printf("  --tile-grid ARG [COUNT]    up|down|left|right|top|bottom or signed N\n");
 	printf("  --scroll-move ARG          prev|next|left|right|N\n");
-	printf("  --workspace ARG            1..9|next|prev\n");
+	printf("  --workspace ARG            1..%d|next|prev\n", COMP_WORKSPACE_COUNT);
 	printf("  --workspace-move N         Move focused window to workspace N\n");
 	printf("  --reload-config            Send reload request to running compositor\n");
 	printf("  --ipc                      Keep compatibility; IPC is default-on\n");

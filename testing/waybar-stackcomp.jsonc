@@ -4,7 +4,7 @@
 // Run from another VT or nested session, after stackcomp sets WAYLAND_DISPLAY:
 //   waybar -c "$(pwd)/config/waybar-stackcomp.jsonc" -s "$(pwd)/config/waybar-stackcomp.css"
 //
-// Workspace names from stackcomp are "1".."9"; stable ids are stackcomp-ws-0 .. stackcomp-ws-8.
+// Workspace names from stackcomp are "1".."9"; stable ids are stackcomp-ws-0 .. stackcomp-ws-9.
 
 {
   "layer": "top",
