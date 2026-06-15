@@ -182,6 +182,7 @@ struct comp_server {
 	struct wl_list tablets;
 	struct wl_list tracked_inputs;
 	struct wlr_seat *seat;
+	struct wl_listener backend_destroy;
 	struct wl_listener new_output;
 	struct wl_listener new_input;
 	struct wl_listener xdg_shell_new_toplevel;

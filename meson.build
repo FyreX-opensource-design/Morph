@@ -76,6 +76,7 @@ pointer_constraints_server_h = custom_target(
 
 executable(
   'stackcomp',
+  'src/crash_handler.c',
   'src/main.c',
   'src/config.c',
   'src/ext_workspace.c',
@@ -89,6 +90,16 @@ executable(
   dependencies: [wlroots, pixman, wayland_server, xkbcommon, m_dep],
   install: true,
 )
+
+config_test = executable(
+  'stackcomp-test-config',
+  'tests/test_config.c',
+  'src/config.c',
+  dependencies: [wlroots, pixman, wayland_server, xkbcommon, m_dep],
+  include_directories: include_directories('src'),
+)
+
+test('config', config_test)
 
 install_data(
   files('data/stackcomp.desktop'),

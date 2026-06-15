@@ -54,10 +54,12 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "config.h"
+#include "crash_handler.h"
 #include "ext_workspace.h"
 #include "server.h"
 
-struct comp_tablet_tool {
+struct comp_tablet_tool
+{
 	struct wlr_tablet_tool *wlr_tool;
 	struct wlr_tablet_v2_tablet_tool *v2_tool;
 	struct comp_tablet *tablet;
@@ -68,7 +70,8 @@ struct comp_tablet_tool {
 };
 
 /** Per-client pointer constraint; freed on constraint destroy. */
-struct comp_pointer_constraint {
+struct comp_pointer_constraint
+{
 	struct comp_server *server;
 	struct wlr_pointer_constraint_v1 *constraint;
 	struct wl_listener destroy;
@@ -76,7 +79,8 @@ struct comp_pointer_constraint {
 };
 
 /** Tracks one xdg_popup (menu/tooltip) for a toplevel; freed on popup destroy. */
-struct comp_popup {
+struct comp_popup
+{
 	struct comp_toplevel *view;
 	struct wlr_xdg_popup *wlr_popup;
 	struct wl_listener destroy;
@@ -89,9 +93,9 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 static struct wlr_output *primary_wlr_output(struct comp_server *server);
 static void process_cursor_motion(struct comp_server *server, uint32_t time_msec);
 static void cursor_constrain(struct comp_server *server, struct wlr_pointer_constraint_v1 *constraint,
-	double sx, double sy);
+							 double sx, double sy);
 static void apply_pointer_motion(struct comp_server *server, struct wlr_input_device *dev,
-	uint32_t time_msec, double dx, double dy, double dx_unaccel, double dy_unaccel);
+								 uint32_t time_msec, double dx, double dy, double dx_unaccel, double dy_unaccel);
 static void pointer_constraint_handle_commit(struct wl_listener *listener, void *data);
 static void begin_move(struct comp_server *server, struct comp_toplevel *view, bool swallow_left_release);
 static void begin_resize(struct comp_server *server, struct comp_toplevel *view, uint32_t edges);
@@ -109,35 +113,97 @@ static void layer_surface_try_keyboard_focus_click(struct comp_server *server, d
 static void track_input_device(struct comp_server *server, struct wlr_input_device *dev);
 static struct comp_tablet *comp_tablet_from_wlr(struct comp_server *server, struct wlr_tablet *wt);
 static struct comp_tablet_tool *tablet_tool_get_or_create(struct comp_server *srv, struct comp_tablet *tab,
-	struct wlr_tablet_tool *wtool);
+														  struct wlr_tablet_tool *wtool);
 static struct comp_output *comp_output_from_wlr(struct comp_server *server, struct wlr_output *wlr_out);
 
+/** Remove a listener link only when currently attached to a signal. */
+static void detach_listener_if_linked(struct wl_listener *listener)
+{
+	if (!listener)
+	{
+		return;
+	}
+	if (listener->link.prev && listener->link.next)
+	{
+		wl_list_remove(&listener->link);
+		wl_list_init(&listener->link);
+	}
+}
+
+/** Kept for teardown call-site stability; Xwayland is managed by satellite. */
+static void server_destroy_xwayland(struct comp_server *server)
+{
+	(void)server;
+}
+
+/** Detach server-owned global listeners before wlroots object/display teardown. */
+static void server_detach_global_listeners(struct comp_server *server)
+{
+	if (!server)
+	{
+		return;
+	}
+
+	detach_listener_if_linked(&server->backend_destroy);
+	detach_listener_if_linked(&server->new_output);
+	detach_listener_if_linked(&server->new_input);
+	detach_listener_if_linked(&server->xdg_shell_new_toplevel);
+	detach_listener_if_linked(&server->new_xdg_decoration);
+	detach_listener_if_linked(&server->layer_shell_new_surface);
+
+	detach_listener_if_linked(&server->cursor_motion);
+	detach_listener_if_linked(&server->cursor_motion_absolute);
+	detach_listener_if_linked(&server->cursor_button);
+	detach_listener_if_linked(&server->cursor_axis);
+	detach_listener_if_linked(&server->cursor_frame);
+	detach_listener_if_linked(&server->cursor_touch_down);
+	detach_listener_if_linked(&server->cursor_touch_up);
+	detach_listener_if_linked(&server->cursor_touch_motion);
+	detach_listener_if_linked(&server->cursor_touch_cancel);
+	detach_listener_if_linked(&server->cursor_touch_frame);
+	detach_listener_if_linked(&server->cursor_tablet_tool_axis);
+	detach_listener_if_linked(&server->cursor_tablet_tool_proximity);
+	detach_listener_if_linked(&server->cursor_tablet_tool_tip);
+	detach_listener_if_linked(&server->cursor_tablet_tool_button);
+
+	detach_listener_if_linked(&server->seat_request_cursor);
+	detach_listener_if_linked(&server->seat_request_set_selection);
+	detach_listener_if_linked(&server->seat_pointer_focus_change);
+	detach_listener_if_linked(&server->new_pointer_constraint);
+	detach_listener_if_linked(&server->pointer_constraint_commit);
+}
+
+/** Return the root wl_surface for an XDG or Xwayland toplevel, or NULL if unavailable. */
 static struct wlr_surface *toplevel_wlr_surface(const struct comp_toplevel *v)
 {
 	return v->xdg_toplevel ? v->xdg_toplevel->base->surface : NULL;
 }
 
+/** True when the toplevel has a mapped root surface. */
 static bool toplevel_surface_mapped(const struct comp_toplevel *v)
 {
 	struct wlr_surface *s = toplevel_wlr_surface(v);
 	return s && s->mapped;
 }
 
+/** True when the toplevel is initialized enough for compositor-driven configure requests. */
 static bool toplevel_surface_initialized(const struct comp_toplevel *v)
 {
 	return v->xdg_toplevel && v->xdg_toplevel->base->initialized;
 }
 
 static void toplevel_title_app_for_config(const struct comp_toplevel *v, const char **title_out,
-	const char **app_out)
+										  const char **app_out)
 {
 	*title_out = v->xdg_toplevel && v->xdg_toplevel->title ? v->xdg_toplevel->title : "";
 	*app_out = v->xdg_toplevel && v->xdg_toplevel->app_id ? v->xdg_toplevel->app_id : "";
 }
 
+/** Apply activation state using the correct backend path (XDG or Xwayland). */
 static void toplevel_set_activated(struct comp_toplevel *v, bool activated)
 {
-	if (v->xdg_toplevel) {
+	if (v->xdg_toplevel)
+	{
 		wlr_xdg_toplevel_set_activated(v->xdg_toplevel, activated);
 	}
 }
@@ -147,47 +213,197 @@ static void toplevel_arrange_tile(struct comp_toplevel *v, int layout_x, int lay
 {
 	(void)layout_x;
 	(void)layout_y;
-	if (v->xdg_toplevel) {
+	if (v->xdg_toplevel)
+	{
 		wlr_xdg_toplevel_set_size(v->xdg_toplevel, w, h);
 	}
 }
+
+/** Resolve the current cursor output workarea; falls back to output box or a safe default. */
 
 /** True after `wlr_backend_start` so shutdown hook runs only for a real session. */
 static bool compositor_session_active;
 /** Verbose XDG lifecycle logs (off by default). Enable with `STACKCOMP_DEBUG_XDG=1`. */
 static bool xdg_debug_logs_enabled;
+/** Optional append-only log target set by `--log-file`; NULL means stderr-only. */
+static FILE *stackcomp_log_file;
+/** Active startup log threshold used by our callback for explicit filtering. */
+static enum wlr_log_importance stackcomp_active_log_level = WLR_INFO;
 
+/** Map wlroots importance to an ordered rank for deterministic threshold checks. */
+static int stackcomp_log_level_rank(enum wlr_log_importance importance)
+{
+	switch (importance)
+	{
+	case WLR_ERROR:
+		return 1;
+	case WLR_INFO:
+		return 2;
+	case WLR_DEBUG:
+		return 3;
+	case WLR_SILENT:
+	default:
+		return 0;
+	}
+}
+
+/** Close the optional startup log file (registered via atexit). */
+static void stackcomp_log_close_file(void)
+{
+	if (stackcomp_log_file)
+	{
+		fclose(stackcomp_log_file);
+		stackcomp_log_file = NULL;
+	}
+}
+
+/** Map wlroots log importance to a short stable label used in our log prefix. */
+static const char *stackcomp_log_level_name(enum wlr_log_importance importance)
+{
+	switch (importance)
+	{
+	case WLR_ERROR:
+		return "ERROR";
+	case WLR_INFO:
+		return "INFO";
+	case WLR_DEBUG:
+		return "DEBUG";
+	case WLR_SILENT:
+	default:
+		return "SILENT";
+	}
+}
+
+/**
+ * wlroots logger callback used for both stderr and optional file logging.
+ *
+ * The callback is invoked with a single `va_list`; we must copy it before each
+ * sink write because consuming a `va_list` is destructive.
+ */
+static void stackcomp_log_callback(enum wlr_log_importance importance, const char *fmt, va_list args)
+{
+	const int active = stackcomp_log_level_rank(stackcomp_active_log_level);
+	const int msg = stackcomp_log_level_rank(importance);
+	if (active == 0 || msg > active)
+	{
+		return;
+	}
+
+	char ts[32] = "";
+	time_t now = time(NULL);
+	struct tm tm_now;
+	if (localtime_r(&now, &tm_now))
+	{
+		strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_now);
+	}
+	const char *lvl = stackcomp_log_level_name(importance);
+
+	/* First sink: stderr, always active for local debugging and systemd journals. */
+	va_list a_stderr;
+	va_copy(a_stderr, args);
+	if (ts[0])
+	{
+		fprintf(stderr, "[%s] %s: ", ts, lvl);
+	}
+	else
+	{
+		fprintf(stderr, "%s: ", lvl);
+	}
+	vfprintf(stderr, fmt, a_stderr);
+	fputc('\n', stderr);
+	fflush(stderr);
+	va_end(a_stderr);
+
+	if (!stackcomp_log_file)
+	{
+		return;
+	}
+	/* Second sink: user-selected file path from `--log-file`. */
+	va_list a_file;
+	va_copy(a_file, args);
+	if (ts[0])
+	{
+		fprintf(stackcomp_log_file, "[%s] %s: ", ts, lvl);
+	}
+	else
+	{
+		fprintf(stackcomp_log_file, "%s: ", lvl);
+	}
+	vfprintf(stackcomp_log_file, fmt, a_file);
+	fputc('\n', stackcomp_log_file);
+	fflush(stackcomp_log_file);
+	va_end(a_file);
+}
+
+/** Parse user-facing log level tokens into wlroots importance values. */
+static bool stackcomp_parse_log_level(const char *s, enum wlr_log_importance *out)
+{
+	if (!s || !out)
+	{
+		return false;
+	}
+	if (!strcasecmp(s, "silent") || !strcasecmp(s, "quiet") || !strcasecmp(s, "off"))
+	{
+		*out = WLR_SILENT;
+		return true;
+	}
+	if (!strcasecmp(s, "error") || !strcasecmp(s, "err"))
+	{
+		*out = WLR_ERROR;
+		return true;
+	}
+	if (!strcasecmp(s, "info"))
+	{
+		*out = WLR_INFO;
+		return true;
+	}
+	if (!strcasecmp(s, "debug"))
+	{
+		*out = WLR_DEBUG;
+		return true;
+	}
+	return false;
+}
+
+/** Optional verbose lifecycle trace for XDG state transitions. */
 static void log_xdg_state(const char *tag, struct comp_toplevel *view)
 {
-	if (!xdg_debug_logs_enabled || !view || !view->xdg_toplevel || !view->xdg_toplevel->base) {
+	if (!xdg_debug_logs_enabled || !view || !view->xdg_toplevel || !view->xdg_toplevel->base)
+	{
 		return;
 	}
 	struct wlr_xdg_surface *xdg = view->xdg_toplevel->base;
 	wlr_log(WLR_INFO,
-		"xdgdbg:%s app_id='%s' title='%s' mapped=%d initialized=%d initial_commit=%d layout=%d",
-		tag,
-		view->xdg_toplevel->app_id ? view->xdg_toplevel->app_id : "",
-		view->xdg_toplevel->title ? view->xdg_toplevel->title : "",
-		xdg->surface->mapped, xdg->initialized, xdg->initial_commit, (int)view->server->layout);
+			"xdgdbg:%s app_id='%s' title='%s' mapped=%d initialized=%d initial_commit=%d layout=%d",
+			tag,
+			view->xdg_toplevel->app_id ? view->xdg_toplevel->app_id : "",
+			view->xdg_toplevel->title ? view->xdg_toplevel->title : "",
+			xdg->surface->mapped, xdg->initialized, xdg->initial_commit, (int)view->server->layout);
 }
 
+/** Find compositor output wrapper by wlroots output pointer. */
 static struct comp_output *comp_output_from_wlr(struct comp_server *server, struct wlr_output *wlr_out)
 {
-	if (!wlr_out) {
+	if (!wlr_out)
+	{
 		return NULL;
 	}
 	struct comp_output *o;
-	wl_list_for_each(o, &server->outputs, link) {
-		if (o->wlr_output == wlr_out) {
+	wl_list_for_each(o, &server->outputs, link)
+	{
+		if (o->wlr_output == wlr_out)
+		{
 			return o;
 		}
 	}
 	return NULL;
 }
 
+/** Push current title/app_id/activation metadata to foreign-toplevel clients. */
 static void foreign_toplevel_refresh(struct comp_toplevel *view)
 {
-	if (!view || !view->foreign_toplevel) {
+	if (!view || !view->foreign_toplevel)
+	{
 		return;
 	}
 	const char *title = "";
@@ -196,14 +412,16 @@ static void foreign_toplevel_refresh(struct comp_toplevel *view)
 	wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel, title);
 	wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel, app_id);
 	const bool activated = view->server->focused_toplevel == view && toplevel_surface_mapped(view) &&
-		view->workspace == view->server->current_workspace;
+						   view->workspace == view->server->current_workspace;
 	wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, activated);
 }
 
+/** Refresh foreign-toplevel metadata for all known toplevels. */
 static void foreign_toplevel_sync_all(struct comp_server *server)
 {
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
 		foreign_toplevel_refresh(t);
 	}
 }
@@ -214,6 +432,7 @@ static uint64_t timespec_to_ns(const struct timespec *ts)
 	return (uint64_t)ts->tv_sec * 1000000000ull + (uint64_t)ts->tv_nsec;
 }
 
+/** True when layout animation is enabled in config and the server has config loaded. */
 static bool layout_anim_effective(const struct comp_server *server)
 {
 	return server->config && server->config->layout_anim_enabled;
@@ -222,47 +441,59 @@ static bool layout_anim_effective(const struct comp_server *server)
 /** Returns true if any tiled view still needs another frame to reach its target. */
 static bool layout_anim_tick(struct comp_server *server, const struct timespec *now)
 {
-	if (server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL) {
+	if (server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL)
+	{
 		return false;
 	}
-	if (!layout_anim_effective(server)) {
+	if (!layout_anim_effective(server))
+	{
 		return false;
 	}
 	const double lambda = server->config->layout_anim_lambda;
 	const double eps = server->config->layout_anim_epsilon;
 	const uint64_t now_ns = timespec_to_ns(now);
-	if (server->layout_anim_last_ns == 0) {
+	if (server->layout_anim_last_ns == 0)
+	{
 		server->layout_anim_last_ns = now_ns;
 		return false;
 	}
 	double dt = (double)(now_ns - server->layout_anim_last_ns) / 1e9;
 	server->layout_anim_last_ns = now_ns;
-	if (dt <= 0.0) {
+	if (dt <= 0.0)
+	{
 		return false;
 	}
-	if (dt > 0.1) {
+	if (dt > 0.1)
+	{
 		dt = 0.1;
 	}
 	const double k = 1.0 - exp(-lambda * dt);
 	bool any = false;
 	struct comp_toplevel *v;
-	wl_list_for_each(v, &server->toplevels, link) {
-		if (!v->layout_anim_tracked) {
+	wl_list_for_each(v, &server->toplevels, link)
+	{
+		if (!v->layout_anim_tracked)
+		{
 			continue;
 		}
-		if (v->workspace != server->current_workspace) {
+		if (v->workspace != server->current_workspace)
+		{
 			continue;
 		}
-		if (!toplevel_surface_mapped(v) || v->tile_float) {
+		if (!toplevel_surface_mapped(v) || v->tile_float)
+		{
 			continue;
 		}
-		if (server->grab == COMP_GRAB_MOVE && v == server->grabbed_toplevel) {
+		if (server->grab == COMP_GRAB_MOVE && v == server->grabbed_toplevel)
+		{
 			continue;
 		}
 		const double dx = (double)v->layout_tgt_x - v->layout_anim_x;
 		const double dy = (double)v->layout_tgt_y - v->layout_anim_y;
-		if (fabs(dx) < eps && fabs(dy) < eps) {
-			if (v->scene_tree->node.x != v->layout_tgt_x || v->scene_tree->node.y != v->layout_tgt_y) {
+		if (fabs(dx) < eps && fabs(dy) < eps)
+		{
+			if (v->scene_tree->node.x != v->layout_tgt_x || v->scene_tree->node.y != v->layout_tgt_y)
+			{
 				wlr_scene_node_set_position(&v->scene_tree->node, v->layout_tgt_x, v->layout_tgt_y);
 				any = true;
 			}
@@ -283,28 +514,36 @@ static bool layout_anim_tick(struct comp_server *server, const struct timespec *
 /** After targets change, ensure outputs repaint even if no client buffer update occurs yet. */
 static void layout_anim_kick_outputs(struct comp_server *server)
 {
-	if (server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL) {
+	if (server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL)
+	{
 		return;
 	}
-	if (!layout_anim_effective(server)) {
+	if (!layout_anim_effective(server))
+	{
 		return;
 	}
 	const double eps = server->config->layout_anim_epsilon;
 	struct comp_toplevel *v;
-	wl_list_for_each(v, &server->toplevels, link) {
-		if (!v->layout_anim_tracked || !toplevel_surface_mapped(v) || v->tile_float) {
+	wl_list_for_each(v, &server->toplevels, link)
+	{
+		if (!v->layout_anim_tracked || !toplevel_surface_mapped(v) || v->tile_float)
+		{
 			continue;
 		}
-		if (v->workspace != server->current_workspace) {
+		if (v->workspace != server->current_workspace)
+		{
 			continue;
 		}
-		if (server->grab == COMP_GRAB_MOVE && v == server->grabbed_toplevel) {
+		if (server->grab == COMP_GRAB_MOVE && v == server->grabbed_toplevel)
+		{
 			continue;
 		}
 		if (fabs((double)v->layout_tgt_x - v->layout_anim_x) > eps ||
-		    fabs((double)v->layout_tgt_y - v->layout_anim_y) > eps) {
+			fabs((double)v->layout_tgt_y - v->layout_anim_y) > eps)
+		{
 			struct comp_output *o;
-			wl_list_for_each(o, &server->outputs, link) {
+			wl_list_for_each(o, &server->outputs, link)
+			{
 				wlr_output_schedule_frame(o->wlr_output);
 			}
 			return;
@@ -314,10 +553,11 @@ static void layout_anim_kick_outputs(struct comp_server *server)
 
 /* Hit surface under (lx, ly); sx/sy outputs are surface-local coords when non-NULL. */
 static struct wlr_surface *surface_at(struct comp_server *server, double lx, double ly,
-	double *sx, double *sy)
+									  double *sx, double *sy)
 {
 	struct wlr_scene_node *node = wlr_scene_node_at(&server->scene->tree.node, lx, ly, sx, sy);
-	if (!node || node->type != WLR_SCENE_NODE_BUFFER) {
+	if (!node || node->type != WLR_SCENE_NODE_BUFFER)
+	{
 		return NULL;
 	}
 	struct wlr_scene_buffer *buf = wlr_scene_buffer_from_node(node);
@@ -325,22 +565,27 @@ static struct wlr_surface *surface_at(struct comp_server *server, double lx, dou
 	return ss ? ss->surface : NULL;
 }
 
+/** Hit-test and resolve the compositor toplevel at layout coordinates. */
 static struct comp_toplevel *toplevel_at(struct comp_server *server, double lx, double ly, double *sx, double *sy)
 {
 	struct wlr_surface *surf = surface_at(server, lx, ly, sx, sy);
-	if (!surf) {
+	if (!surf)
+	{
 		return NULL;
 	}
 	struct wlr_surface *root = wlr_surface_get_root_surface(surf);
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
-		if (t->xdg_toplevel && t->xdg_toplevel->base->surface == root) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
+		if (t->xdg_toplevel && t->xdg_toplevel->base->surface == root)
+		{
 			return t;
 		}
 	}
 	return NULL;
 }
 
+/** Per-output frame handler: drive scene commit and synchronized layout animation repaint. */
 static void output_frame(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -353,14 +598,18 @@ static void output_frame(struct wl_listener *listener, void *data)
 	const bool run_layout_anim = clock_out && output->wlr_output == clock_out;
 	const bool layout_anim = run_layout_anim && layout_anim_tick(server, &now);
 
-	if (!wlr_scene_output_needs_frame(output->scene_output) && !layout_anim) {
+	if (!wlr_scene_output_needs_frame(output->scene_output) && !layout_anim)
+	{
 		return;
 	}
 
-	if (!wlr_scene_output_commit(output->scene_output, NULL)) {
-		if (layout_anim) {
+	if (!wlr_scene_output_commit(output->scene_output, NULL))
+	{
+		if (layout_anim)
+		{
 			struct comp_output *o;
-			wl_list_for_each(o, &server->outputs, link) {
+			wl_list_for_each(o, &server->outputs, link)
+			{
 				wlr_output_schedule_frame(o->wlr_output);
 			}
 		}
@@ -368,23 +617,29 @@ static void output_frame(struct wl_listener *listener, void *data)
 	}
 	wlr_scene_output_send_frame_done(output->scene_output, &now);
 
-	if (layout_anim) {
+	if (layout_anim)
+	{
 		struct comp_output *o;
-		wl_list_for_each(o, &server->outputs, link) {
+		wl_list_for_each(o, &server->outputs, link)
+		{
 			wlr_output_schedule_frame(o->wlr_output);
 		}
 	}
 }
 
+/** Choose primary output (cursor output first, then first registered output). */
 static struct wlr_output *primary_wlr_output(struct comp_server *server)
 {
-	if (wl_list_empty(&server->outputs)) {
+	if (wl_list_empty(&server->outputs))
+	{
 		return NULL;
 	}
-	if (server->cursor) {
+	if (server->cursor)
+	{
 		struct wlr_output *at = wlr_output_layout_output_at(server->output_layout, server->cursor->x,
-			server->cursor->y);
-		if (at) {
+															server->cursor->y);
+		if (at)
+		{
 			return at;
 		}
 	}
@@ -392,6 +647,7 @@ static struct wlr_output *primary_wlr_output(struct comp_server *server)
 	return co->wlr_output;
 }
 
+/** Recompute layer-shell layout and per-output usable workareas. */
 static void layer_shell_arrange(struct comp_server *server)
 {
 	static const enum zwlr_layer_shell_v1_layer layer_order[] = {
@@ -401,25 +657,31 @@ static void layer_shell_arrange(struct comp_server *server)
 		ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
 	};
 	struct comp_output *out;
-	wl_list_for_each(out, &server->outputs, link) {
+	wl_list_for_each(out, &server->outputs, link)
+	{
 		struct wlr_box full;
 		wlr_output_layout_get_box(server->output_layout, out->wlr_output, &full);
 		struct wlr_box usable = full;
-		for (size_t li = 0; li < sizeof(layer_order) / sizeof(layer_order[0]); li++) {
+		for (size_t li = 0; li < sizeof(layer_order) / sizeof(layer_order[0]); li++)
+		{
 			struct comp_layer *layer;
-			wl_list_for_each(layer, &server->layers, link) {
-				if (layer->layer_surface->output != out->wlr_output) {
+			wl_list_for_each(layer, &server->layers, link)
+			{
+				if (layer->layer_surface->output != out->wlr_output)
+				{
 					continue;
 				}
 				/* Before the first ack, `current` may not match the client's layer yet. */
 				const enum zwlr_layer_shell_v1_layer lyr = layer->layer_surface->configured
-					? layer->layer_surface->current.layer
-					: layer->layer_surface->pending.layer;
-				if (lyr != layer_order[li]) {
+															   ? layer->layer_surface->current.layer
+															   : layer->layer_surface->pending.layer;
+				if (lyr != layer_order[li])
+				{
 					continue;
 				}
 				/* wlroots sets initialized on first surface commit; configure before that asserts. */
-				if (!layer->layer_surface->initialized) {
+				if (!layer->layer_surface->initialized)
+				{
 					continue;
 				}
 				/* Must configure unmapped surfaces too: clients map only after the first configure. */
@@ -430,11 +692,13 @@ static void layer_shell_arrange(struct comp_server *server)
 	}
 	server_workspace_apply_visibility(server);
 	if ((server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) &&
-	    server->grab != COMP_GRAB_MOVE) {
+		server->grab != COMP_GRAB_MOVE)
+	{
 		server_arrange_toplevels(server);
 	}
 }
 
+/** layer-shell map callback: trigger arrange. */
 static void comp_layer_map(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -442,6 +706,7 @@ static void comp_layer_map(struct wl_listener *listener, void *data)
 	layer_shell_arrange(layer->server);
 }
 
+/** layer-shell unmap callback: trigger arrange. */
 static void comp_layer_unmap(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -449,23 +714,28 @@ static void comp_layer_unmap(struct wl_listener *listener, void *data)
 	layer_shell_arrange(layer->server);
 }
 
+/** layer-shell commit callback: re-arrange on initial/pending commits. */
 static void comp_layer_commit(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_layer *layer = wl_container_of(listener, layer, commit);
-	if (layer->layer_surface->initial_commit) {
+	if (layer->layer_surface->initial_commit)
+	{
 		layer_shell_arrange(layer->server);
 		return;
 	}
-	if (layer->layer_surface->pending.committed) {
+	if (layer->layer_surface->pending.committed)
+	{
 		layer_shell_arrange(layer->server);
 	}
 }
 
+/** Unconstrain popup geometry against the output workarea of its parent toplevel. */
 static void popup_unconstrain(struct comp_popup *popup)
 {
 	struct comp_toplevel *view = popup->view;
-	if (!view->xdg_toplevel || !view->scene_tree) {
+	if (!view->xdg_toplevel || !view->scene_tree)
+	{
 		return;
 	}
 	struct wlr_xdg_surface *toplevel = view->xdg_toplevel->base;
@@ -481,24 +751,30 @@ static void popup_unconstrain(struct comp_popup *popup)
 		.width = usable.width,
 		.height = usable.height,
 	};
-	if (popup->wlr_popup->base->initialized) {
+	if (popup->wlr_popup->base->initialized)
+	{
 		wlr_xdg_popup_unconstrain_from_box(popup->wlr_popup, &box);
-	} else if (xdg_debug_logs_enabled) {
+	}
+	else if (xdg_debug_logs_enabled)
+	{
 		wlr_log(WLR_INFO, "xdgdbg:toplevel-popup skip unconstrain before initialized");
 	}
 }
 
+/** First popup commit callback: unconstrain once base is initialized. */
 static void popup_handle_commit(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_popup *popup = wl_container_of(listener, popup, commit);
-	if (popup->wlr_popup->base->initial_commit) {
+	if (popup->wlr_popup->base->initial_commit)
+	{
 		popup_unconstrain(popup);
 		wl_list_remove(&popup->commit.link);
 		popup->commit.notify = NULL;
 	}
 }
 
+/** Popup reposition callback: recompute unconstrain box. */
 static void popup_handle_reposition(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -508,52 +784,63 @@ static void popup_handle_reposition(struct wl_listener *listener, void *data)
 
 static void popup_create(struct comp_toplevel *view, struct wlr_xdg_popup *wlr_popup);
 
+/** Nested popup callback: create child popup scene node. */
 static void popup_handle_new_popup(struct wl_listener *listener, void *data)
 {
 	struct comp_popup *popup = wl_container_of(listener, popup, new_popup);
 	popup_create(popup->view, data);
 }
 
+/** Popup destroy callback: detach listeners and free popup tracking state. */
 static void popup_handle_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_popup *popup = wl_container_of(listener, popup, destroy);
 	wl_list_remove(&popup->destroy.link);
 	wl_list_remove(&popup->new_popup.link);
-	if (popup->commit.notify) {
+	if (popup->commit.notify)
+	{
 		wl_list_remove(&popup->commit.link);
 	}
 	wl_list_remove(&popup->reposition.link);
 	free(popup);
 }
 
+/** Create scene integration and listeners for one xdg_popup subtree. */
 static void popup_create(struct comp_toplevel *view, struct wlr_xdg_popup *wlr_popup)
 {
 	struct wlr_xdg_surface *parent_xdg = wlr_xdg_surface_try_from_wlr_surface(wlr_popup->parent);
-	if (!parent_xdg) {
+	if (!parent_xdg)
+	{
 		return;
 	}
 
 	struct comp_popup *popup = calloc(1, sizeof(*popup));
-	if (!popup) {
+	if (!popup)
+	{
 		return;
 	}
 	popup->view = view;
 	popup->wlr_popup = wlr_popup;
 
 	struct wlr_scene_tree *parent_tree;
-	if (parent_xdg->role == WLR_XDG_SURFACE_ROLE_POPUP) {
+	if (parent_xdg->role == WLR_XDG_SURFACE_ROLE_POPUP)
+	{
 		parent_tree = parent_xdg->surface->data;
-		if (!parent_tree) {
+		if (!parent_tree)
+		{
 			free(popup);
 			return;
 		}
-	} else {
+	}
+	else
+	{
 		parent_tree = view->scene_tree;
 	}
 
 	struct wlr_scene_tree *tree = wlr_scene_xdg_surface_create(parent_tree, wlr_popup->base);
-	if (!tree) {
+	if (!tree)
+	{
 		free(popup);
 		return;
 	}
@@ -572,32 +859,41 @@ static void popup_create(struct comp_toplevel *view, struct wlr_xdg_popup *wlr_p
 	popup_unconstrain(popup);
 }
 
+/** toplevel new_popup callback: attach popup to this toplevel. */
 static void toplevel_handle_new_popup(struct wl_listener *listener, void *data)
 {
 	struct comp_toplevel *view = wl_container_of(listener, view, new_popup);
 	popup_create(view, data);
 }
 
+/** Layer-surface popup callback: unconstrain and attach popup scene content. */
 static void comp_layer_new_popup(struct wl_listener *listener, void *data)
 {
 	struct comp_layer *layer = wl_container_of(listener, layer, new_popup);
 	struct wlr_xdg_popup *popup = data;
 	struct comp_output *out = comp_output_from_wlr(layer->server, layer->layer_surface->output);
 	struct wlr_box box;
-	if (out) {
+	if (out)
+	{
 		box = out->layer_workarea;
-	} else {
+	}
+	else
+	{
 		wlr_output_layout_get_box(layer->server->output_layout, layer->layer_surface->output, &box);
 	}
 	/* wlroots 0.19: unconstrain may schedule configure; popup base must be initialized. */
-	if (popup->base && popup->base->initialized) {
+	if (popup->base && popup->base->initialized)
+	{
 		wlr_xdg_popup_unconstrain_from_box(popup, &box);
-	} else if (xdg_debug_logs_enabled) {
+	}
+	else if (xdg_debug_logs_enabled)
+	{
 		wlr_log(WLR_INFO, "xdgdbg:layer-popup skip unconstrain before initialized");
 	}
 	wlr_scene_xdg_surface_create(layer->scene_layer->tree, popup->base);
 }
 
+/** layer-shell destroy callback: remove listeners/list entry and free wrapper. */
 static void comp_layer_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -611,34 +907,40 @@ static void comp_layer_destroy(struct wl_listener *listener, void *data)
 	free(layer);
 }
 
+/** new layer-shell surface callback: create wrapper, scene node, and listeners. */
 static void layer_shell_new_surface(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, layer_shell_new_surface);
 	struct wlr_layer_surface_v1 *wlr_layer = data;
 
-	if (wl_list_empty(&server->outputs)) {
+	if (wl_list_empty(&server->outputs))
+	{
 		wlr_layer_surface_v1_destroy(wlr_layer);
 		return;
 	}
-	if (!wlr_layer->output) {
+	if (!wlr_layer->output)
+	{
 		wlr_layer->output = primary_wlr_output(server);
 	}
 
 	const enum zwlr_layer_shell_v1_layer lyr = wlr_layer->pending.layer;
-	if ((size_t)lyr >= sizeof(server->layer_trees) / sizeof(server->layer_trees[0])) {
+	if ((size_t)lyr >= sizeof(server->layer_trees) / sizeof(server->layer_trees[0]))
+	{
 		wlr_layer_surface_v1_destroy(wlr_layer);
 		return;
 	}
 
 	struct comp_layer *layer = calloc(1, sizeof(*layer));
-	if (!layer) {
+	if (!layer)
+	{
 		wlr_layer_surface_v1_destroy(wlr_layer);
 		return;
 	}
 	layer->server = server;
 	layer->layer_surface = wlr_layer;
 	layer->scene_layer = wlr_scene_layer_surface_v1_create(server->layer_trees[lyr], wlr_layer);
-	if (!layer->scene_layer) {
+	if (!layer->scene_layer)
+	{
 		free(layer);
 		wlr_layer_surface_v1_destroy(wlr_layer);
 		return;
@@ -658,6 +960,7 @@ static void layer_shell_new_surface(struct wl_listener *listener, void *data)
 	wl_list_insert(&server->layers, &layer->link);
 }
 
+/** Output commit callback: update layer-shell arrangement after output state changes. */
 static void output_commit(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -666,13 +969,16 @@ static void output_commit(struct wl_listener *listener, void *data)
 	layer_shell_arrange(srv);
 }
 
+/** Output destroy callback: leave foreign outputs, detach scene/output layout, and free state. */
 static void output_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_output *output = wl_container_of(listener, output, destroy);
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &output->server->toplevels, link) {
-		if (t->foreign_toplevel) {
+	wl_list_for_each(t, &output->server->toplevels, link)
+	{
+		if (t->foreign_toplevel)
+		{
 			wlr_foreign_toplevel_handle_v1_output_leave(t->foreign_toplevel, output->wlr_output);
 		}
 	}
@@ -687,6 +993,7 @@ static void output_destroy(struct wl_listener *listener, void *data)
 	free(output);
 }
 
+/** new_output callback: initialize output mode, scene output, listeners, and protocol state. */
 static void server_new_output(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, new_output);
@@ -702,7 +1009,8 @@ static void server_new_output(struct wl_listener *listener, void *data)
 	wlr_output_state_init(&state);
 	wlr_output_state_set_enabled(&state, true);
 	struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
-	if (mode) {
+	if (mode)
+	{
 		wlr_output_state_set_mode(&state, mode);
 	}
 	wlr_output_commit_state(wlr_output, &state);
@@ -713,7 +1021,8 @@ static void server_new_output(struct wl_listener *listener, void *data)
 	wlr_scene_output_layout_add_output(server->scene_layout, lout, output->scene_output);
 
 	float scale = wlr_output->scale;
-	if (!wlr_xcursor_manager_load(server->cursor_mgr, scale)) {
+	if (!wlr_xcursor_manager_load(server->cursor_mgr, scale))
+	{
 		wlr_log(WLR_ERROR, "Cannot load XCursor theme for scale %f", scale);
 	}
 
@@ -725,8 +1034,10 @@ static void server_new_output(struct wl_listener *listener, void *data)
 	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
 	wl_list_insert(&server->outputs, &output->link);
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
-		if (t->foreign_toplevel && toplevel_surface_mapped(t)) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
+		if (t->foreign_toplevel && toplevel_surface_mapped(t))
+		{
 			wlr_foreign_toplevel_handle_v1_output_enter(t->foreign_toplevel, wlr_output);
 		}
 	}
@@ -737,9 +1048,11 @@ static void server_new_output(struct wl_listener *listener, void *data)
 
 static uint32_t tile_user_key_gen;
 
+/** Re-evaluate tile rule results (float/order) for one toplevel from current config. */
 static void toplevel_refresh_tile_props(struct comp_toplevel *view)
 {
-	if (!view->server->config) {
+	if (!view->server->config)
+	{
 		view->tile_float = false;
 		view->tile_order = 0;
 		return;
@@ -750,14 +1063,17 @@ static void toplevel_refresh_tile_props(struct comp_toplevel *view)
 	comp_config_tile_props_for_toplevel(view->server->config, app_id, title, &view->tile_float, &view->tile_order);
 }
 
+/** Re-evaluate tile rule results for all toplevels. */
 static void server_refresh_all_tile_props(struct comp_server *server)
 {
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
 		toplevel_refresh_tile_props(t);
 	}
 }
 
+/** xdg-decoration destroy callback: clear listeners and detach decoration pointer. */
 static void xdg_decoration_handle_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -767,6 +1083,7 @@ static void xdg_decoration_handle_destroy(struct wl_listener *listener, void *da
 	view->xdg_decoration = NULL;
 }
 
+/** xdg-decoration request-mode callback: re-apply compositor policy. */
 static void xdg_decoration_handle_request_mode(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -774,59 +1091,77 @@ static void xdg_decoration_handle_request_mode(struct wl_listener *listener, voi
 	toplevel_apply_decoration_mode(view);
 }
 
+/** Select and push xdg-decoration mode based on layout, float state, and rules. */
 static void toplevel_apply_decoration_mode(struct comp_toplevel *view)
 {
-	if (!view->xdg_toplevel || !view->xdg_decoration) {
+	if (!view->xdg_toplevel || !view->xdg_decoration)
+	{
 		return;
 	}
 	/* wlr_xdg_toplevel_decoration_v1_set_mode schedules configure; wlroots asserts if !initialized. */
-	if (!view->xdg_toplevel->base->initialized) {
+	if (!view->xdg_toplevel->base->initialized)
+	{
 		return;
 	}
 	struct comp_server *server = view->server;
 	enum wlr_xdg_toplevel_decoration_v1_mode mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
-	if (server->layout == COMP_LAYOUT_STACK) {
+	if (server->layout == COMP_LAYOUT_STACK)
+	{
 		mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
-	} else if (view->tile_float) {
+	}
+	else if (view->tile_float)
+	{
 		mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
-	} else if (comp_config_decoration_prefer_server_side_tile_scroll(server->config, view->xdg_toplevel->app_id,
-			 view->xdg_toplevel->title)) {
+	}
+	else if (comp_config_decoration_prefer_server_side_tile_scroll(server->config, view->xdg_toplevel->app_id,
+																   view->xdg_toplevel->title))
+	{
 		mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
-	} else {
+	}
+	else
+	{
 		mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
 	}
 	/* Re-sending the same mode on every commit causes configure storms (X11 via satellite). */
 	if (view->xdg_decoration->current.mode == mode &&
-	    view->xdg_decoration->scheduled_mode == mode) {
+		view->xdg_decoration->scheduled_mode == mode)
+	{
 		return;
 	}
 	wlr_xdg_toplevel_decoration_v1_set_mode(view->xdg_decoration, mode);
 }
 
+/** Re-apply xdg-decoration policy to every toplevel. */
 void server_sync_xdg_decorations(struct comp_server *server)
 {
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
 		toplevel_apply_decoration_mode(t);
 	}
 }
 
+/** Attach a new xdg-decoration object to its toplevel and apply current policy immediately. */
 static void xdg_new_toplevel_decoration(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, new_xdg_decoration);
 	struct wlr_xdg_toplevel_decoration_v1 *deco = data;
 	struct comp_toplevel *view = NULL;
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
-		if (t->xdg_toplevel == deco->toplevel) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
+		if (t->xdg_toplevel == deco->toplevel)
+		{
 			view = t;
 			break;
 		}
 	}
-	if (!view) {
+	if (!view)
+	{
 		return;
 	}
-	if (view->xdg_decoration) {
+	if (view->xdg_decoration)
+	{
 		wl_list_remove(&view->xdg_decoration_destroy.link);
 		wl_list_remove(&view->xdg_decoration_request_mode.link);
 		view->xdg_decoration = NULL;
@@ -839,78 +1174,94 @@ static void xdg_new_toplevel_decoration(struct wl_listener *listener, void *data
 	toplevel_apply_decoration_mode(view);
 }
 
+/** Refresh tile/decor/foreign metadata when the visible title changes. */
 static void toplevel_handle_set_title(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, set_title);
 	toplevel_refresh_tile_props(view);
 	if ((view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL) &&
-	    toplevel_surface_mapped(view)) {
+		toplevel_surface_mapped(view))
+	{
 		server_arrange_toplevels(view->server);
 	}
 	server_sync_xdg_decorations(view->server);
 	foreign_toplevel_refresh(view);
 }
 
+/** Refresh tile/decor/foreign metadata when app_id changes. */
 static void toplevel_handle_set_app_id(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, set_app_id);
 	toplevel_refresh_tile_props(view);
 	if ((view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL) &&
-	    toplevel_surface_mapped(view)) {
+		toplevel_surface_mapped(view))
+	{
 		server_arrange_toplevels(view->server);
 	}
 	server_sync_xdg_decorations(view->server);
 	foreign_toplevel_refresh(view);
 }
 
+/** Handle foreign-toplevel activate requests (bars/task switchers) with seat/workspace validation. */
 static void foreign_toplevel_handle_request_activate(struct wl_listener *listener, void *data)
 {
 	struct comp_toplevel *view = wl_container_of(listener, view, foreign_request_activate);
 	struct wlr_foreign_toplevel_handle_v1_activated_event *ev = data;
-	if (!view || !view->xdg_toplevel || !toplevel_surface_mapped(view)) {
+	if (!view || !view->xdg_toplevel || !toplevel_surface_mapped(view))
+	{
 		return;
 	}
-	if (ev && ev->seat && ev->seat != view->server->seat) {
+	if (ev && ev->seat && ev->seat != view->server->seat)
+	{
 		return;
 	}
-	if (view->workspace != view->server->current_workspace) {
+	if (view->workspace != view->server->current_workspace)
+	{
 		server_workspace_go(view->server, view->workspace);
 	}
 	focus_toplevel(view->server, view);
 	foreign_toplevel_sync_all(view->server);
 }
 
+/** Handle foreign-toplevel close requests for Wayland and Xwayland clients. */
 static void foreign_toplevel_handle_request_close(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, foreign_request_close);
-	if (!view || !view->xdg_toplevel) {
+	if (!view || !view->xdg_toplevel)
+	{
 		return;
 	}
 	wlr_xdg_toplevel_send_close(view->xdg_toplevel);
 }
 
+/** Sort helper for tiled views: explicit rule order first, stable user key second. */
 static int cmp_toplevel_tile_order(const void *va, const void *vb)
 {
 	const struct comp_toplevel *a = *(const struct comp_toplevel *const *)va;
 	const struct comp_toplevel *b = *(const struct comp_toplevel *const *)vb;
-	if (a->tile_order < b->tile_order) {
+	if (a->tile_order < b->tile_order)
+	{
 		return -1;
 	}
-	if (a->tile_order > b->tile_order) {
+	if (a->tile_order > b->tile_order)
+	{
 		return 1;
 	}
-	if (a->tile_user_key < b->tile_user_key) {
+	if (a->tile_user_key < b->tile_user_key)
+	{
 		return -1;
 	}
-	if (a->tile_user_key > b->tile_user_key) {
+	if (a->tile_user_key > b->tile_user_key)
+	{
 		return 1;
 	}
 	return 0;
 }
 
+/** Swap both tile tie-breakers so two windows exchange their position in tile order. */
 static void tile_swap_sort_keys(struct comp_toplevel *a, struct comp_toplevel *b)
 {
 	uint32_t k = a->tile_user_key;
@@ -927,28 +1278,36 @@ static struct comp_toplevel **tile_sorted_views(struct comp_server *server, size
 	*n_out = 0;
 	size_t n_tile = 0;
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
-		if (!toplevel_surface_mapped(t) || t->tile_float) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
+		if (!toplevel_surface_mapped(t) || t->tile_float)
+		{
 			continue;
 		}
-		if (t->workspace != server->current_workspace) {
+		if (t->workspace != server->current_workspace)
+		{
 			continue;
 		}
 		n_tile++;
 	}
-	if (n_tile == 0) {
+	if (n_tile == 0)
+	{
 		return NULL;
 	}
 	struct comp_toplevel **arr = calloc(n_tile, sizeof(*arr));
-	if (!arr) {
+	if (!arr)
+	{
 		return NULL;
 	}
 	size_t i = 0;
-	wl_list_for_each(t, &server->toplevels, link) {
-		if (!toplevel_surface_mapped(t) || t->tile_float) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
+		if (!toplevel_surface_mapped(t) || t->tile_float)
+		{
 			continue;
 		}
-		if (t->workspace != server->current_workspace) {
+		if (t->workspace != server->current_workspace)
+		{
 			continue;
 		}
 		arr[i++] = t;
@@ -958,10 +1317,13 @@ static struct comp_toplevel **tile_sorted_views(struct comp_server *server, size
 	return arr;
 }
 
+/** Return index of `v` in sorted view array, or -1 when not present. */
 static int tile_sorted_index(struct comp_toplevel **arr, size_t n, struct comp_toplevel *v)
 {
-	for (size_t i = 0; i < n; i++) {
-		if (arr[i] == v) {
+	for (size_t i = 0; i < n; i++)
+	{
+		if (arr[i] == v)
+		{
 			return (int)i;
 		}
 	}
@@ -972,15 +1334,18 @@ static int tile_sorted_index(struct comp_toplevel **arr, size_t n, struct comp_t
 static struct comp_output *toplevel_tile_output(struct comp_toplevel *t)
 {
 	struct comp_server *server = t->server;
-	if (!toplevel_surface_mapped(t)) {
+	if (!toplevel_surface_mapped(t))
+	{
 		return comp_output_from_wlr(server, primary_wlr_output(server));
 	}
 	const struct wlr_box *geo = &t->xdg_toplevel->base->geometry;
 	const double cx = (double)t->scene_tree->node.x + (double)geo->width * 0.5;
 	const double cy = (double)t->scene_tree->node.y + (double)geo->height * 0.5;
 	struct comp_output *o;
-	wl_list_for_each(o, &server->outputs, link) {
-		if (wlr_box_contains_point(&o->layer_workarea, cx, cy)) {
+	wl_list_for_each(o, &server->outputs, link)
+	{
+		if (wlr_box_contains_point(&o->layer_workarea, cx, cy))
+		{
 			return o;
 		}
 	}
@@ -992,27 +1357,33 @@ static struct comp_output *toplevel_tile_output(struct comp_toplevel *t)
  * Caller frees the returned pointer when non-NULL; does not free `full`.
  */
 static struct comp_toplevel **tile_sorted_views_on_output(struct comp_server *server, struct comp_output *out,
-	struct comp_toplevel **full, size_t n_full, size_t *n_out)
+														  struct comp_toplevel **full, size_t n_full, size_t *n_out)
 {
 	(void)server;
 	size_t cnt = 0;
-	for (size_t k = 0; k < n_full; k++) {
-		if (toplevel_tile_output(full[k]) == out) {
+	for (size_t k = 0; k < n_full; k++)
+	{
+		if (toplevel_tile_output(full[k]) == out)
+		{
 			cnt++;
 		}
 	}
-	if (cnt == 0) {
+	if (cnt == 0)
+	{
 		*n_out = 0;
 		return NULL;
 	}
 	struct comp_toplevel **sub = calloc(cnt, sizeof(*sub));
-	if (!sub) {
+	if (!sub)
+	{
 		*n_out = 0;
 		return NULL;
 	}
 	size_t j = 0;
-	for (size_t k = 0; k < n_full; k++) {
-		if (toplevel_tile_output(full[k]) == out) {
+	for (size_t k = 0; k < n_full; k++)
+	{
+		if (toplevel_tile_output(full[k]) == out)
+		{
 			sub[j++] = full[k];
 		}
 	}
@@ -1020,70 +1391,85 @@ static struct comp_toplevel **tile_sorted_views_on_output(struct comp_server *se
 	return sub;
 }
 
+/** In scroll layout, align current output slot to keep the focused view visible. */
 static void scroll_sync_to_focused(struct comp_server *server)
 {
-	if (server->layout != COMP_LAYOUT_SCROLL || !server->focused_toplevel) {
+	if (server->layout != COMP_LAYOUT_SCROLL || !server->focused_toplevel)
+	{
 		return;
 	}
 	struct comp_toplevel *f = server->focused_toplevel;
-	if (f->tile_float || !toplevel_surface_mapped(f)) {
+	if (f->tile_float || !toplevel_surface_mapped(f))
+	{
 		return;
 	}
 	struct comp_output *out = toplevel_tile_output(f);
-	if (!out) {
+	if (!out)
+	{
 		return;
 	}
 	size_t n_full = 0;
 	struct comp_toplevel **full = tile_sorted_views(server, &n_full);
-	if (!full) {
+	if (!full)
+	{
 		return;
 	}
 	size_t n = 0;
 	struct comp_toplevel **sub = tile_sorted_views_on_output(server, out, full, n_full, &n);
 	free(full);
-	if (!sub || n == 0) {
+	if (!sub || n == 0)
+	{
 		free(sub);
 		return;
 	}
 	const int idx = tile_sorted_index(sub, n, f);
-	if (idx >= 0) {
+	if (idx >= 0)
+	{
 		out->workspace_scroll_slot[server->current_workspace] = idx;
 	}
 	free(sub);
 }
 
+/** Unmap callback: drop focus/grabs and re-run layout if needed. */
 static void toplevel_unmap(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, unmap);
-	if (view->server->focused_toplevel == view) {
+	if (view->server->focused_toplevel == view)
+	{
 		view->server->focused_toplevel = NULL;
 		wlr_seat_keyboard_notify_clear_focus(view->server->seat);
 	}
-	if (view->server->grabbed_toplevel == view) {
+	if (view->server->grabbed_toplevel == view)
+	{
 		view->server->grabbed_toplevel = NULL;
 		view->server->grab = COMP_GRAB_NONE;
 		view->server->swallow_left_release = false;
 	}
 	if ((view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL) &&
-	    view->server->grab != COMP_GRAB_MOVE) {
+		view->server->grab != COMP_GRAB_MOVE)
+	{
 		server_arrange_toplevels(view->server);
 	}
 	foreign_toplevel_refresh(view);
 }
 
+/** Destroy callback: remove listeners/resources and keep compositor state coherent. */
 static void toplevel_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, destroy);
-	if (view->xdg_decoration) {
+	if (view->xdg_decoration)
+	{
 		wl_list_remove(&view->xdg_decoration_destroy.link);
 		wl_list_remove(&view->xdg_decoration_request_mode.link);
 		view->xdg_decoration = NULL;
 	}
-	if (view->xdg_toplevel) {
+	if (view->xdg_toplevel)
+	{
 		struct wlr_xdg_popup *popup, *tmp;
-		wl_list_for_each_safe(popup, tmp, &view->xdg_toplevel->base->popups, link) {
+		wl_list_for_each_safe(popup, tmp, &view->xdg_toplevel->base->popups, link)
+		{
 			wlr_xdg_popup_destroy(popup);
 		}
 		wl_list_remove(&view->map.link);
@@ -1096,20 +1482,24 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 		wl_list_remove(&view->new_popup.link);
 	}
 	wl_list_remove(&view->destroy.link);
-	if (view->listed) {
+	if (view->listed)
+	{
 		wl_list_remove(&view->link);
 		view->listed = false;
 	}
-	if (view->foreign_toplevel) {
+	if (view->foreign_toplevel)
+	{
 		wl_list_remove(&view->foreign_request_activate.link);
 		wl_list_remove(&view->foreign_request_close.link);
 		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
 		view->foreign_toplevel = NULL;
 	}
-	if (view->server->focused_toplevel == view) {
+	if (view->server->focused_toplevel == view)
+	{
 		view->server->focused_toplevel = NULL;
 	}
-	if (view->server->grabbed_toplevel == view) {
+	if (view->server->grabbed_toplevel == view)
+	{
 		view->server->grabbed_toplevel = NULL;
 		view->server->grab = COMP_GRAB_NONE;
 		view->server->swallow_left_release = false;
@@ -1117,31 +1507,38 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 	struct comp_server *srv = view->server;
 	free(view);
 	if ((srv->layout == COMP_LAYOUT_TILE || srv->layout == COMP_LAYOUT_SCROLL) &&
-	    srv->grab != COMP_GRAB_MOVE) {
+		srv->grab != COMP_GRAB_MOVE)
+	{
 		server_arrange_toplevels(srv);
 	}
 }
 
+/** toplevel commit callback: debug trace + one-time initial configure safeguards. */
 static void toplevel_commit(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, commit);
-	if (!view->xdg_toplevel) {
+	if (!view->xdg_toplevel)
+	{
 		return;
 	}
 	struct wlr_xdg_surface *xdg = view->xdg_toplevel->base;
 	log_xdg_state("commit", view);
 	/* wlroots 0.19 asserts if we schedule configure before initialized. */
-	if (xdg->initial_commit && xdg->initialized) {
+	if (xdg->initial_commit && xdg->initialized)
+	{
 		const struct wlr_box *geo = &xdg->geometry;
 		/* xwayland-satellite already negotiates X11 size; 0x0 reconfigure breaks splash/dialogs. */
-		if (geo->width <= 0 || geo->height <= 0) {
+		if (geo->width <= 0 || geo->height <= 0)
+		{
 			log_xdg_state("commit:set_size0x0", view);
 			wlr_xdg_toplevel_set_size(view->xdg_toplevel, 0, 0);
 		}
 	}
+	toplevel_apply_decoration_mode(view);
 }
 
+/** toplevel map callback: place/focus according to current layout policy and rules. */
 static void toplevel_map(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -1151,8 +1548,10 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 	const int gw = geo->width;
 	const int gh = geo->height;
 	struct comp_output *o;
-	wl_list_for_each(o, &view->server->outputs, link) {
-		if (view->foreign_toplevel) {
+	wl_list_for_each(o, &view->server->outputs, link)
+	{
+		if (view->foreign_toplevel)
+		{
 			wlr_foreign_toplevel_handle_v1_output_enter(view->foreign_toplevel, o->wlr_output);
 		}
 	}
@@ -1162,14 +1561,19 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 		view->server->output_layout, view->server->cursor->x, view->server->cursor->y);
 	struct wlr_box obox = {0, 0, 800, 600};
 	struct comp_output *co = comp_output_from_wlr(view->server, out);
-	if (co) {
+	if (co)
+	{
 		obox = co->layer_workarea;
-	} else if (out) {
+	}
+	else if (out)
+	{
 		wlr_output_layout_get_box(view->server->output_layout, out, &obox);
 	}
 	toplevel_refresh_tile_props(view);
-	if (view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL) {
-		if (view->tile_float) {
+	if (view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL)
+	{
+		if (view->tile_float)
+		{
 			const int x = obox.x + (obox.width - gw) / 2;
 			const int y = obox.y + (obox.height - gh) / 2;
 			wlr_scene_node_set_position(&view->scene_tree->node, x, y);
@@ -1195,6 +1599,7 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 	server_sync_xdg_decorations(view->server);
 }
 
+/** Begin interactive move grab for a view. */
 static void toplevel_request_move(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -1202,16 +1607,19 @@ static void toplevel_request_move(struct wl_listener *listener, void *data)
 	begin_move(view->server, view, false);
 }
 
+/** Begin interactive resize grab unless layout policy forbids direct resizing. */
 static void toplevel_request_resize(struct wl_listener *listener, void *data)
 {
 	struct comp_toplevel *view = wl_container_of(listener, view, request_resize);
 	struct wlr_xdg_toplevel_resize_event *ev = data;
 	struct comp_server *server = view->server;
 
-	if (!view->xdg_toplevel || !toplevel_surface_mapped(view)) {
+	if (!view->xdg_toplevel || !toplevel_surface_mapped(view))
+	{
 		return;
 	}
-	if ((server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) && !view->tile_float) {
+	if ((server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) && !view->tile_float)
+	{
 		return;
 	}
 	focus_toplevel(server, view);
@@ -1221,7 +1629,8 @@ static void toplevel_request_resize(struct wl_listener *listener, void *data)
 static bool x11_display_socket_busy(int num)
 {
 	char path[64];
-	if (snprintf(path, sizeof(path), "/tmp/.X11-unix/X%d", num) >= (int)sizeof(path)) {
+	if (snprintf(path, sizeof(path), "/tmp/.X11-unix/X%d", num) >= (int)sizeof(path))
+	{
 		return true;
 	}
 	return access(path, F_OK) == 0;
@@ -1230,8 +1639,10 @@ static bool x11_display_socket_busy(int num)
 /** First free display >= 2 (:0/:1 are often taken by Xorg or a parent compositor). */
 static int x11_display_pick_free(void)
 {
-	for (int n = 2; n < 100; n++) {
-		if (!x11_display_socket_busy(n)) {
+	for (int n = 2; n < 100; n++)
+	{
+		if (!x11_display_socket_busy(n))
+		{
 			return n;
 		}
 	}
@@ -1242,15 +1653,18 @@ static int x11_display_pick_free(void)
 static void spawn_xwayland_satellite(const char *wayland_display)
 {
 	const char *disable = getenv("STACKCOMP_X11");
-	if (disable && disable[0] && strcmp(disable, "0") == 0) {
+	if (disable && disable[0] && strcmp(disable, "0") == 0)
+	{
 		return;
 	}
 
 	static char display_buf[16];
 	const char *disp = getenv("STACKCOMP_X11_DISPLAY");
-	if (!disp || !disp[0]) {
+	if (!disp || !disp[0])
+	{
 		const int n = x11_display_pick_free();
-		if (n < 0) {
+		if (n < 0)
+		{
 			wlr_log(WLR_ERROR, "No free X display for xwayland-satellite (tried :2..:99)");
 			return;
 		}
@@ -1259,11 +1673,13 @@ static void spawn_xwayland_satellite(const char *wayland_display)
 	}
 
 	pid_t pid = fork();
-	if (pid < 0) {
+	if (pid < 0)
+	{
 		wlr_log_errno(WLR_ERROR, "fork xwayland-satellite");
 		return;
 	}
-	if (pid == 0) {
+	if (pid == 0)
+	{
 		setenv("WAYLAND_DISPLAY", wayland_display, 1);
 		unsetenv("XAUTHORITY");
 		setenv("_JAVA_AWT_WM_NONREPARENTING", "1", 1);
@@ -1278,6 +1694,7 @@ static void spawn_xwayland_satellite(const char *wayland_display)
 	wlr_log(WLR_INFO, "xwayland-satellite on DISPLAY=%s (pid %d)", disp, pid);
 }
 
+/** Create per-toplevel compositor view state for a new xdg_toplevel. */
 static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, xdg_shell_new_toplevel);
@@ -1293,9 +1710,9 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	view->tile_float = false;
 	view->tile_order = 0;
 	view->workspace = server->current_workspace;
-	view->foreign_toplevel = server->foreign_toplevel_manager ?
-		wlr_foreign_toplevel_handle_v1_create(server->foreign_toplevel_manager) : NULL;
-	if (view->foreign_toplevel) {
+	view->foreign_toplevel = server->foreign_toplevel_manager ? wlr_foreign_toplevel_handle_v1_create(server->foreign_toplevel_manager) : NULL;
+	if (view->foreign_toplevel)
+	{
 		view->foreign_request_activate.notify = foreign_toplevel_handle_request_activate;
 		wl_signal_add(&view->foreign_toplevel->events.request_activate, &view->foreign_request_activate);
 		view->foreign_request_close.notify = foreign_toplevel_handle_request_close;
@@ -1326,23 +1743,29 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	foreign_toplevel_refresh(view);
 }
 
+/** Activate one mapped view and synchronize seat keyboard focus plus foreign-toplevel state. */
 static void focus_toplevel(struct comp_server *server, struct comp_toplevel *toplevel)
 {
-	if (!toplevel || !toplevel_surface_mapped(toplevel)) {
+	if (!toplevel || !toplevel_surface_mapped(toplevel))
+	{
 		return;
 	}
-	if (toplevel->xdg_toplevel && !toplevel->xdg_toplevel->base->initialized) {
+	if (toplevel->xdg_toplevel && !toplevel->xdg_toplevel->base->initialized)
+	{
 		log_xdg_state("focus:skip-not-initialized", toplevel);
 		return;
 	}
-	if (toplevel->workspace != server->current_workspace) {
+	if (toplevel->workspace != server->current_workspace)
+	{
 		return;
 	}
 	struct comp_toplevel *prev = server->focused_toplevel;
-	if (prev == toplevel) {
+	if (prev == toplevel)
+	{
 		return;
 	}
-	if (prev && toplevel_surface_initialized(prev)) {
+	if (prev && toplevel_surface_initialized(prev))
+	{
 		log_xdg_state("focus:deactivate-prev", prev);
 		toplevel_set_activated(prev, false);
 		foreign_toplevel_refresh(prev);
@@ -1350,7 +1773,8 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 	log_xdg_state("focus:activate-new", toplevel);
 	toplevel_set_activated(toplevel, true);
 	if (server->layout == COMP_LAYOUT_STACK ||
-	    ((server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) && toplevel->tile_float)) {
+		((server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) && toplevel->tile_float))
+	{
 		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
 	}
 	server->focused_toplevel = toplevel;
@@ -1358,18 +1782,23 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 	scroll_sync_to_focused(server);
 
 	struct wlr_surface *surf = toplevel_wlr_surface(toplevel);
-	if (!surf) {
+	if (!surf)
+	{
 		return;
 	}
 	struct wlr_seat *seat = server->seat;
 	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(seat);
-	if (kbd) {
+	if (kbd)
+	{
 		wlr_seat_keyboard_notify_enter(seat, surf, kbd->keycodes, kbd->num_keycodes, &kbd->modifiers);
-	} else {
+	}
+	else
+	{
 		wlr_seat_keyboard_notify_enter(seat, surf, NULL, 0, NULL);
 	}
 }
 
+/** Start move grab and capture cursor/view origin for delta-based motion. */
 static void begin_move(struct comp_server *server, struct comp_toplevel *view, bool swallow_left_release)
 {
 	server->grab = COMP_GRAB_MOVE;
@@ -1381,9 +1810,11 @@ static void begin_move(struct comp_server *server, struct comp_toplevel *view, b
 	server->grab_view_y = view->scene_tree->node.y;
 }
 
+/** Start resize grab and cache the initial geometry for edge-constrained resizing. */
 static void begin_resize(struct comp_server *server, struct comp_toplevel *view, uint32_t edges)
 {
-	if (!view || !toplevel_surface_mapped(view)) {
+	if (!view || !toplevel_surface_mapped(view))
+	{
 		return;
 	}
 	server->grab = COMP_GRAB_RESIZE;
@@ -1400,11 +1831,13 @@ static void begin_resize(struct comp_server *server, struct comp_toplevel *view,
 	server->swallow_left_release = false;
 }
 
+/** Compute near-square tile grid dimensions for `n` windows. */
 static void tile_grid_dims(size_t n, int *cols_out, int *rows_out)
 {
 	/* ~square grid: ceil(sqrt(n)) columns so both axes get space (not only full-height strips). */
 	int cols = 1;
-	while ((size_t)cols * (size_t)cols < n) {
+	while ((size_t)cols * (size_t)cols < n)
+	{
 		cols++;
 	}
 	int rows = (int)((n + (size_t)cols - 1) / (size_t)cols);
@@ -1412,59 +1845,75 @@ static void tile_grid_dims(size_t n, int *cols_out, int *rows_out)
 	*rows_out = rows;
 }
 
+/** Arrange mapped non-floating toplevels for tile or scroll layout across outputs. */
 void server_arrange_toplevels(struct comp_server *server)
 {
-	if (server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL) {
+	if (server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL)
+	{
 		return;
 	}
-	if (wl_list_empty(&server->outputs)) {
+	if (wl_list_empty(&server->outputs))
+	{
 		return;
 	}
 	size_t n_full = 0;
 	struct comp_toplevel **full = tile_sorted_views(server, &n_full);
-	if (!full) {
+	if (!full)
+	{
 		struct comp_toplevel *u;
-		wl_list_for_each(u, &server->toplevels, link) {
+		wl_list_for_each(u, &server->toplevels, link)
+		{
 			u->layout_anim_tracked = false;
 		}
 		return;
 	}
 
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
-		if (!toplevel_surface_mapped(t)) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
+		if (!toplevel_surface_mapped(t))
+		{
 			continue;
 		}
-		if (t->tile_float || !toplevel_surface_initialized(t)) {
+		if (t->tile_float || !toplevel_surface_initialized(t))
+		{
 			t->layout_anim_tracked = false;
 		}
 	}
 
 	const bool anim_on = layout_anim_effective(server);
 	struct comp_output *out;
-	wl_list_for_each(out, &server->outputs, link) {
+	wl_list_for_each(out, &server->outputs, link)
+	{
 		struct wlr_box box = out->layer_workarea;
-		if (box.width <= 0 || box.height <= 0) {
+		if (box.width <= 0 || box.height <= 0)
+		{
 			continue;
 		}
 		size_t n_tile = 0;
 		struct comp_toplevel **arr = tile_sorted_views_on_output(server, out, full, n_full, &n_tile);
-		if (!arr || n_tile == 0) {
+		if (!arr || n_tile == 0)
+		{
 			free(arr);
 			continue;
 		}
 
-		if (server->layout == COMP_LAYOUT_SCROLL) {
+		if (server->layout == COMP_LAYOUT_SCROLL)
+		{
 			int *const scr = &out->workspace_scroll_slot[server->current_workspace];
-			if (*scr < 0) {
+			if (*scr < 0)
+			{
 				*scr = 0;
 			}
-			if (*scr >= (int)n_tile) {
+			if (*scr >= (int)n_tile)
+			{
 				*scr = (int)n_tile - 1;
 			}
-			for (size_t j = 0; j < n_tile; j++) {
+			for (size_t j = 0; j < n_tile; j++)
+			{
 				struct comp_toplevel *v = arr[j];
-				if (!toplevel_surface_initialized(v)) {
+				if (!toplevel_surface_initialized(v))
+				{
 					log_xdg_state("arrange-scroll:skip-not-initialized", v);
 					continue;
 				}
@@ -1475,7 +1924,8 @@ void server_arrange_toplevels(struct comp_server *server)
 				v->layout_tgt_y = y;
 				log_xdg_state("arrange-scroll:set_size", v);
 				toplevel_arrange_tile(v, x, y, box.width, box.height);
-				if (!anim_on || !v->layout_anim_tracked) {
+				if (!anim_on || !v->layout_anim_tracked)
+				{
 					v->layout_anim_x = (double)x;
 					v->layout_anim_y = (double)y;
 					wlr_scene_node_set_position(&v->scene_tree->node, x, y);
@@ -1491,9 +1941,11 @@ void server_arrange_toplevels(struct comp_server *server)
 		const int cell_w = box.width / cols;
 		const int cell_h = box.height / rows;
 
-		for (size_t j = 0; j < n_tile; j++) {
+		for (size_t j = 0; j < n_tile; j++)
+		{
 			struct comp_toplevel *v = arr[j];
-			if (!toplevel_surface_initialized(v)) {
+			if (!toplevel_surface_initialized(v))
+			{
 				log_xdg_state("arrange-tile:skip-not-initialized", v);
 				continue;
 			}
@@ -1507,7 +1959,8 @@ void server_arrange_toplevels(struct comp_server *server)
 			v->layout_tgt_y = y;
 			log_xdg_state("arrange-tile:set_size", v);
 			toplevel_arrange_tile(v, x, y, w, h);
-			if (!anim_on || !v->layout_anim_tracked) {
+			if (!anim_on || !v->layout_anim_tracked)
+			{
 				v->layout_anim_x = (double)x;
 				v->layout_anim_y = (double)y;
 				wlr_scene_node_set_position(&v->scene_tree->node, x, y);
@@ -1520,11 +1973,14 @@ void server_arrange_toplevels(struct comp_server *server)
 	layout_anim_kick_outputs(server);
 }
 
+/** Enable only windows belonging to the active workspace. */
 void server_workspace_apply_visibility(struct comp_server *server)
 {
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
-		if (!toplevel_surface_mapped(t)) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
+		if (!toplevel_surface_mapped(t))
+		{
 			wlr_scene_node_set_enabled(&t->scene_tree->node, false);
 			continue;
 		}
@@ -1533,39 +1989,49 @@ void server_workspace_apply_visibility(struct comp_server *server)
 	}
 }
 
+/** Switch active workspace with bounds clamp and focus handoff. */
 void server_workspace_go(struct comp_server *server, int idx)
 {
-	if (idx < 0) {
+	if (idx < 0)
+	{
 		idx = 0;
 	}
-	if (idx >= COMP_WORKSPACE_COUNT) {
+	if (idx >= COMP_WORKSPACE_COUNT)
+	{
 		idx = COMP_WORKSPACE_COUNT - 1;
 	}
-	if (idx == server->current_workspace) {
+	if (idx == server->current_workspace)
+	{
 		return;
 	}
 	server->current_workspace = idx;
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
 		t->layout_anim_tracked = false;
 	}
-	if (server->focused_toplevel && server->focused_toplevel->workspace != server->current_workspace) {
+	if (server->focused_toplevel && server->focused_toplevel->workspace != server->current_workspace)
+	{
 		server->focused_toplevel = NULL;
 		wlr_seat_keyboard_notify_clear_focus(server->seat);
 	}
 	struct comp_toplevel *pick = NULL;
-	wl_list_for_each(t, &server->toplevels, link) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
 		if (t->workspace == server->current_workspace && toplevel_surface_mapped(t) &&
-		    toplevel_surface_initialized(t)) {
+			toplevel_surface_initialized(t))
+		{
 			pick = t;
 			break;
 		}
 	}
-	if (pick) {
+	if (pick)
+	{
 		focus_toplevel(server, pick);
 	}
 	server_workspace_apply_visibility(server);
-	if (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) {
+	if (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL)
+	{
 		layer_shell_arrange(server);
 	}
 	comp_config_sync_shell_env(server);
@@ -1573,50 +2039,63 @@ void server_workspace_go(struct comp_server *server, int idx)
 	foreign_toplevel_sync_all(server);
 }
 
+/** Relative workspace navigation with wrap-around. */
 void server_workspace_relative(struct comp_server *server, int delta)
 {
-	if (delta == 0) {
+	if (delta == 0)
+	{
 		return;
 	}
 	const int n = COMP_WORKSPACE_COUNT;
 	int idx = server->current_workspace + delta;
 	idx %= n;
-	if (idx < 0) {
+	if (idx < 0)
+	{
 		idx += n;
 	}
 	server_workspace_go(server, idx);
 }
 
+/** Move focused window to another workspace, then repair focus/visibility. */
 void server_workspace_move_focused(struct comp_server *server, int target)
 {
 	struct comp_toplevel *f = server->focused_toplevel;
-	if (!f || !toplevel_surface_mapped(f)) {
+	if (!f || !toplevel_surface_mapped(f))
+	{
 		return;
 	}
-	if (target < 0 || target >= COMP_WORKSPACE_COUNT || f->workspace == target) {
+	if (target < 0 || target >= COMP_WORKSPACE_COUNT || f->workspace == target)
+	{
 		return;
 	}
 	const bool was_focused = server->focused_toplevel == f;
 	f->workspace = target;
 	f->layout_anim_tracked = false;
-	if (was_focused && target != server->current_workspace) {
+	if (was_focused && target != server->current_workspace)
+	{
 		struct comp_toplevel *pick = NULL;
 		struct comp_toplevel *t;
-		wl_list_for_each(t, &server->toplevels, link) {
-			if (			    t != f && t->workspace == server->current_workspace && toplevel_surface_mapped(t)) {
+		wl_list_for_each(t, &server->toplevels, link)
+		{
+			if (t != f && t->workspace == server->current_workspace && toplevel_surface_mapped(t))
+			{
 				pick = t;
 				break;
 			}
 		}
-		if (pick) {
+		if (pick)
+		{
 			focus_toplevel(server, pick);
-		} else {
+		}
+		else
+		{
 			server->focused_toplevel = NULL;
 			wlr_seat_keyboard_notify_clear_focus(server->seat);
 		}
 	}
 	server_workspace_apply_visibility(server);
-	if (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) {
+	if (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL)
+	{
 		layer_shell_arrange(server);
 	}
 	comp_config_sync_shell_env(server);
@@ -1624,39 +2103,47 @@ void server_workspace_move_focused(struct comp_server *server, int target)
 	foreign_toplevel_sync_all(server);
 }
 
+/** Move focused tiled view by N slots in sort order on its assigned output. */
 void server_tile_move_focused_n(struct comp_server *server, int steps)
 {
-	if ((server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL) || steps == 0) {
+	if ((server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL) || steps == 0)
+	{
 		return;
 	}
 	struct comp_toplevel *f = server->focused_toplevel;
-	if (!f || f->tile_float || !toplevel_surface_mapped(f)) {
+	if (!f || f->tile_float || !toplevel_surface_mapped(f))
+	{
 		return;
 	}
 
 	const int sig = steps > 0 ? 1 : -1;
 	const int nabs = steps > 0 ? steps : -steps;
 	struct comp_output *out = toplevel_tile_output(f);
-	for (int c = 0; c < nabs; c++) {
+	for (int c = 0; c < nabs; c++)
+	{
 		size_t n_full = 0;
 		struct comp_toplevel **full = tile_sorted_views(server, &n_full);
-		if (!full) {
+		if (!full)
+		{
 			return;
 		}
 		size_t n = 0;
 		struct comp_toplevel **sorted = tile_sorted_views_on_output(server, out, full, n_full, &n);
 		free(full);
-		if (!sorted || n < 2) {
+		if (!sorted || n < 2)
+		{
 			free(sorted);
 			return;
 		}
 		const int i = tile_sorted_index(sorted, n, f);
-		if (i < 0) {
+		if (i < 0)
+		{
 			free(sorted);
 			return;
 		}
 		const int j = i + sig;
-		if (j < 0 || j >= (int)n) {
+		if (j < 0 || j >= (int)n)
+		{
 			free(sorted);
 			return;
 		}
@@ -1666,38 +2153,49 @@ void server_tile_move_focused_n(struct comp_server *server, int steps)
 	server_arrange_toplevels(server);
 }
 
+/** Move scroll viewport slot by N on the focused/primary output in scroll layout. */
 void server_scroll_move(struct comp_server *server, int steps)
 {
-	if (server->layout != COMP_LAYOUT_SCROLL || steps == 0) {
+	if (server->layout != COMP_LAYOUT_SCROLL || steps == 0)
+	{
 		return;
 	}
 	struct comp_toplevel *f = server->focused_toplevel;
 	struct comp_output *out;
-	if (f && !f->tile_float && toplevel_surface_mapped(f)) {
+	if (f && !f->tile_float && toplevel_surface_mapped(f))
+	{
 		out = toplevel_tile_output(f);
-	} else {
+	}
+	else
+	{
 		out = comp_output_from_wlr(server, primary_wlr_output(server));
 	}
-	if (!out) {
+	if (!out)
+	{
 		return;
 	}
 	size_t n_full = 0;
 	struct comp_toplevel **full = tile_sorted_views(server, &n_full);
-	if (!full) {
+	if (!full)
+	{
 		return;
 	}
 	size_t n = 0;
 	struct comp_toplevel **arr = tile_sorted_views_on_output(server, out, full, n_full, &n);
 	free(full);
-	if (!arr || n == 0) {
+	if (!arr || n == 0)
+	{
 		free(arr);
 		return;
 	}
 	int *const scr = &out->workspace_scroll_slot[server->current_workspace];
 	int idx = *scr + steps;
-	if (idx < 0) {
+	if (idx < 0)
+	{
 		idx = 0;
-	} else if (idx >= (int)n) {
+	}
+	else if (idx >= (int)n)
+	{
 		idx = (int)n - 1;
 	}
 	*scr = idx;
@@ -1705,36 +2203,44 @@ void server_scroll_move(struct comp_server *server, int steps)
 	server_arrange_toplevels(server);
 }
 
+/** Move focused tiled view to start/end of sort order on its assigned output. */
 void server_tile_move_focused_edge(struct comp_server *server, bool to_first)
 {
-	if (server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL) {
+	if (server->layout != COMP_LAYOUT_TILE && server->layout != COMP_LAYOUT_SCROLL)
+	{
 		return;
 	}
 	struct comp_toplevel *f = server->focused_toplevel;
-	if (!f || f->tile_float || !toplevel_surface_mapped(f)) {
+	if (!f || f->tile_float || !toplevel_surface_mapped(f))
+	{
 		return;
 	}
 	struct comp_output *out = toplevel_tile_output(f);
-	for (;;) {
+	for (;;)
+	{
 		size_t n_full = 0;
 		struct comp_toplevel **full = tile_sorted_views(server, &n_full);
-		if (!full) {
+		if (!full)
+		{
 			return;
 		}
 		size_t n = 0;
 		struct comp_toplevel **sorted = tile_sorted_views_on_output(server, out, full, n_full, &n);
 		free(full);
-		if (!sorted || n < 2) {
+		if (!sorted || n < 2)
+		{
 			free(sorted);
 			return;
 		}
 		const int i = tile_sorted_index(sorted, n, f);
-		if (i < 0) {
+		if (i < 0)
+		{
 			free(sorted);
 			return;
 		}
 		const int j = to_first ? i - 1 : i + 1;
-		if (j < 0 || j >= (int)n) {
+		if (j < 0 || j >= (int)n)
+		{
 			free(sorted);
 			break;
 		}
@@ -1744,28 +2250,34 @@ void server_tile_move_focused_edge(struct comp_server *server, bool to_first)
 	server_arrange_toplevels(server);
 }
 
+/** Move focused tiled view vertically in grid coordinates by N rows. */
 void server_tile_move_focused_grid_vert(struct comp_server *server, int steps)
 {
-	if (server->layout != COMP_LAYOUT_TILE || steps == 0) {
+	if (server->layout != COMP_LAYOUT_TILE || steps == 0)
+	{
 		return;
 	}
 	struct comp_toplevel *f = server->focused_toplevel;
-	if (!f || f->tile_float || !toplevel_surface_mapped(f)) {
+	if (!f || f->tile_float || !toplevel_surface_mapped(f))
+	{
 		return;
 	}
 	const int sig = steps > 0 ? 1 : -1;
 	const int nabs = steps > 0 ? steps : -steps;
 	struct comp_output *out = toplevel_tile_output(f);
-	for (int c = 0; c < nabs; c++) {
+	for (int c = 0; c < nabs; c++)
+	{
 		size_t n_full = 0;
 		struct comp_toplevel **full = tile_sorted_views(server, &n_full);
-		if (!full) {
+		if (!full)
+		{
 			return;
 		}
 		size_t n = 0;
 		struct comp_toplevel **sorted = tile_sorted_views_on_output(server, out, full, n_full, &n);
 		free(full);
-		if (!sorted || n < 2) {
+		if (!sorted || n < 2)
+		{
 			free(sorted);
 			return;
 		}
@@ -1773,12 +2285,14 @@ void server_tile_move_focused_grid_vert(struct comp_server *server, int steps)
 		tile_grid_dims(n, &cols, &rows);
 		(void)rows;
 		const int i = tile_sorted_index(sorted, n, f);
-		if (i < 0) {
+		if (i < 0)
+		{
 			free(sorted);
 			return;
 		}
 		const int j = sig > 0 ? i + cols : i - cols;
-		if (j < 0 || j >= (int)n) {
+		if (j < 0 || j >= (int)n)
+		{
 			free(sorted);
 			return;
 		}
@@ -1788,26 +2302,32 @@ void server_tile_move_focused_grid_vert(struct comp_server *server, int steps)
 	server_arrange_toplevels(server);
 }
 
+/** Move focused tiled view to top/bottom edge of its current tile column. */
 void server_tile_move_focused_grid_vert_edge(struct comp_server *server, bool to_top)
 {
-	if (server->layout != COMP_LAYOUT_TILE) {
+	if (server->layout != COMP_LAYOUT_TILE)
+	{
 		return;
 	}
 	struct comp_toplevel *f = server->focused_toplevel;
-	if (!f || f->tile_float || !toplevel_surface_mapped(f)) {
+	if (!f || f->tile_float || !toplevel_surface_mapped(f))
+	{
 		return;
 	}
 	struct comp_output *out = toplevel_tile_output(f);
-	for (;;) {
+	for (;;)
+	{
 		size_t n_full = 0;
 		struct comp_toplevel **full = tile_sorted_views(server, &n_full);
-		if (!full) {
+		if (!full)
+		{
 			return;
 		}
 		size_t n = 0;
 		struct comp_toplevel **sorted = tile_sorted_views_on_output(server, out, full, n_full, &n);
 		free(full);
-		if (!sorted || n < 2) {
+		if (!sorted || n < 2)
+		{
 			free(sorted);
 			return;
 		}
@@ -1815,19 +2335,25 @@ void server_tile_move_focused_grid_vert_edge(struct comp_server *server, bool to
 		tile_grid_dims(n, &cols, &rows);
 		(void)rows;
 		const int i = tile_sorted_index(sorted, n, f);
-		if (i < 0) {
+		if (i < 0)
+		{
 			free(sorted);
 			return;
 		}
 		int j;
-		if (to_top) {
-			if (i < cols) {
+		if (to_top)
+		{
+			if (i < cols)
+			{
 				free(sorted);
 				break;
 			}
 			j = i - cols;
-		} else {
-			if (i + cols >= (int)n) {
+		}
+		else
+		{
+			if (i + cols >= (int)n)
+			{
 				free(sorted);
 				break;
 			}
@@ -1839,28 +2365,34 @@ void server_tile_move_focused_grid_vert_edge(struct comp_server *server, bool to
 	server_arrange_toplevels(server);
 }
 
+/** Move focused tiled view horizontally within its current grid row by N columns. */
 void server_tile_move_focused_grid_horiz(struct comp_server *server, int steps)
 {
-	if (server->layout != COMP_LAYOUT_TILE || steps == 0) {
+	if (server->layout != COMP_LAYOUT_TILE || steps == 0)
+	{
 		return;
 	}
 	struct comp_toplevel *f = server->focused_toplevel;
-	if (!f || f->tile_float || !toplevel_surface_mapped(f)) {
+	if (!f || f->tile_float || !toplevel_surface_mapped(f))
+	{
 		return;
 	}
 	const int sig = steps > 0 ? 1 : -1;
 	const int nabs = steps > 0 ? steps : -steps;
 	struct comp_output *out = toplevel_tile_output(f);
-	for (int c = 0; c < nabs; c++) {
+	for (int c = 0; c < nabs; c++)
+	{
 		size_t n_full = 0;
 		struct comp_toplevel **full = tile_sorted_views(server, &n_full);
-		if (!full) {
+		if (!full)
+		{
 			return;
 		}
 		size_t n = 0;
 		struct comp_toplevel **sorted = tile_sorted_views_on_output(server, out, full, n_full, &n);
 		free(full);
-		if (!sorted || n < 2) {
+		if (!sorted || n < 2)
+		{
 			free(sorted);
 			return;
 		}
@@ -1868,16 +2400,19 @@ void server_tile_move_focused_grid_horiz(struct comp_server *server, int steps)
 		tile_grid_dims(n, &cols, &rows);
 		(void)rows;
 		const int i = tile_sorted_index(sorted, n, f);
-		if (i < 0) {
+		if (i < 0)
+		{
 			free(sorted);
 			return;
 		}
 		const int j = i + sig;
-		if (j < 0 || j >= (int)n) {
+		if (j < 0 || j >= (int)n)
+		{
 			free(sorted);
 			return;
 		}
-		if (j / cols != i / cols) {
+		if (j / cols != i / cols)
+		{
 			free(sorted);
 			return;
 		}
@@ -1887,48 +2422,59 @@ void server_tile_move_focused_grid_horiz(struct comp_server *server, int steps)
 	server_arrange_toplevels(server);
 }
 
+/** Parse and execute textual tile-grid movement command forms. */
 void server_tile_grid_run_command(struct comp_server *server, const char *cmd_in)
 {
 	char buf[256];
-	if (!cmd_in) {
+	if (!cmd_in)
+	{
 		return;
 	}
 	strncpy(buf, cmd_in, sizeof(buf) - 1);
 	buf[sizeof(buf) - 1] = '\0';
 	char *s = buf;
-	while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') {
+	while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n')
+	{
 		s++;
 	}
 	char *end = s + strlen(s);
-	while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+	while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n'))
+	{
 		end--;
 	}
 	*end = '\0';
-	if (!s[0]) {
+	if (!s[0])
+	{
 		return;
 	}
 
-	if (!strcasecmp(s, "up")) {
+	if (!strcasecmp(s, "up"))
+	{
 		server_tile_move_focused_grid_vert(server, -1);
 		return;
 	}
-	if (!strcasecmp(s, "down")) {
+	if (!strcasecmp(s, "down"))
+	{
 		server_tile_move_focused_grid_vert(server, 1);
 		return;
 	}
-	if (!strcasecmp(s, "left")) {
+	if (!strcasecmp(s, "left"))
+	{
 		server_tile_move_focused_grid_horiz(server, -1);
 		return;
 	}
-	if (!strcasecmp(s, "right")) {
+	if (!strcasecmp(s, "right"))
+	{
 		server_tile_move_focused_grid_horiz(server, 1);
 		return;
 	}
-	if (!strcasecmp(s, "top")) {
+	if (!strcasecmp(s, "top"))
+	{
 		server_tile_move_focused_grid_vert_edge(server, true);
 		return;
 	}
-	if (!strcasecmp(s, "bottom")) {
+	if (!strcasecmp(s, "bottom"))
+	{
 		server_tile_move_focused_grid_vert_edge(server, false);
 		return;
 	}
@@ -1936,57 +2482,78 @@ void server_tile_grid_run_command(struct comp_server *server, const char *cmd_in
 	char dir[32];
 	int steps = 0;
 	const int n = sscanf(s, "%31s %d", dir, &steps);
-	if (n == 2 && steps > 0) {
-		if (!strcasecmp(dir, "left")) {
+	if (n == 2 && steps > 0)
+	{
+		if (!strcasecmp(dir, "left"))
+		{
 			server_tile_move_focused_grid_horiz(server, -steps);
-		} else if (!strcasecmp(dir, "right")) {
+		}
+		else if (!strcasecmp(dir, "right"))
+		{
 			server_tile_move_focused_grid_horiz(server, steps);
-		} else if (!strcasecmp(dir, "up")) {
+		}
+		else if (!strcasecmp(dir, "up"))
+		{
 			server_tile_move_focused_grid_vert(server, -steps);
-		} else if (!strcasecmp(dir, "down")) {
+		}
+		else if (!strcasecmp(dir, "down"))
+		{
 			server_tile_move_focused_grid_vert(server, steps);
-		} else {
+		}
+		else
+		{
 			wlr_log(WLR_INFO, "tile grid: unknown direction '%s'", dir);
 		}
 		return;
 	}
-	if (n == 2 && steps <= 0) {
+	if (n == 2 && steps <= 0)
+	{
 		wlr_log(WLR_INFO, "tile grid: count after direction must be ≥1");
 		return;
 	}
 
 	char *ep = NULL;
 	const long v = strtol(s, &ep, 10);
-	if (ep != s && (!ep || !*ep)) {
+	if (ep != s && (!ep || !*ep))
+	{
 		server_tile_move_focused_grid_vert(server, (int)v);
 		return;
 	}
 	wlr_log(WLR_INFO, "tile grid: unknown '%s'", s);
 }
 
+/** Switch compositor layout and perform required per-layout state transitions. */
 void server_set_layout(struct comp_server *server, enum comp_layout layout)
 {
-	if (server->layout == layout) {
+	if (server->layout == layout)
+	{
 		return;
 	}
 	server->layout = layout;
-	if (layout == COMP_LAYOUT_TILE || layout == COMP_LAYOUT_SCROLL) {
+	if (layout == COMP_LAYOUT_TILE || layout == COMP_LAYOUT_SCROLL)
+	{
 		server_refresh_all_tile_props(server);
-		if (layout == COMP_LAYOUT_SCROLL) {
+		if (layout == COMP_LAYOUT_SCROLL)
+		{
 			struct comp_output *o;
-			wl_list_for_each(o, &server->outputs, link) {
+			wl_list_for_each(o, &server->outputs, link)
+			{
 				o->workspace_scroll_slot[server->current_workspace] = 0;
 			}
 			scroll_sync_to_focused(server);
 		}
 		server_arrange_toplevels(server);
-	} else {
+	}
+	else
+	{
 		struct comp_toplevel *v;
-		wl_list_for_each(v, &server->toplevels, link) {
+		wl_list_for_each(v, &server->toplevels, link)
+		{
 			v->layout_anim_tracked = false;
 		}
 		server->layout_anim_last_ns = 0;
-		if (server->focused_toplevel) {
+		if (server->focused_toplevel)
+		{
 			wlr_scene_node_raise_to_top(&server->focused_toplevel->scene_tree->node);
 		}
 	}
@@ -1994,24 +2561,30 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 	comp_config_sync_shell_env(server);
 }
 
+/** Toggle stack/tile; scroll toggles back to stack for deterministic cycling. */
 void server_toggle_layout(struct comp_server *server)
 {
-	if (server->layout == COMP_LAYOUT_SCROLL) {
+	if (server->layout == COMP_LAYOUT_SCROLL)
+	{
 		server_set_layout(server, COMP_LAYOUT_STACK);
 		return;
 	}
 	server_set_layout(server, server->layout == COMP_LAYOUT_TILE
-		? COMP_LAYOUT_STACK : COMP_LAYOUT_TILE);
+								  ? COMP_LAYOUT_STACK
+								  : COMP_LAYOUT_TILE);
 }
 
+/** Build the Unix socket path for compositor IPC under XDG_RUNTIME_DIR. */
 static bool ipc_socket_path(char *out, size_t out_sz)
 {
 	const char *rt = getenv("XDG_RUNTIME_DIR");
-	if (!rt || !rt[0]) {
+	if (!rt || !rt[0])
+	{
 		return false;
 	}
 	const int n = snprintf(out, out_sz, "%s/stackcomp-ipc.sock", rt);
-	if (n < 0 || (size_t)n >= out_sz) {
+	if (n < 0 || (size_t)n >= out_sz)
+	{
 		return false;
 	}
 	return true;
@@ -2021,23 +2594,27 @@ static bool ipc_socket_path(char *out, size_t out_sz)
 static int ipc_client_send_line(const char *line)
 {
 	char path[108];
-	if (!ipc_socket_path(path, sizeof(path))) {
+	if (!ipc_socket_path(path, sizeof(path)))
+	{
 		return -1;
 	}
 	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-	if (fd < 0) {
+	if (fd < 0)
+	{
 		return -1;
 	}
 	struct sockaddr_un addr = {.sun_family = AF_UNIX};
 	strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 	socklen_t slen = (socklen_t)offsetof(struct sockaddr_un, sun_path) +
-		(socklen_t)strlen(addr.sun_path);
-	if (connect(fd, (struct sockaddr *)&addr, slen) < 0) {
+					 (socklen_t)strlen(addr.sun_path);
+	if (connect(fd, (struct sockaddr *)&addr, slen) < 0)
+	{
 		close(fd);
 		return -1;
 	}
 	const size_t len = strlen(line);
-	if (write(fd, line, len) != (ssize_t)len) {
+	if (write(fd, line, len) != (ssize_t)len)
+	{
 		close(fd);
 		return -1;
 	}
@@ -2045,135 +2622,192 @@ static int ipc_client_send_line(const char *line)
 	return 0;
 }
 
+/** Parse and execute one inbound IPC command line. */
 static void ipc_process_line(struct comp_server *server, char *line)
 {
-	while (*line == ' ' || *line == '\t' || *line == '\r' || *line == '\n') {
+	while (*line == ' ' || *line == '\t' || *line == '\r' || *line == '\n')
+	{
 		line++;
 	}
-	if (!line[0]) {
+	if (!line[0])
+	{
 		return;
 	}
 	char *end = line + strlen(line);
-	while (end > line && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+	while (end > line && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n'))
+	{
 		end--;
 	}
 	*end = '\0';
 
-	if (!strncmp(line, "layout ", 7)) {
+	if (!strncmp(line, "layout ", 7))
+	{
 		const char *rest = line + 7;
-		while (*rest == ' ' || *rest == '\t') {
+		while (*rest == ' ' || *rest == '\t')
+		{
 			rest++;
 		}
-		if (!strcmp(rest, "toggle")) {
+		if (!strcmp(rest, "toggle"))
+		{
 			server_toggle_layout(server);
-		} else if (!strcmp(rest, "tile")) {
+		}
+		else if (!strcmp(rest, "tile"))
+		{
 			server_set_layout(server, COMP_LAYOUT_TILE);
-		} else if (!strcmp(rest, "scroll")) {
+		}
+		else if (!strcmp(rest, "scroll"))
+		{
 			server_set_layout(server, COMP_LAYOUT_SCROLL);
-		} else if (!strcmp(rest, "stack")) {
+		}
+		else if (!strcmp(rest, "stack"))
+		{
 			server_set_layout(server, COMP_LAYOUT_STACK);
-		} else {
+		}
+		else
+		{
 			wlr_log(WLR_INFO, "ipc: unknown layout subcommand '%s'", rest);
 		}
 		return;
 	}
-	if (!strncmp(line, "workspace ", 10)) {
+	if (!strncmp(line, "workspace ", 10))
+	{
 		const char *rest = line + 10;
-		while (*rest == ' ' || *rest == '\t') {
+		while (*rest == ' ' || *rest == '\t')
+		{
 			rest++;
 		}
-		if (!strncmp(rest, "move ", 5)) {
+		if (!strncmp(rest, "move ", 5))
+		{
 			rest += 5;
-			while (*rest == ' ' || *rest == '\t') {
+			while (*rest == ' ' || *rest == '\t')
+			{
 				rest++;
 			}
 			char *end = NULL;
 			const long w = strtol(rest, &end, 10);
-			if (end != rest && (!end || !*end) && w >= 1 && w <= COMP_WORKSPACE_COUNT) {
+			if (end != rest && (!end || !*end) && w >= 1 && w <= COMP_WORKSPACE_COUNT)
+			{
 				server_workspace_move_focused(server, (int)w - 1);
-			} else {
+			}
+			else
+			{
 				wlr_log(WLR_INFO, "ipc: workspace move needs 1..%d", COMP_WORKSPACE_COUNT);
 			}
 			return;
 		}
-		if (!strcmp(rest, "next")) {
+		if (!strcmp(rest, "next"))
+		{
 			server_workspace_relative(server, 1);
 			return;
 		}
-		if (!strcmp(rest, "prev")) {
+		if (!strcmp(rest, "prev"))
+		{
 			server_workspace_relative(server, -1);
 			return;
 		}
 		char *end = NULL;
 		const long v = strtol(rest, &end, 10);
-		if (end != rest && (!end || !*end) && v >= 1 && v <= COMP_WORKSPACE_COUNT) {
+		if (end != rest && (!end || !*end) && v >= 1 && v <= COMP_WORKSPACE_COUNT)
+		{
 			server_workspace_go(server, (int)v - 1);
-		} else {
+		}
+		else
+		{
 			wlr_log(WLR_INFO, "ipc: unknown workspace '%s' (use 1..%d, next, prev, move N)", rest,
-				COMP_WORKSPACE_COUNT);
+					COMP_WORKSPACE_COUNT);
 		}
 		return;
 	}
-	if (!strncmp(line, "tile move ", 10)) {
+	if (!strncmp(line, "tile move ", 10))
+	{
 		const char *rest = line + 10;
-		while (*rest == ' ' || *rest == '\t') {
+		while (*rest == ' ' || *rest == '\t')
+		{
 			rest++;
 		}
-		if (!strcmp(rest, "prev")) {
+		if (!strcmp(rest, "prev"))
+		{
 			server_tile_move_focused_n(server, -1);
-		} else if (!strcmp(rest, "next")) {
+		}
+		else if (!strcmp(rest, "next"))
+		{
 			server_tile_move_focused_n(server, 1);
-		} else if (!strcmp(rest, "first")) {
+		}
+		else if (!strcmp(rest, "first"))
+		{
 			server_tile_move_focused_edge(server, true);
-		} else if (!strcmp(rest, "last")) {
+		}
+		else if (!strcmp(rest, "last"))
+		{
 			server_tile_move_focused_edge(server, false);
-		} else {
+		}
+		else
+		{
 			char *end = NULL;
 			long v = strtol(rest, &end, 10);
-			if (end != rest && (!end || !*end)) {
+			if (end != rest && (!end || !*end))
+			{
 				server_tile_move_focused_n(server, (int)v);
-			} else {
+			}
+			else
+			{
 				wlr_log(WLR_INFO, "ipc: unknown tile move '%s'", rest);
 			}
 		}
 		return;
 	}
-	if (!strncmp(line, "tile grid ", 10)) {
+	if (!strncmp(line, "tile grid ", 10))
+	{
 		const char *rest = line + 10;
-		while (*rest == ' ' || *rest == '\t') {
+		while (*rest == ' ' || *rest == '\t')
+		{
 			rest++;
 		}
 		server_tile_grid_run_command(server, rest);
 		return;
 	}
-	if (!strncmp(line, "scroll ", 7)) {
+	if (!strncmp(line, "scroll ", 7))
+	{
 		const char *rest = line + 7;
-		while (*rest == ' ' || *rest == '\t') {
+		while (*rest == ' ' || *rest == '\t')
+		{
 			rest++;
 		}
-		if (!strncmp(rest, "move ", 5)) {
+		if (!strncmp(rest, "move ", 5))
+		{
 			rest += 5;
-			while (*rest == ' ' || *rest == '\t') {
+			while (*rest == ' ' || *rest == '\t')
+			{
 				rest++;
 			}
 		}
-		if (!strcmp(rest, "prev") || !strcmp(rest, "left")) {
+		if (!strcmp(rest, "prev") || !strcmp(rest, "left"))
+		{
 			server_scroll_move(server, -1);
-		} else if (!strcmp(rest, "next") || !strcmp(rest, "right")) {
+		}
+		else if (!strcmp(rest, "next") || !strcmp(rest, "right"))
+		{
 			server_scroll_move(server, 1);
-		} else {
+		}
+		else
+		{
 			char *end = NULL;
 			long v = strtol(rest, &end, 10);
-			if (end != rest && (!end || !*end)) {
+			if (end != rest && (!end || !*end))
+			{
 				server_scroll_move(server, (int)v);
-			} else {
+			}
+			else
+			{
 				wlr_log(WLR_INFO, "ipc: unknown scroll '%s'", rest);
 			}
 		}
 		return;
 	}
-	if (!strcasecmp(line, "reload config") || !strcasecmp(line, "reload")) {
-		if (!server_reload_config(server)) {
+	if (!strcasecmp(line, "reload config") || !strcasecmp(line, "reload"))
+	{
+		if (!server_reload_config(server))
+		{
 			wlr_log(WLR_ERROR, "ipc: config reload failed");
 		}
 		return;
@@ -2181,25 +2815,30 @@ static void ipc_process_line(struct comp_server *server, char *line)
 	wlr_log(WLR_INFO, "ipc: unknown command '%s'", line);
 }
 
+/** Reload config from remembered/default path and apply runtime updates atomically. */
 static bool server_reload_config(struct comp_server *server)
 {
 	const char *path = server->config_path;
 	char fallback[PATH_MAX];
-	if (!path || !path[0]) {
-		if (!comp_config_default_path(fallback, sizeof(fallback))) {
+	if (!path || !path[0])
+	{
+		if (!comp_config_default_path(fallback, sizeof(fallback)))
+		{
 			wlr_log(WLR_ERROR, "reload: no config path and no default config file");
 			return false;
 		}
 		path = fallback;
 	}
 	struct comp_config *new_cfg = NULL;
-	if (!comp_config_load(path, &new_cfg)) {
+	if (!comp_config_load(path, &new_cfg))
+	{
 		return false;
 	}
 	struct comp_config *old = server->config;
 	server->config = new_cfg;
 	comp_config_free(old);
-	if (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) {
+	if (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL)
+	{
 		server_refresh_all_tile_props(server);
 		server_arrange_toplevels(server);
 	}
@@ -2211,13 +2850,16 @@ static bool server_reload_config(struct comp_server *server)
 	return true;
 }
 
+/** Event-loop callback for accepted IPC client sockets. */
 static int ipc_on_listen(int fd, uint32_t mask, void *data)
 {
 	(void)mask;
 	struct comp_server *server = data;
 	int c = accept4(fd, NULL, NULL, SOCK_CLOEXEC);
-	if (c < 0) {
-		if (errno != EAGAIN && errno != EWOULDBLOCK) {
+	if (c < 0)
+	{
+		if (errno != EAGAIN && errno != EWOULDBLOCK)
+		{
 			wlr_log_errno(WLR_ERROR, "ipc accept");
 		}
 		return 0;
@@ -2225,7 +2867,8 @@ static int ipc_on_listen(int fd, uint32_t mask, void *data)
 	char buf[512];
 	ssize_t n = read(c, buf, sizeof(buf) - 1);
 	close(c);
-	if (n <= 0) {
+	if (n <= 0)
+	{
 		return 0;
 	}
 	buf[n] = '\0';
@@ -2233,9 +2876,11 @@ static int ipc_on_listen(int fd, uint32_t mask, void *data)
 	return 0;
 }
 
+/** Create, bind, and register the compositor IPC socket in the Wayland event loop. */
 static bool ipc_init(struct comp_server *server)
 {
-	if (!ipc_socket_path(server->ipc_socket_path, sizeof(server->ipc_socket_path))) {
+	if (!ipc_socket_path(server->ipc_socket_path, sizeof(server->ipc_socket_path)))
+	{
 		wlr_log(WLR_ERROR, "ipc: XDG_RUNTIME_DIR is not set or path too long");
 		server->ipc_socket_path[0] = '\0';
 		return false;
@@ -2243,20 +2888,23 @@ static bool ipc_init(struct comp_server *server)
 	unlink(server->ipc_socket_path);
 
 	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-	if (fd < 0) {
+	if (fd < 0)
+	{
 		wlr_log_errno(WLR_ERROR, "ipc: socket");
 		return false;
 	}
 	struct sockaddr_un addr = {.sun_family = AF_UNIX};
 	strncpy(addr.sun_path, server->ipc_socket_path, sizeof(addr.sun_path) - 1);
 	socklen_t slen = (socklen_t)offsetof(struct sockaddr_un, sun_path) + (socklen_t)strlen(addr.sun_path);
-	if (bind(fd, (struct sockaddr *)&addr, slen) < 0) {
+	if (bind(fd, (struct sockaddr *)&addr, slen) < 0)
+	{
 		wlr_log_errno(WLR_ERROR, "ipc: bind %s", server->ipc_socket_path);
 		close(fd);
 		server->ipc_socket_path[0] = '\0';
 		return false;
 	}
-	if (listen(fd, 8) < 0) {
+	if (listen(fd, 8) < 0)
+	{
 		wlr_log_errno(WLR_ERROR, "ipc: listen");
 		close(fd);
 		unlink(server->ipc_socket_path);
@@ -2266,7 +2914,8 @@ static bool ipc_init(struct comp_server *server)
 	server->ipc_listen_fd = fd;
 	struct wl_event_loop *loop = wl_display_get_event_loop(server->wl_display);
 	server->ipc_event_source = wl_event_loop_add_fd(loop, fd, WL_EVENT_READABLE, ipc_on_listen, server);
-	if (!server->ipc_event_source) {
+	if (!server->ipc_event_source)
+	{
 		wlr_log(WLR_ERROR, "ipc: wl_event_loop_add_fd failed");
 		close(fd);
 		unlink(server->ipc_socket_path);
@@ -2278,22 +2927,27 @@ static bool ipc_init(struct comp_server *server)
 	return true;
 }
 
+/** Tear down IPC socket/event source on compositor shutdown. */
 static void ipc_fini(struct comp_server *server)
 {
-	if (server->ipc_event_source) {
+	if (server->ipc_event_source)
+	{
 		wl_event_source_remove(server->ipc_event_source);
 		server->ipc_event_source = NULL;
 	}
-	if (server->ipc_listen_fd >= 0) {
+	if (server->ipc_listen_fd >= 0)
+	{
 		close(server->ipc_listen_fd);
 		server->ipc_listen_fd = -1;
 	}
-	if (server->ipc_socket_path[0]) {
+	if (server->ipc_socket_path[0])
+	{
 		unlink(server->ipc_socket_path);
 		server->ipc_socket_path[0] = '\0';
 	}
 }
 
+/** Keyboard wrapper destroy callback: remove listeners and free state. */
 static void keyboard_handle_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -2309,7 +2963,8 @@ static int keyboard_key_dispatch_depth;
 
 static void keyboard_handle_key(struct wl_listener *listener, void *data)
 {
-	if (keyboard_key_dispatch_depth > 0) {
+	if (keyboard_key_dispatch_depth > 0)
+	{
 		return;
 	}
 	keyboard_key_dispatch_depth++;
@@ -2320,24 +2975,29 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data)
 
 	uint32_t mods_filtered = 0;
 	xkb_keysym_t sym = XKB_KEY_NoSymbol;
-	if (wlr_kbd->xkb_state && wlr_kbd->keymap) {
+	if (wlr_kbd->xkb_state && wlr_kbd->keymap)
+	{
 		mods_filtered = wlr_keyboard_get_modifiers(wlr_kbd) & COMP_BIND_MOD_FILTER;
 		/* wlroots uses Linux evdev codes; XKB uses evdev + 8. Never call xkb with a
 		 * keycode outside this keymap's range (libxkbcommon can fault otherwise). */
 		xkb_keycode_t xkbc = (xkb_keycode_t)((uint64_t)event->keycode + 8u);
 		xkb_keycode_t lo = xkb_keymap_min_keycode(wlr_kbd->keymap);
 		xkb_keycode_t hi = xkb_keymap_max_keycode(wlr_kbd->keymap);
-		if (xkbc >= lo && xkbc <= hi) {
+		if (xkbc >= lo && xkbc <= hi)
+		{
 			sym = xkb_state_key_get_one_sym(wlr_kbd->xkb_state, xkbc);
 		}
 	}
 
 	const bool pressed = event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
-	if (pressed) {
+	if (pressed)
+	{
 		const char *kdbg = getenv("STACKCOMP_LOG_KEYS");
-		if (kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && sym != XKB_KEY_NoSymbol) {
+		if (kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && sym != XKB_KEY_NoSymbol)
+		{
 			char name[128];
-			if (xkb_keysym_get_name(sym, name, sizeof(name)) < 0) {
+			if (xkb_keysym_get_name(sym, name, sizeof(name)) < 0)
+			{
 				snprintf(name, sizeof(name), "(bad)");
 			}
 			wlr_log(WLR_INFO, "keyboard: keysym=%s mods=0x%x", name, mods_filtered);
@@ -2346,7 +3006,8 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data)
 
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
 	wlr_keyboard_notify_key(wlr_kbd, event);
-	if (pressed && comp_config_try_bindings(kbd->server->config, kbd->server, pressed, mods_filtered, sym)) {
+	if (pressed && comp_config_try_bindings(kbd->server->config, kbd->server, pressed, mods_filtered, sym))
+	{
 		keyboard_key_dispatch_depth--;
 		return;
 	}
@@ -2354,6 +3015,7 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data)
 	keyboard_key_dispatch_depth--;
 }
 
+/** Keyboard modifiers callback: forward effective modifiers to seat. */
 static void keyboard_handle_modifiers(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -2363,30 +3025,38 @@ static void keyboard_handle_modifiers(struct wl_listener *listener, void *data)
 	wlr_seat_keyboard_notify_modifiers(kbd->server->seat, &wlr_kbd->modifiers);
 }
 
+/** Resolve configured output name to current wlroots output object. */
 static struct wlr_output *output_by_name(struct comp_server *server, const char *name)
 {
-	if (!name || !name[0]) {
+	if (!name || !name[0])
+	{
 		return NULL;
 	}
 	struct comp_output *o;
-	wl_list_for_each(o, &server->outputs, link) {
-		if (strcmp(o->wlr_output->name, name) == 0) {
+	wl_list_for_each(o, &server->outputs, link)
+	{
+		if (strcmp(o->wlr_output->name, name) == 0)
+		{
 			return o->wlr_output;
 		}
 	}
 	return NULL;
 }
 
+/** Apply configured input-to-output mapping rules to all tracked non-keyboard devices. */
 void server_apply_input_device_maps(struct comp_server *server)
 {
-	if (!server->cursor || !server->config) {
+	if (!server->cursor || !server->config)
+	{
 		return;
 	}
 	struct comp_tracked_input *ti;
-	wl_list_for_each(ti, &server->tracked_inputs, link) {
+	wl_list_for_each(ti, &server->tracked_inputs, link)
+	{
 		struct wlr_input_device *dev = ti->dev;
 		uint32_t want = 0;
-		switch (dev->type) {
+		switch (dev->type)
+		{
 		case WLR_INPUT_DEVICE_TOUCH:
 			want = COMP_INPUT_MAP_TYPE_TOUCH;
 			break;
@@ -2400,33 +3070,40 @@ void server_apply_input_device_maps(struct comp_server *server)
 			want = 0;
 			break;
 		}
-		if (!want) {
+		if (!want)
+		{
 			continue;
 		}
 		struct wlr_output *mapped = NULL;
-		for (size_t i = 0; i < server->config->n_input_map_rules; i++) {
+		for (size_t i = 0; i < server->config->n_input_map_rules; i++)
+		{
 			const struct comp_input_map_rule *r = &server->config->input_map_rules[i];
-			if (!(r->types & want) || !r->have_name) {
+			if (!(r->types & want) || !r->have_name)
+			{
 				continue;
 			}
-			if (regexec(&r->name_re, dev->name, 0, NULL, 0) != 0) {
+			if (regexec(&r->name_re, dev->name, 0, NULL, 0) != 0)
+			{
 				continue;
 			}
 			mapped = output_by_name(server, r->output_name);
-			if (!mapped) {
+			if (!mapped)
+			{
 				wlr_log(WLR_INFO, "input_map: output '%s' not found for device '%s' (trying next rule)",
-					r->output_name, dev->name);
+						r->output_name, dev->name);
 				continue;
 			}
 			break;
 		}
 		wlr_cursor_map_input_to_output(server->cursor, dev, mapped);
-		if (mapped) {
+		if (mapped)
+		{
 			wlr_log(WLR_INFO, "input_map: device '%s' -> output '%s'", dev->name, mapped->name);
 		}
 	}
 }
 
+/** Track device lifetime so hot-unplug and remap updates stay consistent. */
 static void tracked_input_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -2438,10 +3115,12 @@ static void tracked_input_destroy(struct wl_listener *listener, void *data)
 	free(ti);
 }
 
+/** Register one device for lifecycle + mapping updates. */
 static void track_input_device(struct comp_server *server, struct wlr_input_device *dev)
 {
 	struct comp_tracked_input *ti = calloc(1, sizeof(*ti));
-	if (!ti) {
+	if (!ti)
+	{
 		wlr_log(WLR_ERROR, "Out of memory allocating tracked input");
 		return;
 	}
@@ -2454,12 +3133,15 @@ static void track_input_device(struct comp_server *server, struct wlr_input_devi
 	server_apply_input_device_maps(server);
 }
 
+/** Recompute wl_seat capability bitset from currently tracked devices. */
 static void server_update_seat_capabilities(struct comp_server *server)
 {
 	uint32_t caps = WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
 	struct comp_tracked_input *ti;
-	wl_list_for_each(ti, &server->tracked_inputs, link) {
-		if (ti->dev->type == WLR_INPUT_DEVICE_TOUCH) {
+	wl_list_for_each(ti, &server->tracked_inputs, link)
+	{
+		if (ti->dev->type == WLR_INPUT_DEVICE_TOUCH)
+		{
 			caps |= WL_SEAT_CAPABILITY_TOUCH;
 			break;
 		}
@@ -2467,17 +3149,21 @@ static void server_update_seat_capabilities(struct comp_server *server)
 	wlr_seat_set_capabilities(server->seat, caps);
 }
 
+/** Resolve compositor tablet wrapper from wlroots tablet pointer. */
 static struct comp_tablet *comp_tablet_from_wlr(struct comp_server *server, struct wlr_tablet *wt)
 {
 	struct comp_tablet *t;
-	wl_list_for_each(t, &server->tablets, link) {
-		if (t->wlr_tablet == wt) {
+	wl_list_for_each(t, &server->tablets, link)
+	{
+		if (t->wlr_tablet == wt)
+		{
 			return t;
 		}
 	}
 	return NULL;
 }
 
+/** Tablet wrapper destroy callback: detach list/listener and free state. */
 static void comp_tablet_handle_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -2487,6 +3173,7 @@ static void comp_tablet_handle_destroy(struct wl_listener *listener, void *data)
 	free(tab);
 }
 
+/** Tablet-v2 set_cursor callback: route cursor surface updates to compositor cursor. */
 static void tablet_tool_set_cursor(struct wl_listener *listener, void *data)
 {
 	struct comp_tablet_tool *tt = wl_container_of(listener, tt, set_cursor);
@@ -2495,6 +3182,7 @@ static void tablet_tool_set_cursor(struct wl_listener *listener, void *data)
 	wlr_cursor_set_surface(server->cursor, ev->surface, ev->hotspot_x, ev->hotspot_y);
 }
 
+/** Tablet tool destroy callback: detach listeners and clear back-pointer on wlr tool. */
 static void tablet_tool_handle_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -2506,19 +3194,22 @@ static void tablet_tool_handle_destroy(struct wl_listener *listener, void *data)
 }
 
 static struct comp_tablet_tool *tablet_tool_get_or_create(struct comp_server *srv, struct comp_tablet *tab,
-	struct wlr_tablet_tool *wtool)
+														  struct wlr_tablet_tool *wtool)
 {
-	if (wtool->data) {
+	if (wtool->data)
+	{
 		return wtool->data;
 	}
 	struct comp_tablet_tool *tt = calloc(1, sizeof(*tt));
-	if (!tt) {
+	if (!tt)
+	{
 		return NULL;
 	}
 	tt->wlr_tool = wtool;
 	tt->tablet = tab;
 	tt->v2_tool = wlr_tablet_tool_create(srv->tablet_manager, srv->seat, wtool);
-	if (!tt->v2_tool) {
+	if (!tt->v2_tool)
+	{
 		free(tt);
 		return NULL;
 	}
@@ -2531,9 +3222,10 @@ static struct comp_tablet_tool *tablet_tool_get_or_create(struct comp_server *sr
 }
 
 static void tablet_tool_position(struct comp_server *server, struct comp_tablet_tool *tt, bool change_x,
-	bool change_y, double x, double y, uint32_t time_msec)
+								 bool change_y, double x, double y, uint32_t time_msec)
 {
-	if (!change_x && !change_y) {
+	if (!change_x && !change_y)
+	{
 		return;
 	}
 	struct wlr_input_device *tab_dev = &tt->tablet->wlr_tablet->base;
@@ -2544,117 +3236,146 @@ static void tablet_tool_position(struct comp_server *server, struct comp_tablet_
 	struct wlr_tablet_v2_tablet *v2tab = tt->tablet->v2_tablet;
 
 	if (surface && (wlr_surface_accepts_tablet_v2(surface, v2tab) ||
-			wlr_tablet_tool_v2_has_implicit_grab(tt->v2_tool))) {
+					wlr_tablet_tool_v2_has_implicit_grab(tt->v2_tool)))
+	{
 		wlr_tablet_v2_tablet_tool_notify_proximity_in(tt->v2_tool, v2tab, surface);
 		wlr_tablet_v2_tablet_tool_notify_motion(tt->v2_tool, sx, sy);
-	} else {
+	}
+	else
+	{
 		wlr_tablet_v2_tablet_tool_notify_proximity_out(tt->v2_tool);
 		process_cursor_motion(server, time_msec);
 		wlr_seat_pointer_notify_frame(server->seat);
 	}
 }
 
+/** Tablet axis callback: update position and forward all changed tool axes/states. */
 static void server_cursor_tablet_tool_axis(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_tablet_tool_axis);
 	struct wlr_tablet_tool_axis_event *event = data;
 	struct comp_tablet *tab = comp_tablet_from_wlr(server, event->tablet);
-	if (!tab) {
+	if (!tab)
+	{
 		return;
 	}
 	struct comp_tablet_tool *tt = tablet_tool_get_or_create(server, tab, event->tool);
-	if (!tt) {
+	if (!tt)
+	{
 		return;
 	}
 
 	tablet_tool_position(server, tt, (bool)(event->updated_axes & WLR_TABLET_TOOL_AXIS_X),
-		(bool)(event->updated_axes & WLR_TABLET_TOOL_AXIS_Y), event->x, event->y, event->time_msec);
+						 (bool)(event->updated_axes & WLR_TABLET_TOOL_AXIS_Y), event->x, event->y, event->time_msec);
 
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_PRESSURE) {
+	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_PRESSURE)
+	{
 		wlr_tablet_v2_tablet_tool_notify_pressure(tt->v2_tool, event->pressure);
 	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_DISTANCE) {
+	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_DISTANCE)
+	{
 		wlr_tablet_v2_tablet_tool_notify_distance(tt->v2_tool, event->distance);
 	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_TILT_X) {
+	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_TILT_X)
+	{
 		tt->tilt_x = event->tilt_x;
 	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_TILT_Y) {
+	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_TILT_Y)
+	{
 		tt->tilt_y = event->tilt_y;
 	}
-	if (event->updated_axes & (WLR_TABLET_TOOL_AXIS_TILT_X | WLR_TABLET_TOOL_AXIS_TILT_Y)) {
+	if (event->updated_axes & (WLR_TABLET_TOOL_AXIS_TILT_X | WLR_TABLET_TOOL_AXIS_TILT_Y))
+	{
 		wlr_tablet_v2_tablet_tool_notify_tilt(tt->v2_tool, tt->tilt_x, tt->tilt_y);
 	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_ROTATION) {
+	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_ROTATION)
+	{
 		wlr_tablet_v2_tablet_tool_notify_rotation(tt->v2_tool, event->rotation);
 	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_SLIDER) {
+	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_SLIDER)
+	{
 		wlr_tablet_v2_tablet_tool_notify_slider(tt->v2_tool, event->slider);
 	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_WHEEL) {
+	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_WHEEL)
+	{
 		wlr_tablet_v2_tablet_tool_notify_wheel(tt->v2_tool, event->wheel_delta, 0);
 	}
 }
 
+/** Tablet proximity callback: enter/leave proximity and update absolute position. */
 static void server_cursor_tablet_tool_proximity(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_tablet_tool_proximity);
 	struct wlr_tablet_tool_proximity_event *event = data;
 	struct comp_tablet *tab = comp_tablet_from_wlr(server, event->tablet);
-	if (!tab) {
+	if (!tab)
+	{
 		return;
 	}
 	struct comp_tablet_tool *tt = tablet_tool_get_or_create(server, tab, event->tool);
-	if (!tt) {
+	if (!tt)
+	{
 		return;
 	}
-	if (event->state == WLR_TABLET_TOOL_PROXIMITY_OUT) {
+	if (event->state == WLR_TABLET_TOOL_PROXIMITY_OUT)
+	{
 		wlr_tablet_v2_tablet_tool_notify_proximity_out(tt->v2_tool);
 		return;
 	}
 	tablet_tool_position(server, tt, true, true, event->x, event->y, event->time_msec);
 }
 
+/** Tablet tip callback: deliver tablet events or fallback pointer emulation path. */
 static void server_cursor_tablet_tool_tip(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_tablet_tool_tip);
 	struct wlr_tablet_tool_tip_event *event = data;
 	struct comp_tablet *tab = comp_tablet_from_wlr(server, event->tablet);
-	if (!tab) {
+	if (!tab)
+	{
 		return;
 	}
 	struct comp_tablet_tool *tt = tablet_tool_get_or_create(server, tab, event->tool);
-	if (!tt) {
+	if (!tt)
+	{
 		return;
 	}
 	double sx, sy;
 	struct wlr_surface *surface = surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
 	struct wlr_tablet_v2_tablet *v2tab = tab->v2_tablet;
 
-	if (event->state == WLR_TABLET_TOOL_TIP_UP) {
-		if (tt->emulating_pointer_from_tip) {
+	if (event->state == WLR_TABLET_TOOL_TIP_UP)
+	{
+		if (tt->emulating_pointer_from_tip)
+		{
 			tt->emulating_pointer_from_tip = false;
 			wlr_seat_pointer_notify_button(server->seat, event->time_msec, BTN_LEFT,
-				WL_POINTER_BUTTON_STATE_RELEASED);
+										   WL_POINTER_BUTTON_STATE_RELEASED);
 			wlr_seat_pointer_notify_frame(server->seat);
-		} else {
+		}
+		else
+		{
 			wlr_tablet_v2_tablet_tool_notify_up(tt->v2_tool);
 		}
 		return;
 	}
 
 	/* TIP_DOWN */
-	if (!surface || !wlr_surface_accepts_tablet_v2(surface, v2tab)) {
+	if (!surface || !wlr_surface_accepts_tablet_v2(surface, v2tab))
+	{
 		tt->emulating_pointer_from_tip = true;
 		process_cursor_motion(server, event->time_msec);
 		struct comp_toplevel *v = toplevel_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
-		if (v) {
+		if (v)
+		{
 			focus_toplevel(server, v);
-		} else {
+		}
+		else
+		{
 			layer_surface_try_keyboard_focus_click(server, server->cursor->x, server->cursor->y);
 		}
 		wlr_seat_pointer_notify_button(server->seat, event->time_msec, BTN_LEFT,
-			WL_POINTER_BUTTON_STATE_PRESSED);
+									   WL_POINTER_BUTTON_STATE_PRESSED);
 		wlr_seat_pointer_notify_frame(server->seat);
 		return;
 	}
@@ -2663,41 +3384,50 @@ static void server_cursor_tablet_tool_tip(struct wl_listener *listener, void *da
 	wlr_tablet_v2_tablet_tool_notify_motion(tt->v2_tool, sx, sy);
 	wlr_tablet_v2_tablet_tool_notify_down(tt->v2_tool);
 	struct comp_toplevel *v = toplevel_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
-	if (v) {
+	if (v)
+	{
 		focus_toplevel(server, v);
-	} else {
+	}
+	else
+	{
 		layer_surface_try_keyboard_focus_click(server, server->cursor->x, server->cursor->y);
 	}
 }
 
+/** Tablet button callback: forward to tablet-v2 or pointer fallback when needed. */
 static void server_cursor_tablet_tool_button(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_tablet_tool_button);
 	struct wlr_tablet_tool_button_event *event = data;
 	struct comp_tablet *tab = comp_tablet_from_wlr(server, event->tablet);
-	if (!tab) {
+	if (!tab)
+	{
 		return;
 	}
 	struct comp_tablet_tool *tt = tablet_tool_get_or_create(server, tab, event->tool);
-	if (!tt) {
+	if (!tt)
+	{
 		return;
 	}
 	double sx, sy;
 	struct wlr_surface *surface = surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
 	struct wlr_tablet_v2_tablet *v2tab = tab->v2_tablet;
-	if (!surface || !wlr_surface_accepts_tablet_v2(surface, v2tab)) {
+	if (!surface || !wlr_surface_accepts_tablet_v2(surface, v2tab))
+	{
 		uint32_t btn = BTN_RIGHT;
 		enum wl_pointer_button_state st = event->state == WLR_BUTTON_PRESSED
-			? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED;
+											  ? WL_POINTER_BUTTON_STATE_PRESSED
+											  : WL_POINTER_BUTTON_STATE_RELEASED;
 		process_cursor_motion(server, event->time_msec);
 		wlr_seat_pointer_notify_button(server->seat, event->time_msec, btn, st);
 		wlr_seat_pointer_notify_frame(server->seat);
 		return;
 	}
 	wlr_tablet_v2_tablet_tool_notify_button(tt->v2_tool, event->button,
-		(enum zwp_tablet_pad_v2_button_state)event->state);
+											(enum zwp_tablet_pad_v2_button_state)event->state);
 }
 
+/** Touch-down callback: prefer native touch delivery, fallback to pointer emulation. */
 static void server_cursor_touch_down(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_touch_down);
@@ -2708,13 +3438,17 @@ static void server_cursor_touch_down(struct wl_listener *listener, void *data)
 	double sx, sy;
 	struct wlr_surface *surface = surface_at(server, lx, ly, &sx, &sy);
 
-	if (surface && wlr_surface_accepts_touch(surface, server->seat)) {
+	if (surface && wlr_surface_accepts_touch(surface, server->seat))
+	{
 		server->touch_pointer_emu = false;
 		wlr_seat_touch_notify_down(server->seat, surface, event->time_msec, event->touch_id, sx, sy);
 		struct comp_toplevel *v = toplevel_at(server, lx, ly, &sx, &sy);
-		if (v) {
+		if (v)
+		{
 			focus_toplevel(server, v);
-		} else {
+		}
+		else
+		{
 			layer_surface_try_keyboard_focus_click(server, lx, ly);
 		}
 		return;
@@ -2723,29 +3457,36 @@ static void server_cursor_touch_down(struct wl_listener *listener, void *data)
 	wlr_cursor_warp_closest(server->cursor, &event->touch->base, lx, ly);
 	process_cursor_motion(server, event->time_msec);
 	struct comp_toplevel *v = toplevel_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
-	if (v) {
+	if (v)
+	{
 		focus_toplevel(server, v);
-	} else {
+	}
+	else
+	{
 		layer_surface_try_keyboard_focus_click(server, server->cursor->x, server->cursor->y);
 	}
-	if (server->grab == COMP_GRAB_NONE) {
+	if (server->grab == COMP_GRAB_NONE)
+	{
 		server->touch_pointer_emu = true;
 		server->touch_pointer_emu_id = event->touch_id;
 		wlr_seat_pointer_notify_button(server->seat, event->time_msec, BTN_LEFT,
-			WL_POINTER_BUTTON_STATE_PRESSED);
+									   WL_POINTER_BUTTON_STATE_PRESSED);
 		wlr_seat_pointer_notify_frame(server->seat);
 	}
 }
 
+/** Touch-up callback: release emulated pointer press or forward touch up. */
 static void server_cursor_touch_up(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_touch_up);
 	struct wlr_touch_up_event *event = data;
-	if (server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id) {
+	if (server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id)
+	{
 		server->touch_pointer_emu = false;
-		if (server->grab == COMP_GRAB_NONE) {
+		if (server->grab == COMP_GRAB_NONE)
+		{
 			wlr_seat_pointer_notify_button(server->seat, event->time_msec, BTN_LEFT,
-				WL_POINTER_BUTTON_STATE_RELEASED);
+										   WL_POINTER_BUTTON_STATE_RELEASED);
 			wlr_seat_pointer_notify_frame(server->seat);
 		}
 		return;
@@ -2753,6 +3494,7 @@ static void server_cursor_touch_up(struct wl_listener *listener, void *data)
 	wlr_seat_touch_notify_up(server->seat, event->time_msec, event->touch_id);
 }
 
+/** Touch-motion callback: route to touch surface or pointer emulation path. */
 static void server_cursor_touch_motion(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_touch_motion);
@@ -2760,40 +3502,49 @@ static void server_cursor_touch_motion(struct wl_listener *listener, void *data)
 	double lx, ly;
 	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base, event->x, event->y, &lx, &ly);
 	double sx, sy;
-	if (server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id) {
+	if (server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id)
+	{
 		wlr_cursor_warp_closest(server->cursor, &event->touch->base, lx, ly);
 		process_cursor_motion(server, event->time_msec);
 		return;
 	}
 	struct wlr_surface *surface = surface_at(server, lx, ly, &sx, &sy);
-	if (surface && wlr_surface_accepts_touch(surface, server->seat)) {
+	if (surface && wlr_surface_accepts_touch(surface, server->seat))
+	{
 		wlr_seat_touch_notify_motion(server->seat, event->time_msec, event->touch_id, sx, sy);
-	} else {
+	}
+	else
+	{
 		wlr_cursor_warp_closest(server->cursor, &event->touch->base, lx, ly);
 		process_cursor_motion(server, event->time_msec);
 	}
 }
 
+/** Touch-cancel callback: cancel emulation or notify touch client cancellation. */
 static void server_cursor_touch_cancel(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_server *server = wl_container_of(listener, server, cursor_touch_cancel);
 	struct wlr_touch_cancel_event *event = data;
-	if (server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id) {
+	if (server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id)
+	{
 		server->touch_pointer_emu = false;
-		if (server->grab == COMP_GRAB_NONE) {
+		if (server->grab == COMP_GRAB_NONE)
+		{
 			wlr_seat_pointer_notify_button(server->seat, event->time_msec, BTN_LEFT,
-				WL_POINTER_BUTTON_STATE_RELEASED);
+										   WL_POINTER_BUTTON_STATE_RELEASED);
 			wlr_seat_pointer_notify_frame(server->seat);
 		}
 		return;
 	}
 	struct wlr_touch_point *pt = wlr_seat_touch_get_point(server->seat, event->touch_id);
-	if (pt && pt->client) {
+	if (pt && pt->client)
+	{
 		wlr_seat_touch_notify_cancel(server->seat, pt->client);
 	}
 }
 
+/** Touch-frame callback: flush touch event batch to seat. */
 static void server_cursor_touch_frame(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -2801,16 +3552,20 @@ static void server_cursor_touch_frame(struct wl_listener *listener, void *data)
 	wlr_seat_touch_notify_frame(server->seat);
 }
 
+/** new_input callback: initialize device-specific handlers and seat integration. */
 static void server_new_input(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, new_input);
 	struct wlr_input_device *dev = data;
 
-	switch (dev->type) {
-	case WLR_INPUT_DEVICE_KEYBOARD: {
+	switch (dev->type)
+	{
+	case WLR_INPUT_DEVICE_KEYBOARD:
+	{
 		struct wlr_keyboard *wlr_kbd = wlr_keyboard_from_input_device(dev);
 		struct comp_keyboard *kbd = calloc(1, sizeof(*kbd));
-		if (!kbd) {
+		if (!kbd)
+		{
 			wlr_log(WLR_ERROR, "Out of memory allocating keyboard state");
 			return;
 		}
@@ -2819,7 +3574,8 @@ static void server_new_input(struct wl_listener *listener, void *data)
 
 		struct xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 		struct xkb_keymap *map = xkb_keymap_new_from_names(ctx, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
-		if (!map) {
+		if (!map)
+		{
 			wlr_log(WLR_ERROR, "Failed to compile XKB keymap");
 			exit(1);
 		}
@@ -2850,9 +3606,11 @@ static void server_new_input(struct wl_listener *listener, void *data)
 		track_input_device(server, dev);
 		server_update_seat_capabilities(server);
 		break;
-	case WLR_INPUT_DEVICE_TABLET: {
+	case WLR_INPUT_DEVICE_TABLET:
+	{
 		struct comp_tablet *tab = calloc(1, sizeof(*tab));
-		if (!tab) {
+		if (!tab)
+		{
 			wlr_log(WLR_ERROR, "Out of memory allocating tablet state");
 			return;
 		}
@@ -2860,7 +3618,8 @@ static void server_new_input(struct wl_listener *listener, void *data)
 		tab->dev = dev;
 		tab->wlr_tablet = wlr_tablet_from_input_device(dev);
 		tab->v2_tablet = wlr_tablet_create(server->tablet_manager, server->seat, dev);
-		if (!tab->v2_tablet) {
+		if (!tab->v2_tablet)
+		{
 			free(tab);
 			wlr_log(WLR_ERROR, "wlr_tablet_create failed for %s", dev->name);
 			return;
@@ -2880,12 +3639,14 @@ static void server_new_input(struct wl_listener *listener, void *data)
 }
 
 static bool surface_local_to_layout(struct comp_server *server, struct wlr_surface *surface,
-	double sx, double sy, double *lx, double *ly)
+									double sx, double sy, double *lx, double *ly)
 {
 	struct wlr_surface *root = wlr_surface_get_root_surface(surface);
 	struct comp_toplevel *t;
-	wl_list_for_each(t, &server->toplevels, link) {
-		if (t->xdg_toplevel && t->xdg_toplevel->base->surface == root) {
+	wl_list_for_each(t, &server->toplevels, link)
+	{
+		if (t->xdg_toplevel && t->xdg_toplevel->base->surface == root)
+		{
 			const struct wlr_box *geo = &t->xdg_toplevel->base->geometry;
 			*lx = (double)t->scene_tree->node.x + (double)geo->x + sx;
 			*ly = (double)t->scene_tree->node.y + (double)geo->y + sy;
@@ -2893,7 +3654,8 @@ static bool surface_local_to_layout(struct comp_server *server, struct wlr_surfa
 		}
 	}
 	struct wlr_scene_tree *tree = surface->data;
-	if (tree) {
+	if (tree)
+	{
 		int node_x, node_y;
 		wlr_scene_node_coords(&tree->node, &node_x, &node_y);
 		*lx = (double)node_x + sx;
@@ -2903,79 +3665,99 @@ static bool surface_local_to_layout(struct comp_server *server, struct wlr_surfa
 	return false;
 }
 
+/** Re-evaluate active pointer-constraint region and optionally warp into valid bounds. */
 static void pointer_constraint_check_region(struct comp_server *server)
 {
 	struct wlr_pointer_constraint_v1 *constraint = server->active_pointer_constraint;
-	if (!constraint) {
+	if (!constraint)
+	{
 		return;
 	}
 	pixman_region32_t *region = &constraint->region;
-	if (server->pointer_confine_requires_warp) {
+	if (server->pointer_confine_requires_warp)
+	{
 		server->pointer_confine_requires_warp = false;
 		double sx, sy;
-		if (!surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy)) {
+		if (!surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy))
+		{
 			return;
 		}
-		if (!pixman_region32_contains_point(region, (int)floor(sx), (int)floor(sy), NULL)) {
+		if (!pixman_region32_contains_point(region, (int)floor(sx), (int)floor(sy), NULL))
+		{
 			int nboxes;
 			pixman_box32_t *boxes = pixman_region32_rectangles(region, &nboxes);
-			if (nboxes > 0) {
+			if (nboxes > 0)
+			{
 				sx = (boxes[0].x1 + boxes[0].x2) / 2.0;
 				sy = (boxes[0].y1 + boxes[0].y2) / 2.0;
 				double lx, ly;
-				if (surface_local_to_layout(server, constraint->surface, sx, sy, &lx, &ly)) {
+				if (surface_local_to_layout(server, constraint->surface, sx, sy, &lx, &ly))
+				{
 					wlr_cursor_warp_closest(server->cursor, NULL, lx, ly);
 				}
 			}
 		}
 	}
-	if (constraint->type == WLR_POINTER_CONSTRAINT_V1_CONFINED) {
+	if (constraint->type == WLR_POINTER_CONSTRAINT_V1_CONFINED)
+	{
 		pixman_region32_copy(&server->pointer_confine, region);
-	} else {
+	}
+	else
+	{
 		pixman_region32_clear(&server->pointer_confine);
 	}
 }
 
 static void pointer_constraint_warp_hint(struct comp_server *server,
-	struct wlr_pointer_constraint_v1 *constraint)
+										 struct wlr_pointer_constraint_v1 *constraint)
 {
-	if (!constraint->current.cursor_hint.enabled) {
+	if (!constraint->current.cursor_hint.enabled)
+	{
 		return;
 	}
 	double lx, ly;
 	if (surface_local_to_layout(server, constraint->surface,
-			constraint->current.cursor_hint.x, constraint->current.cursor_hint.y, &lx, &ly)) {
+								constraint->current.cursor_hint.x, constraint->current.cursor_hint.y, &lx, &ly))
+	{
 		wlr_cursor_warp_closest(server->cursor, NULL, lx, ly);
 	}
 }
 
 static void cursor_constrain(struct comp_server *server, struct wlr_pointer_constraint_v1 *constraint,
-	double sx, double sy)
+							 double sx, double sy)
 {
 	(void)sx;
 	(void)sy;
-	if (server->active_pointer_constraint == constraint) {
+	if (server->active_pointer_constraint == constraint)
+	{
 		return;
 	}
-	if (server->pointer_constraint_commit.link.next) {
+	if (server->pointer_constraint_commit.link.next)
+	{
 		wl_list_remove(&server->pointer_constraint_commit.link);
 	}
-	if (server->active_pointer_constraint) {
-		if (!constraint) {
+	if (server->active_pointer_constraint)
+	{
+		if (!constraint)
+		{
 			pointer_constraint_warp_hint(server, server->active_pointer_constraint);
 		}
 		wlr_pointer_constraint_v1_send_deactivated(server->active_pointer_constraint);
 	}
 	server->active_pointer_constraint = constraint;
-	if (!constraint) {
+	if (!constraint)
+	{
 		wl_list_init(&server->pointer_constraint_commit.link);
 		return;
 	}
 	server->pointer_confine_requires_warp = true;
-	if (pixman_region32_not_empty(&constraint->current.region)) {
+	if (pixman_region32_not_empty(&constraint->current.region))
+	{
 		pixman_region32_intersect(&constraint->region, &constraint->surface->input_region,
-			&constraint->current.region);
-	} else {
+								  &constraint->current.region);
+	}
+	else
+	{
 		pixman_region32_copy(&constraint->region, &constraint->surface->input_region);
 	}
 	pointer_constraint_check_region(server);
@@ -2984,16 +3766,19 @@ static void cursor_constrain(struct comp_server *server, struct wlr_pointer_cons
 	wl_signal_add(&constraint->surface->events.commit, &server->pointer_constraint_commit);
 }
 
+/** Constraint-surface commit callback: refresh effective confinement region. */
 static void pointer_constraint_handle_commit(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, pointer_constraint_commit);
 	(void)data;
-	if (!server->active_pointer_constraint) {
+	if (!server->active_pointer_constraint)
+	{
 		return;
 	}
 	pointer_constraint_check_region(server);
 }
 
+/** Constraint set_region callback: request deferred confinement warp/revalidation. */
 static void pointer_constraint_handle_set_region(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -3001,6 +3786,7 @@ static void pointer_constraint_handle_set_region(struct wl_listener *listener, v
 	pc->server->pointer_confine_requires_warp = true;
 }
 
+/** Constraint destroy callback: detach listeners and deactivate if currently active. */
 static void pointer_constraint_handle_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -3008,19 +3794,22 @@ static void pointer_constraint_handle_destroy(struct wl_listener *listener, void
 	struct comp_server *server = pc->server;
 	wl_list_remove(&pc->destroy.link);
 	wl_list_remove(&pc->set_region.link);
-	if (server->active_pointer_constraint == pc->constraint) {
+	if (server->active_pointer_constraint == pc->constraint)
+	{
 		cursor_constrain(server, NULL, NAN, NAN);
 	}
 	free(pc);
 }
 
+/** new_constraint callback: allocate wrapper, register listeners, and activate on focus match. */
 static void handle_new_pointer_constraint(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, new_pointer_constraint);
 	struct wlr_pointer_constraint_v1 *constraint = data;
 
 	struct comp_pointer_constraint *pc = calloc(1, sizeof(*pc));
-	if (!pc) {
+	if (!pc)
+	{
 		return;
 	}
 	pc->server = server;
@@ -3031,41 +3820,48 @@ static void handle_new_pointer_constraint(struct wl_listener *listener, void *da
 	wl_signal_add(&constraint->events.set_region, &pc->set_region);
 
 	struct wlr_surface *focused = server->seat->pointer_state.focused_surface;
-	if (focused == constraint->surface) {
+	if (focused == constraint->surface)
+	{
 		double sx, sy;
-		if (surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy)) {
+		if (surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy))
+		{
 			cursor_constrain(server, constraint, sx, sy);
 		}
 	}
 }
 
+/** Pointer-focus change callback: activate/deactivate constraints for new focused surface. */
 static void seat_pointer_focus_change(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, seat_pointer_focus_change);
 	struct wlr_seat_pointer_focus_change_event *ev = data;
 	struct wlr_pointer_constraint_v1 *constraint =
 		wlr_pointer_constraints_v1_constraint_for_surface(server->pointer_constraints,
-			ev->new_surface, server->seat);
+														  ev->new_surface, server->seat);
 	cursor_constrain(server, constraint, ev->sx, ev->sy);
 }
 
 static void apply_pointer_motion(struct comp_server *server, struct wlr_input_device *dev,
-	uint32_t time_msec, double dx, double dy, double dx_unaccel, double dy_unaccel)
+								 uint32_t time_msec, double dx, double dy, double dx_unaccel, double dy_unaccel)
 {
-	if (server->relative_pointer_manager) {
+	if (server->relative_pointer_manager)
+	{
 		wlr_relative_pointer_manager_v1_send_relative_motion(server->relative_pointer_manager,
-			server->seat, (uint64_t)time_msec * 1000, dx, dy, dx_unaccel, dy_unaccel);
+															 server->seat, (uint64_t)time_msec * 1000, dx, dy, dx_unaccel, dy_unaccel);
 	}
 
-	if (server->active_pointer_constraint && dev && dev->type == WLR_INPUT_DEVICE_POINTER) {
+	if (server->active_pointer_constraint && dev && dev->type == WLR_INPUT_DEVICE_POINTER)
+	{
 		double sx, sy;
 		struct wlr_surface *surface = surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
-		if (!surface || server->active_pointer_constraint->surface != surface) {
+		if (!surface || server->active_pointer_constraint->surface != surface)
+		{
 			return;
 		}
 		double sx_confined, sy_confined;
 		if (!wlr_region_confine(&server->pointer_confine, sx, sy, sx + dx, sy + dy,
-				&sx_confined, &sy_confined)) {
+								&sx_confined, &sy_confined))
+		{
 			return;
 		}
 		dx = sx_confined - sx;
@@ -3075,15 +3871,22 @@ static void apply_pointer_motion(struct comp_server *server, struct wlr_input_de
 	wlr_cursor_move(server->cursor, dev, dx, dy);
 }
 
+/**
+ * Route cursor motion according to current grab state, then update pointer focus
+ * and motion delivery for the surface currently under the cursor.
+ */
 static void process_cursor_motion(struct comp_server *server, uint32_t time_msec)
 {
-	if (server->grab == COMP_GRAB_MOVE && server->grabbed_toplevel) {
+	if (server->grab == COMP_GRAB_MOVE && server->grabbed_toplevel)
+	{
 		struct comp_toplevel *v = server->grabbed_toplevel;
 		double dx = server->cursor->x - server->grab_cursor_x;
 		double dy = server->cursor->y - server->grab_cursor_y;
 		wlr_scene_node_set_position(&v->scene_tree->node,
-			server->grab_view_x + (int)dx, server->grab_view_y + (int)dy);
-	} else if (server->grab == COMP_GRAB_RESIZE && server->grabbed_toplevel) {
+									server->grab_view_x + (int)dx, server->grab_view_y + (int)dy);
+	}
+	else if (server->grab == COMP_GRAB_RESIZE && server->grabbed_toplevel)
+	{
 		struct comp_toplevel *v = server->grabbed_toplevel;
 		double dx = server->cursor->x - server->grab_cursor_x;
 		double dy = server->cursor->y - server->grab_cursor_y;
@@ -3093,27 +3896,37 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 		int w = server->grab_view_width;
 		int h = server->grab_view_height;
 
-		if (server->resize_edges & WLR_EDGE_LEFT) {
+		if (server->resize_edges & WLR_EDGE_LEFT)
+		{
 			x = server->grab_view_x + (int)dx;
 			w = server->grab_view_width - (int)dx;
-		} else if (server->resize_edges & WLR_EDGE_RIGHT) {
+		}
+		else if (server->resize_edges & WLR_EDGE_RIGHT)
+		{
 			w = server->grab_view_width + (int)dx;
 		}
-		if (server->resize_edges & WLR_EDGE_TOP) {
+		if (server->resize_edges & WLR_EDGE_TOP)
+		{
 			y = server->grab_view_y + (int)dy;
 			h = server->grab_view_height - (int)dy;
-		} else if (server->resize_edges & WLR_EDGE_BOTTOM) {
+		}
+		else if (server->resize_edges & WLR_EDGE_BOTTOM)
+		{
 			h = server->grab_view_height + (int)dy;
 		}
 
-		if (w < 1) {
-			if (server->resize_edges & WLR_EDGE_LEFT) {
+		if (w < 1)
+		{
+			if (server->resize_edges & WLR_EDGE_LEFT)
+			{
 				x += w - 1;
 			}
 			w = 1;
 		}
-		if (h < 1) {
-			if (server->resize_edges & WLR_EDGE_TOP) {
+		if (h < 1)
+		{
+			if (server->resize_edges & WLR_EDGE_TOP)
+			{
 				y += h - 1;
 			}
 			h = 1;
@@ -3126,7 +3939,8 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 	double sx, sy;
 	struct wlr_surface *surface = surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
 
-	if (!surface) {
+	if (!surface)
+	{
 		wlr_seat_pointer_notify_clear_focus(server->seat);
 		return;
 	}
@@ -3134,15 +3948,17 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 	wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
 }
 
+/** Relative pointer motion callback. */
 static void server_cursor_motion(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_motion);
 	struct wlr_pointer_motion_event *ev = data;
 	apply_pointer_motion(server, &ev->pointer->base, ev->time_msec, ev->delta_x, ev->delta_y,
-		ev->unaccel_dx, ev->unaccel_dy);
+						 ev->unaccel_dx, ev->unaccel_dy);
 	process_cursor_motion(server, ev->time_msec);
 }
 
+/** Absolute pointer motion callback. */
 static void server_cursor_motion_absolute(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_motion_absolute);
@@ -3151,36 +3967,48 @@ static void server_cursor_motion_absolute(struct wl_listener *listener, void *da
 	process_cursor_motion(server, ev->time_msec);
 }
 
+/**
+ * Try transferring keyboard focus to interactive layer-surfaces on click/tap,
+ * respecting layer-shell keyboard interactivity semantics.
+ */
 static void layer_surface_try_keyboard_focus_click(struct comp_server *server, double lx, double ly)
 {
 	double sx, sy;
 	struct wlr_surface *surf = surface_at(server, lx, ly, &sx, &sy);
-	if (!surf) {
+	if (!surf)
+	{
 		return;
 	}
 	struct wlr_surface *root = wlr_surface_get_root_surface(surf);
 	struct wlr_layer_surface_v1 *ls = wlr_layer_surface_v1_try_from_wlr_surface(root);
-	if (!ls || !ls->surface->mapped) {
+	if (!ls || !ls->surface->mapped)
+	{
 		return;
 	}
 	const enum zwlr_layer_surface_v1_keyboard_interactivity ki = ls->current.keyboard_interactive;
 	const bool top_or_overlay = ls->current.layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP ||
-		ls->current.layer == ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
-	if (ki == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) {
+								ls->current.layer == ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
+	if (ki == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE)
+	{
 		return;
 	}
-	if (ki == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE && !top_or_overlay) {
+	if (ki == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE && !top_or_overlay)
+	{
 		return;
 	}
 	struct wlr_seat *seat = server->seat;
 	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(seat);
-	if (kbd) {
+	if (kbd)
+	{
 		wlr_seat_keyboard_notify_enter(seat, ls->surface, kbd->keycodes, kbd->num_keycodes, &kbd->modifiers);
-	} else {
+	}
+	else
+	{
 		wlr_seat_keyboard_notify_enter(seat, ls->surface, NULL, 0, NULL);
 	}
 }
 
+/** Pointer button callback: grab lifecycle, focus policy, and client button forwarding. */
 static void server_cursor_button(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_button);
@@ -3188,31 +4016,37 @@ static void server_cursor_button(struct wl_listener *listener, void *data)
 
 	uint32_t mods = 0;
 	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
-	if (kbd) {
+	if (kbd)
+	{
 		mods = wlr_keyboard_get_modifiers(kbd);
 	}
 
-	if (ev->state == WL_POINTER_BUTTON_STATE_RELEASED && server->grab != COMP_GRAB_NONE) {
+	if (ev->state == WL_POINTER_BUTTON_STATE_RELEASED && server->grab != COMP_GRAB_NONE)
+	{
 		struct comp_toplevel *dragged = server->grabbed_toplevel;
 		bool was_move = server->grab == COMP_GRAB_MOVE;
 		server->grab = COMP_GRAB_NONE;
 		server->grabbed_toplevel = NULL;
 		server->resize_edges = 0;
-		if (was_move && (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) && dragged) {
+		if (was_move && (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) && dragged)
+		{
 			double sx, sy;
 			struct comp_toplevel *drop =
 				toplevel_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
 			if (drop && drop != dragged && !dragged->tile_float && !drop->tile_float &&
-			    dragged->workspace == drop->workspace) {
+				dragged->workspace == drop->workspace)
+			{
 				tile_swap_sort_keys(dragged, drop);
 			}
-			if (dragged->layout_anim_tracked) {
+			if (dragged->layout_anim_tracked)
+			{
 				dragged->layout_anim_x = (double)dragged->scene_tree->node.x;
 				dragged->layout_anim_y = (double)dragged->scene_tree->node.y;
 			}
 			server_arrange_toplevels(server);
 		}
-		if (ev->button == BTN_LEFT && server->swallow_left_release) {
+		if (ev->button == BTN_LEFT && server->swallow_left_release)
+		{
 			server->swallow_left_release = false;
 			process_cursor_motion(server, ev->time_msec);
 			return;
@@ -3223,22 +4057,28 @@ static void server_cursor_button(struct wl_listener *listener, void *data)
 	}
 
 	if (ev->state == WL_POINTER_BUTTON_STATE_PRESSED && ev->button == BTN_LEFT &&
-	    (mods & WLR_MODIFIER_LOGO)) {
+		(mods & WLR_MODIFIER_LOGO))
+	{
 		double sx, sy;
 		struct comp_toplevel *v = toplevel_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
-		if (v) {
+		if (v)
+		{
 			begin_move(server, v, true);
 			focus_toplevel(server, v);
 			return;
 		}
 	}
 
-	if (ev->state == WL_POINTER_BUTTON_STATE_PRESSED && ev->button == BTN_LEFT) {
+	if (ev->state == WL_POINTER_BUTTON_STATE_PRESSED && ev->button == BTN_LEFT)
+	{
 		double sx, sy;
 		struct comp_toplevel *v = toplevel_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
-		if (v) {
+		if (v)
+		{
 			focus_toplevel(server, v);
-		} else {
+		}
+		else
+		{
 			layer_surface_try_keyboard_focus_click(server, server->cursor->x, server->cursor->y);
 		}
 	}
@@ -3246,14 +4086,16 @@ static void server_cursor_button(struct wl_listener *listener, void *data)
 	wlr_seat_pointer_notify_button(server->seat, ev->time_msec, ev->button, ev->state);
 }
 
+/** Pointer axis callback (scroll/wheel). */
 static void server_cursor_axis(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_axis);
 	struct wlr_pointer_axis_event *ev = data;
 	wlr_seat_pointer_notify_axis(server->seat, ev->time_msec, ev->orientation,
-		ev->delta, ev->delta_discrete, ev->source, ev->relative_direction);
+								 ev->delta, ev->delta_discrete, ev->source, ev->relative_direction);
 }
 
+/** Pointer frame callback: flush pointer frame and restore default cursor image. */
 static void server_cursor_frame(struct wl_listener *listener, void *data)
 {
 	(void)data;
@@ -3262,6 +4104,7 @@ static void server_cursor_frame(struct wl_listener *listener, void *data)
 	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 }
 
+/** Seat request_set_cursor callback: allow client cursor surface updates. */
 static void seat_request_cursor(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, seat_request_cursor);
@@ -3269,6 +4112,7 @@ static void seat_request_cursor(struct wl_listener *listener, void *data)
 	wlr_cursor_set_surface(server->cursor, ev->surface, ev->hotspot_x, ev->hotspot_y);
 }
 
+/** Seat request_set_selection callback: route clipboard selection ownership. */
 static void seat_request_set_selection(struct wl_listener *listener, void *data)
 {
 	struct comp_server *server = wl_container_of(listener, server, seat_request_set_selection);
@@ -3276,33 +4120,57 @@ static void seat_request_set_selection(struct wl_listener *listener, void *data)
 	wlr_seat_set_selection(server->seat, ev->source, ev->serial);
 }
 
+/** Backend destroy callback: terminate the Wayland event loop on backend teardown. */
+static void server_backend_destroy(struct wl_listener *listener, void *data)
+{
+	(void)data;
+	struct comp_server *server = wl_container_of(listener, server, backend_destroy);
+	if (!server->wl_display)
+	{
+		return;
+	}
+	/*
+	 * Nested backends (e.g. X11) can tear down from outside the Wayland loop
+	 * when the host window is closed. Terminating here ensures wl_display_run()
+	 * exits and the compositor process does not linger in the background.
+	 */
+	wlr_log(WLR_INFO, "Backend destroyed, terminating display loop");
+	wl_display_terminate(server->wl_display);
+}
+
+/** Initialize wlroots objects, protocol globals, listeners, and compositor runtime state. */
 bool server_init(struct comp_server *server)
 {
 	server->wl_display = wl_display_create();
-	if (!server->wl_display) {
+	if (!server->wl_display)
+	{
 		return false;
 	}
 	struct wl_event_loop *loop = wl_display_get_event_loop(server->wl_display);
 
 	server->backend = wlr_backend_autocreate(loop, &server->session);
-	if (!server->backend) {
+	if (!server->backend)
+	{
 		return false;
 	}
 	server->renderer = wlr_renderer_autocreate(server->backend);
-	if (!server->renderer) {
+	if (!server->renderer)
+	{
 		return false;
 	}
 	wlr_renderer_init_wl_display(server->renderer, server->wl_display);
 
 	server->allocator = wlr_allocator_autocreate(server->backend, server->renderer);
-	if (!server->allocator) {
+	if (!server->allocator)
+	{
 		return false;
 	}
 
 	struct wl_display *dpy = server->wl_display;
 	server->compositor = wlr_compositor_create(dpy, 6, server->renderer);
 	server->viewporter = wlr_viewporter_create(dpy);
-	if (!server->viewporter) {
+	if (!server->viewporter)
+	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_viewporter (required for xwayland-satellite)");
 		return false;
 	}
@@ -3310,23 +4178,27 @@ bool server_init(struct comp_server *server)
 	server->data_device_mgr = wlr_data_device_manager_create(dpy);
 	server->output_layout = wlr_output_layout_create(dpy);
 	server->xdg_output_manager = wlr_xdg_output_manager_v1_create(dpy, server->output_layout);
-	if (!server->xdg_output_manager) {
+	if (!server->xdg_output_manager)
+	{
 		return false;
 	}
 
 	server->screencopy_manager = wlr_screencopy_manager_v1_create(dpy);
-	if (!server->screencopy_manager) {
+	if (!server->screencopy_manager)
+	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_screencopy_manager_v1");
 		return false;
 	}
 
 	server->pointer_constraints = wlr_pointer_constraints_v1_create(dpy);
-	if (!server->pointer_constraints) {
+	if (!server->pointer_constraints)
+	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_pointer_constraints_v1");
 		return false;
 	}
 	server->relative_pointer_manager = wlr_relative_pointer_manager_v1_create(dpy);
-	if (!server->relative_pointer_manager) {
+	if (!server->relative_pointer_manager)
+	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_relative_pointer_manager_v1");
 		return false;
 	}
@@ -3348,10 +4220,14 @@ bool server_init(struct comp_server *server)
 
 	server->xdg_shell = wlr_xdg_shell_create(dpy, 3);
 	server->foreign_toplevel_manager = wlr_foreign_toplevel_manager_v1_create(dpy);
-	if (!server->foreign_toplevel_manager) {
+	if (!server->foreign_toplevel_manager)
+	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_foreign_toplevel_manager_v1");
 		return false;
 	}
+	/* Keep backend lifetime wired to compositor shutdown. */
+	server->backend_destroy.notify = server_backend_destroy;
+	wl_signal_add(&server->backend->events.destroy, &server->backend_destroy);
 	server->new_output.notify = server_new_output;
 	wl_signal_add(&server->backend->events.new_output, &server->new_output);
 	server->new_input.notify = server_new_input;
@@ -3360,7 +4236,8 @@ bool server_init(struct comp_server *server)
 	wl_signal_add(&server->xdg_shell->events.new_toplevel, &server->xdg_shell_new_toplevel);
 
 	server->xdg_decoration_manager = wlr_xdg_decoration_manager_v1_create(dpy);
-	if (!server->xdg_decoration_manager) {
+	if (!server->xdg_decoration_manager)
+	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_xdg_decoration_manager_v1");
 		return false;
 	}
@@ -3370,12 +4247,14 @@ bool server_init(struct comp_server *server)
 	server->cursor = wlr_cursor_create();
 	wlr_cursor_attach_output_layout(server->cursor, server->output_layout);
 	server->cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
-	if (!server->cursor_mgr) {
+	if (!server->cursor_mgr)
+	{
 		return false;
 	}
 
 	server->layer_shell = wlr_layer_shell_v1_create(dpy, 4);
-	if (!server->layer_shell) {
+	if (!server->layer_shell)
+	{
 		return false;
 	}
 	wl_list_init(&server->layers);
@@ -3384,7 +4263,8 @@ bool server_init(struct comp_server *server)
 
 	server->seat = wlr_seat_create(dpy, "seat0");
 	server->tablet_manager = wlr_tablet_v2_create(dpy);
-	if (!server->tablet_manager) {
+	if (!server->tablet_manager)
+	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_tablet_v2 manager");
 		return false;
 	}
@@ -3434,7 +4314,8 @@ bool server_init(struct comp_server *server)
 	server->ipc_listen_fd = -1;
 	server->ipc_socket_path[0] = '\0';
 	server->grab = COMP_GRAB_NONE;
-	if (server->ipc_enabled && !ipc_init(server)) {
+	if (server->ipc_enabled && !ipc_init(server))
+	{
 		wlr_log(WLR_ERROR, "ipc: disabled (initialization failed)");
 		server->ipc_enabled = false;
 	}
@@ -3443,11 +4324,18 @@ bool server_init(struct comp_server *server)
 	return true;
 }
 
+/** Shutdown helper: run hooks and release high-level runtime state. */
 static void server_finish(struct comp_server *server)
 {
-	if (compositor_session_active && server->config) {
+	if (compositor_session_active && server->config)
+	{
 		comp_config_run_shutdown(server->config);
 	}
+	/*
+	 * Prevent wlroots destroy-time assertions by removing our listeners from
+	 * protocol/backend listener lists before the display/global teardown starts.
+	 */
+	server_detach_global_listeners(server);
 	compositor_session_active = false;
 	ext_workspace_fini(server);
 	ipc_fini(server);
@@ -3457,9 +4345,162 @@ static void server_finish(struct comp_server *server)
 	server->config_path = NULL;
 }
 
+/** Print command-line usage and available startup/IPC flags. */
+static void print_usage(const char *argv0)
+{
+	const char *prog = (argv0 && argv0[0]) ? argv0 : "stackcomp";
+	printf("Usage: %s [options]\n", prog);
+	printf("\n");
+	printf("General:\n");
+	printf("  -h, --help                 Show this help and exit\n");
+	printf("  -c, --config PATH          Load config from PATH\n");
+	printf("\n");
+	printf("Logging:\n");
+	printf("  --log-level LEVEL          silent|error|info|debug\n");
+	printf("  --quiet                    Shortcut for --log-level error\n");
+	printf("  --verbose                  Shortcut for --log-level debug\n");
+	printf("  --log-file PATH            Append logs to PATH\n");
+	printf("\n");
+	printf("Crash handling:\n");
+	printf("  --crash-log PATH           Append crash markers to PATH\n");
+	printf("  --no-crash-handler         Disable crash handler installation\n");
+	printf("  --crash-test               Trigger a deliberate SIGSEGV after startup\n");
+	printf("\n");
+	printf("Runtime control (IPC-aware):\n");
+	printf("  --layout stack|tile|scroll\n");
+	printf("  --scroll                   Same as --layout scroll\n");
+	printf("  --tile-move ARG            prev|next|left|right|first|last|N\n");
+	printf("  --tile-grid ARG [COUNT]    up|down|left|right|top|bottom or signed N\n");
+	printf("  --scroll-move ARG          prev|next|left|right|N\n");
+	printf("  --workspace ARG            1..9|next|prev\n");
+	printf("  --workspace-move N         Move focused window to workspace N\n");
+	printf("  --reload-config            Send reload request to running compositor\n");
+	printf("  --ipc                      Keep compatibility; IPC is default-on\n");
+	printf("  --no-ipc                   Disable IPC socket for this instance\n");
+}
+
+/** Process CLI/IPC startup flow, initialize compositor, and run Wayland event loop. */
 int main(int argc, char **argv)
 {
 	wlr_log_init(WLR_INFO, NULL);
+	enum wlr_log_importance startup_log_level = WLR_INFO;
+	const char *startup_log_file_path = NULL;
+	const char *startup_crash_log_path = NULL;
+	bool disable_crash_handler = false;
+	bool crash_test_from_argv = false;
+	/*
+	 * First pass: parse logging flags before wlroots init so early errors and
+	 * startup diagnostics already use the requested level and sinks.
+	 */
+	for (int i = 1; i < argc; i++)
+	{
+		if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help"))
+		{
+			print_usage(argv[0]);
+			return 0;
+		}
+		if (!strcmp(argv[i], "--verbose"))
+		{
+			startup_log_level = WLR_DEBUG;
+			continue;
+		}
+		if (!strcmp(argv[i], "--quiet"))
+		{
+			startup_log_level = WLR_ERROR;
+			continue;
+		}
+		if (!strcmp(argv[i], "--log-level"))
+		{
+			if (i + 1 >= argc)
+			{
+				fprintf(stderr, "Missing value after --log-level\n");
+				return 1;
+			}
+			enum wlr_log_importance lvl;
+			if (!stackcomp_parse_log_level(argv[i + 1], &lvl))
+			{
+				fprintf(stderr,
+						"Unknown --log-level %s (use silent, error, info, debug)\n",
+						argv[i + 1]);
+				return 1;
+			}
+			startup_log_level = lvl;
+			i++;
+			continue;
+		}
+		if (!strncmp(argv[i], "--log-level=", 12))
+		{
+			enum wlr_log_importance lvl;
+			if (!stackcomp_parse_log_level(argv[i] + 12, &lvl))
+			{
+				fprintf(stderr,
+						"Unknown --log-level %s (use silent, error, info, debug)\n",
+						argv[i] + 12);
+				return 1;
+			}
+			startup_log_level = lvl;
+			continue;
+		}
+		if (!strcmp(argv[i], "--log-file"))
+		{
+			if (i + 1 >= argc)
+			{
+				fprintf(stderr, "Missing path after --log-file\n");
+				return 1;
+			}
+			startup_log_file_path = argv[i + 1];
+			i++;
+			continue;
+		}
+		if (!strncmp(argv[i], "--log-file=", 11))
+		{
+			startup_log_file_path = argv[i] + 11;
+			continue;
+		}
+		if (!strcmp(argv[i], "--crash-log"))
+		{
+			if (i + 1 >= argc)
+			{
+				fprintf(stderr, "Missing path after --crash-log\n");
+				return 1;
+			}
+			startup_crash_log_path = argv[i + 1];
+			i++;
+			continue;
+		}
+		if (!strncmp(argv[i], "--crash-log=", 12))
+		{
+			startup_crash_log_path = argv[i] + 12;
+			continue;
+		}
+		if (!strcmp(argv[i], "--no-crash-handler"))
+		{
+			disable_crash_handler = true;
+			continue;
+		}
+		if (!strcmp(argv[i], "--crash-test"))
+		{
+			crash_test_from_argv = true;
+			continue;
+		}
+	}
+
+	if (startup_log_file_path && startup_log_file_path[0])
+	{
+		/* Append and line-buffer: readable during live sessions without full buffering delay. */
+		stackcomp_log_file = fopen(startup_log_file_path, "a");
+		if (!stackcomp_log_file)
+		{
+			fprintf(stderr, "Failed to open --log-file %s: %s\n", startup_log_file_path,
+					strerror(errno));
+			return 1;
+		}
+		setvbuf(stackcomp_log_file, NULL, _IOLBF, 0);
+		(void)atexit(stackcomp_log_close_file);
+	}
+
+	wlr_log_init(startup_log_level, stackcomp_log_callback);
+	stackcomp_active_log_level = startup_log_level;
 	{
 		const char *e = getenv("STACKCOMP_DEBUG_XDG");
 		xdg_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
@@ -3468,8 +4509,15 @@ int main(int argc, char **argv)
 	 * Some parent processes leave SIGCHLD ignored; the kernel then auto-reaps
 	 * children and waitpid() in when= / shutdown hooks fails with ECHILD.
 	 */
-	if (signal(SIGCHLD, SIG_DFL) == SIG_ERR) {
+	if (signal(SIGCHLD, SIG_DFL) == SIG_ERR)
+	{
 		wlr_log_errno(WLR_ERROR, "signal(SIGCHLD, SIG_DFL)");
+		return 1;
+	}
+
+	if (!disable_crash_handler && !stackcomp_crash_handler_install(startup_crash_log_path))
+	{
+		wlr_log(WLR_ERROR, "Failed to install crash handler");
 		return 1;
 	}
 
@@ -3490,72 +4538,139 @@ int main(int argc, char **argv)
 	bool no_ipc = false;
 	bool reload_config_from_argv = false;
 
-	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--config")) {
-			if (i + 1 >= argc) {
+	for (int i = 1; i < argc; i++)
+	{
+		/* Already handled in the early logging pass. */
+		if (!strcmp(argv[i], "--verbose") || !strcmp(argv[i], "--quiet"))
+		{
+			continue;
+		}
+		if (!strcmp(argv[i], "--log-level") || !strcmp(argv[i], "--log-file"))
+		{
+			if (i + 1 >= argc)
+			{
+				wlr_log(WLR_ERROR, "Missing value after %s", argv[i]);
+				return 1;
+			}
+			i++;
+			continue;
+		}
+		if (!strncmp(argv[i], "--log-level=", 12) || !strncmp(argv[i], "--log-file=", 11))
+		{
+			continue;
+		}
+		if (!strcmp(argv[i], "--crash-log"))
+		{
+			if (i + 1 >= argc)
+			{
+				wlr_log(WLR_ERROR, "Missing value after --crash-log");
+				return 1;
+			}
+			i++;
+			continue;
+		}
+		if (!strncmp(argv[i], "--crash-log=", 12) || !strcmp(argv[i], "--no-crash-handler") ||
+			!strcmp(argv[i], "--crash-test"))
+		{
+			continue;
+		}
+		if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--config"))
+		{
+			if (i + 1 >= argc)
+			{
 				wlr_log(WLR_ERROR, "Missing path after %s", argv[i]);
 				return 1;
 			}
 			cfg_path = argv[++i];
-		} else if (!strcmp(argv[i], "--layout")) {
-			if (i + 1 >= argc) {
+		}
+		else if (!strcmp(argv[i], "--layout"))
+		{
+			if (i + 1 >= argc)
+			{
 				wlr_log(WLR_ERROR, "Missing value after --layout");
 				return 1;
 			}
 			const char *v = argv[++i];
-			if (!strcasecmp(v, "tile")) {
+			if (!strcasecmp(v, "tile"))
+			{
 				initial_layout = COMP_LAYOUT_TILE;
-			} else if (!strcasecmp(v, "scroll")) {
+			}
+			else if (!strcasecmp(v, "scroll"))
+			{
 				initial_layout = COMP_LAYOUT_SCROLL;
-			} else if (!strcasecmp(v, "stack")) {
+			}
+			else if (!strcasecmp(v, "stack"))
+			{
 				initial_layout = COMP_LAYOUT_STACK;
-			} else {
+			}
+			else
+			{
 				wlr_log(WLR_ERROR, "Unknown --layout %s (use stack, tile, or scroll)", v);
 				return 1;
 			}
 			layout_from_argv = true;
-		} else if (!strcmp(argv[i], "--scroll")) {
+		}
+		else if (!strcmp(argv[i], "--scroll"))
+		{
 			initial_layout = COMP_LAYOUT_SCROLL;
 			layout_from_argv = true;
-		} else if (!strcmp(argv[i], "--tile-move")) {
-			if (i + 1 >= argc) {
+		}
+		else if (!strcmp(argv[i], "--tile-move"))
+		{
+			if (i + 1 >= argc)
+			{
 				wlr_log(WLR_ERROR, "Missing value after --tile-move");
 				return 1;
 			}
 			const char *v = argv[++i];
-			if (!strcasecmp(v, "prev") || !strcasecmp(v, "left")) {
+			if (!strcasecmp(v, "prev") || !strcasecmp(v, "left"))
+			{
 				snprintf(tile_move_line, sizeof(tile_move_line), "tile move prev\n");
-			} else if (!strcasecmp(v, "next") || !strcasecmp(v, "right")) {
+			}
+			else if (!strcasecmp(v, "next") || !strcasecmp(v, "right"))
+			{
 				snprintf(tile_move_line, sizeof(tile_move_line), "tile move next\n");
-			} else if (!strcasecmp(v, "first")) {
+			}
+			else if (!strcasecmp(v, "first"))
+			{
 				snprintf(tile_move_line, sizeof(tile_move_line), "tile move first\n");
-			} else if (!strcasecmp(v, "last")) {
+			}
+			else if (!strcasecmp(v, "last"))
+			{
 				snprintf(tile_move_line, sizeof(tile_move_line), "tile move last\n");
-			} else {
+			}
+			else
+			{
 				char *end = NULL;
 				(void)strtol(v, &end, 10);
-				if (!end || end == v || *end) {
+				if (!end || end == v || *end)
+				{
 					wlr_log(WLR_ERROR,
-						"Unknown --tile-move %s (use prev, next, left, right, first, last, or a signed integer)",
-						v);
+							"Unknown --tile-move %s (use prev, next, left, right, first, last, or a signed integer)",
+							v);
 					return 1;
 				}
 				snprintf(tile_move_line, sizeof(tile_move_line), "tile move %s\n", v);
 			}
 			tile_move_from_argv = true;
-		} else if (!strcmp(argv[i], "--tile-grid")) {
-			if (i + 1 >= argc) {
+		}
+		else if (!strcmp(argv[i], "--tile-grid"))
+		{
+			if (i + 1 >= argc)
+			{
 				wlr_log(WLR_ERROR, "Missing value after --tile-grid");
 				return 1;
 			}
 			const char *v = argv[++i];
-			if (i + 1 < argc) {
+			if (i + 1 < argc)
+			{
 				const char *v2 = argv[i + 1];
 				char *e2 = NULL;
 				const long cnt = strtol(v2, &e2, 10);
 				if (e2 != v2 && *e2 == '\0' && cnt > 0 &&
-				    (!strcasecmp(v, "left") || !strcasecmp(v, "right") || !strcasecmp(v, "up") ||
-				     !strcasecmp(v, "down"))) {
+					(!strcasecmp(v, "left") || !strcasecmp(v, "right") || !strcasecmp(v, "up") ||
+					 !strcasecmp(v, "down")))
+				{
 					snprintf(tile_grid_line, sizeof(tile_grid_line), "tile grid %s %s\n", v, v2);
 					i++;
 					tile_grid_from_argv = true;
@@ -3563,153 +4678,203 @@ int main(int argc, char **argv)
 				}
 			}
 			if (!strcasecmp(v, "up") || !strcasecmp(v, "down") || !strcasecmp(v, "left") ||
-			    !strcasecmp(v, "right") || !strcasecmp(v, "top") || !strcasecmp(v, "bottom")) {
+				!strcasecmp(v, "right") || !strcasecmp(v, "top") || !strcasecmp(v, "bottom"))
+			{
 				snprintf(tile_grid_line, sizeof(tile_grid_line), "tile grid %s\n", v);
-			} else {
+			}
+			else
+			{
 				char *end = NULL;
 				(void)strtol(v, &end, 10);
-				if (!end || end == v || *end) {
+				if (!end || end == v || *end)
+				{
 					wlr_log(WLR_ERROR,
-						"Unknown --tile-grid %s (use up, down, left, right, top, bottom, DIR COUNT, or a signed integer)",
-						v);
+							"Unknown --tile-grid %s (use up, down, left, right, top, bottom, DIR COUNT, or a signed integer)",
+							v);
 					return 1;
 				}
 				snprintf(tile_grid_line, sizeof(tile_grid_line), "tile grid %s\n", v);
 			}
 			tile_grid_from_argv = true;
-		} else if (!strcmp(argv[i], "--scroll-move")) {
-			if (i + 1 >= argc) {
+		}
+		else if (!strcmp(argv[i], "--scroll-move"))
+		{
+			if (i + 1 >= argc)
+			{
 				wlr_log(WLR_ERROR, "Missing value after --scroll-move");
 				return 1;
 			}
 			const char *v = argv[++i];
-			if (!strcasecmp(v, "prev") || !strcasecmp(v, "left")) {
+			if (!strcasecmp(v, "prev") || !strcasecmp(v, "left"))
+			{
 				snprintf(scroll_move_line, sizeof(scroll_move_line), "scroll prev\n");
-			} else if (!strcasecmp(v, "next") || !strcasecmp(v, "right")) {
+			}
+			else if (!strcasecmp(v, "next") || !strcasecmp(v, "right"))
+			{
 				snprintf(scroll_move_line, sizeof(scroll_move_line), "scroll next\n");
-			} else {
+			}
+			else
+			{
 				char *end = NULL;
 				(void)strtol(v, &end, 10);
-				if (!end || end == v || *end) {
+				if (!end || end == v || *end)
+				{
 					wlr_log(WLR_ERROR,
-						"Unknown --scroll-move %s (use prev, next, left, right, or a signed integer)",
-						v);
+							"Unknown --scroll-move %s (use prev, next, left, right, or a signed integer)",
+							v);
 					return 1;
 				}
 				snprintf(scroll_move_line, sizeof(scroll_move_line), "scroll %s\n", v);
 			}
 			scroll_move_from_argv = true;
-		} else if (!strcmp(argv[i], "--workspace")) {
-			if (i + 1 >= argc) {
+		}
+		else if (!strcmp(argv[i], "--workspace"))
+		{
+			if (i + 1 >= argc)
+			{
 				wlr_log(WLR_ERROR, "Missing value after --workspace");
 				return 1;
 			}
 			const char *v = argv[++i];
-			if (!strcasecmp(v, "next")) {
+			if (!strcasecmp(v, "next"))
+			{
 				snprintf(workspace_line, sizeof(workspace_line), "workspace next\n");
-			} else if (!strcasecmp(v, "prev")) {
+			}
+			else if (!strcasecmp(v, "prev"))
+			{
 				snprintf(workspace_line, sizeof(workspace_line), "workspace prev\n");
-			} else {
+			}
+			else
+			{
 				char *end = NULL;
 				const long n = strtol(v, &end, 10);
-				if (!end || end == v || *end || n < 1 || n > COMP_WORKSPACE_COUNT) {
+				if (!end || end == v || *end || n < 1 || n > COMP_WORKSPACE_COUNT)
+				{
 					wlr_log(WLR_ERROR,
-						"Unknown --workspace %s (use 1..%d, next, or prev)", v,
-						COMP_WORKSPACE_COUNT);
+							"Unknown --workspace %s (use 1..%d, next, or prev)", v,
+							COMP_WORKSPACE_COUNT);
 					return 1;
 				}
 				snprintf(workspace_line, sizeof(workspace_line), "workspace %ld\n", n);
 			}
 			workspace_from_argv = true;
-		} else if (!strcmp(argv[i], "--workspace-move")) {
-			if (i + 1 >= argc) {
+		}
+		else if (!strcmp(argv[i], "--workspace-move"))
+		{
+			if (i + 1 >= argc)
+			{
 				wlr_log(WLR_ERROR, "Missing value after --workspace-move");
 				return 1;
 			}
 			const char *v = argv[++i];
 			char *end = NULL;
 			const long n = strtol(v, &end, 10);
-			if (!end || end == v || *end || n < 1 || n > COMP_WORKSPACE_COUNT) {
+			if (!end || end == v || *end || n < 1 || n > COMP_WORKSPACE_COUNT)
+			{
 				wlr_log(WLR_ERROR, "Unknown --workspace-move %s (use 1..%d)", v,
-					COMP_WORKSPACE_COUNT);
+						COMP_WORKSPACE_COUNT);
 				return 1;
 			}
 			snprintf(workspace_move_line, sizeof(workspace_move_line), "workspace move %ld\n", n);
 			workspace_move_from_argv = true;
-		} else if (!strcmp(argv[i], "--ipc")) {
+		}
+		else if (!strcmp(argv[i], "--ipc"))
+		{
 			/* IPC is default-on when XDG_RUNTIME_DIR is set; flag kept for scripts. */
-		} else if (!strcmp(argv[i], "--no-ipc")) {
+		}
+		else if (!strcmp(argv[i], "--no-ipc"))
+		{
 			no_ipc = true;
-		} else if (!strcmp(argv[i], "--reload-config")) {
+		}
+		else if (!strcmp(argv[i], "--reload-config"))
+		{
 			reload_config_from_argv = true;
-		} else {
+		}
+		else
+		{
 			wlr_log(WLR_ERROR, "Unknown argument: %s", argv[i]);
 			return 1;
 		}
 	}
-	if (reload_config_from_argv) {
-		if (ipc_client_send_line("reload config\n") != 0) {
+	if (reload_config_from_argv)
+	{
+		if (ipc_client_send_line("reload config\n") != 0)
+		{
 			wlr_log(WLR_ERROR, "No running stackcomp or IPC failed for --reload-config");
 			return 1;
 		}
 		wlr_log(WLR_INFO, "Sent reload config to running stackcomp");
 		return 0;
 	}
-	if (tile_move_from_argv) {
-		if (ipc_client_send_line(tile_move_line) != 0) {
+	if (tile_move_from_argv)
+	{
+		if (ipc_client_send_line(tile_move_line) != 0)
+		{
 			wlr_log(WLR_ERROR, "No running stackcomp or IPC failed for --tile-move");
 			return 1;
 		}
 		wlr_log(WLR_INFO, "Sent tile move to running stackcomp via IPC");
 	}
-	if (tile_grid_from_argv) {
-		if (ipc_client_send_line(tile_grid_line) != 0) {
+	if (tile_grid_from_argv)
+	{
+		if (ipc_client_send_line(tile_grid_line) != 0)
+		{
 			wlr_log(WLR_ERROR, "No running stackcomp or IPC failed for --tile-grid");
 			return 1;
 		}
 		wlr_log(WLR_INFO, "Sent tile grid to running stackcomp via IPC");
 	}
-	if (scroll_move_from_argv) {
-		if (ipc_client_send_line(scroll_move_line) != 0) {
+	if (scroll_move_from_argv)
+	{
+		if (ipc_client_send_line(scroll_move_line) != 0)
+		{
 			wlr_log(WLR_ERROR, "No running stackcomp or IPC failed for --scroll-move");
 			return 1;
 		}
 		wlr_log(WLR_INFO, "Sent scroll move to running stackcomp via IPC");
 	}
-	if (workspace_move_from_argv) {
-		if (ipc_client_send_line(workspace_move_line) != 0) {
+	if (workspace_move_from_argv)
+	{
+		if (ipc_client_send_line(workspace_move_line) != 0)
+		{
 			wlr_log(WLR_ERROR, "No running stackcomp or IPC failed for --workspace-move");
 			return 1;
 		}
 		wlr_log(WLR_INFO, "Sent workspace move to running stackcomp via IPC");
 	}
-	if (workspace_from_argv) {
-		if (ipc_client_send_line(workspace_line) != 0) {
+	if (workspace_from_argv)
+	{
+		if (ipc_client_send_line(workspace_line) != 0)
+		{
 			wlr_log(WLR_ERROR, "No running stackcomp or IPC failed for --workspace");
 			return 1;
 		}
 		wlr_log(WLR_INFO, "Sent workspace to running stackcomp via IPC");
 	}
-	if (layout_from_argv) {
+	if (layout_from_argv)
+	{
 		char line[48];
-		const char *layout_word = initial_layout == COMP_LAYOUT_TILE ? "tile" :
-			(initial_layout == COMP_LAYOUT_SCROLL ? "scroll" : "stack");
+		const char *layout_word = initial_layout == COMP_LAYOUT_TILE ? "tile" : (initial_layout == COMP_LAYOUT_SCROLL ? "scroll" : "stack");
 		snprintf(line, sizeof(line), "layout %s\n", layout_word);
-		if (ipc_client_send_line(line) == 0) {
+		if (ipc_client_send_line(line) == 0)
+		{
 			wlr_log(WLR_INFO, "Applied layout to running stackcomp via IPC");
 			return 0;
 		}
 	}
 	if (tile_move_from_argv || tile_grid_from_argv || scroll_move_from_argv ||
-	    workspace_from_argv || workspace_move_from_argv) {
+		workspace_from_argv || workspace_move_from_argv)
+	{
 		return 0;
 	}
-	if (!cfg_path && comp_config_default_path(cfg_buf, sizeof(cfg_buf))) {
+	if (!cfg_path && comp_config_default_path(cfg_buf, sizeof(cfg_buf)))
+	{
 		cfg_path = cfg_buf;
 	}
 
 	struct comp_config *cfg = NULL;
-	if (!comp_config_load(cfg_path, &cfg)) {
+	if (!comp_config_load(cfg_path, &cfg))
+	{
 		wlr_log(WLR_ERROR, "Failed to load keybind config");
 		return 1;
 	}
@@ -3721,10 +4886,12 @@ int main(int argc, char **argv)
 	server.current_workspace = 0;
 	comp_config_sync_shell_env(&server);
 	server.ipc_enabled = !no_ipc && ipc_socket_path(ipc_probe, sizeof(ipc_probe));
-	if (cfg_path && cfg_path[0]) {
+	if (cfg_path && cfg_path[0])
+	{
 		server.config_path = strdup(cfg_path);
 	}
-	if (!server_init(&server)) {
+	if (!server_init(&server))
+	{
 		wlr_log(WLR_ERROR, "Failed to initialize compositor");
 		free(server.config_path);
 		server.config_path = NULL;
@@ -3733,7 +4900,8 @@ int main(int argc, char **argv)
 	}
 
 	const char *socket = wl_display_add_socket_auto(server.wl_display);
-	if (!socket) {
+	if (!socket)
+	{
 		wlr_log(WLR_ERROR, "Unable to add Wayland socket");
 		server_finish(&server);
 		wl_display_destroy_clients(server.wl_display);
@@ -3741,8 +4909,10 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (!wlr_backend_start(server.backend)) {
+	if (!wlr_backend_start(server.backend))
+	{
 		wlr_log(WLR_ERROR, "Failed to start backend");
+		server_destroy_xwayland(&server);
 		server_finish(&server);
 		wl_display_destroy_clients(server.wl_display);
 		wl_display_destroy(server.wl_display);
@@ -3758,8 +4928,16 @@ int main(int argc, char **argv)
 	wlr_log(WLR_INFO, "Running compositor on WAYLAND_DISPLAY=%s", socket);
 	spawn_xwayland_satellite(socket);
 	comp_config_run_startup(server.config);
+	if (crash_test_from_argv)
+	{
+		/* Deterministic test hook for validating crash-handler marker output. */
+		wlr_log(WLR_ERROR, "--crash-test requested: triggering SIGSEGV for crash-handler test");
+		raise(SIGSEGV);
+	}
 
 	wl_display_run(server.wl_display);
+
+	server_destroy_xwayland(&server);
 	server_finish(&server);
 	wl_display_destroy_clients(server.wl_display);
 	wl_display_destroy(server.wl_display);

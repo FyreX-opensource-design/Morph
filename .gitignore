@@ -10,3 +10,12 @@
 # Debug / cores
 core
 vgcore.*
+
+# Generated localization binaries
+*.de.md
+
+# KI files
+copilot-instructions.md
+
+# Vscode folder
+.vscode/
