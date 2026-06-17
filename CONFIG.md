@@ -230,11 +230,11 @@ These are the current compositor entrypoints for local control. The Wayland-faci
 - **`scroll …`** or **`scroll move …`** — **`prev`** / **`left`**, **`next`** / **`right`**, or a **signed integer** (viewport steps in scroll layout; no-op if not in scroll layout)
 - **`tile grid …`** (same forms as **`tile_grid_move` `command=`**)
 - **`reload config`** or **`reload`** — re-read the config file (same path as at startup, or the default path), replace keybinds and tile rules, refresh tile layout if applicable, then run the new file’s **`reload`** hook from **`[hooks]`**.
-- **`workspace N`** — switch to workspace **`1`**..**`12`**
+- **`workspace N`** — switch to workspace **`1`**..**`9`**
 - **`workspace next`** / **`workspace prev`** — cycle workspaces (wraps)
 - **`workspace move N`** — move the focused toplevel to workspace **`N`**
 
-The **`stackcomp`** binary also accepts **`--layout`**, **`--scroll`** (same as **`--layout scroll`**), **`--tile-move`**, **`--scroll-move`**, **`--tile-grid`**, **`--workspace`** **`1`**..**`12`** or **`next`** / **`prev`**, **`--workspace-move`** **`N`** (move focused window to workspace **`N`**), and **`--reload-config`** for scripting; see **`COMPOSITOR.md`** for behavior when no compositor is listening.
+The **`stackcomp`** binary also accepts **`--layout`**, **`--scroll`** (same as **`--layout scroll`**), **`--tile-move`**, **`--scroll-move`**, **`--tile-grid`**, **`--workspace`** **`1`**..**`9`** or **`next`** / **`prev`**, **`--workspace-move`** **`N`** (move focused window to workspace **`N`**), and **`--reload-config`** for scripting; see **`COMPOSITOR.md`** for behavior when no compositor is listening.
 
 ---
 
