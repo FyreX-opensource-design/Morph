@@ -1,0 +1,291 @@
+stackcomp start variants test helper (tty/nested, release/debug, crashdump)
+=============================================================================
+
+Purpose
+-------
+Quick runbook for validating launcher behavior in native and nested sessions,
+including environment overrides, release/debug modes, and crash logging paths.
+
+Key paths
+---------
+Project root: <your_local_repo>/scratch-compositor
+Binary:       <your_local_repo>/scratch-compositor/build/stackcomp
+Launcher:     <your_local_repo>/scratch-compositor/testing/stackcomp_run
+Env file:     <your_local_repo>/scratch-compositor/config/environment
+Default cfg:  <your_local_repo>/scratch-compositor/testing/stackcomp.conf
+
+Runtime log location
+--------------------
+Default runtime state/log base:
+  $XDG_STATE_HOME/stackcomp
+Fallback when XDG_STATE_HOME is unset:
+  ~/.local/state/stackcomp
+
+Note:
+The `stackcomp` suffix is the fixed project runtime namespace.
+It is independent of launcher install path/name (for example /usr/bin/stackcomp).
+
+Typical files:
+  stackcomp.log
+  stackcomp-crash.log
+  stackcomp-startup.log
+  stackcomp-shutdown.log
+  stackcomp-nested-startup.log
+  stackcomp-nested-shutdown.log
+  shutdown_list.nfo
+
+Pre-checks
+----------
+1) Build once:
+   ninja -C build
+
+2) Verify binary exists:
+   test -x ./build/stackcomp && echo OK || echo MISSING
+
+3) Optional: verify xwayland-satellite is available:
+   command -v xwayland-satellite || echo "xwayland-satellite not in PATH"
+
+
+A) Launcher config model
+------------------------
+The launcher resolves settings in this order:
+1) Caller environment (one-shot VAR=... ./testing/stackcomp_run)
+2) STACKCOMP_ENV_FILE (if set)
+3) config/environment (if present)
+4) Built-in defaults in testing/stackcomp_run
+
+Note:
+config/environment is override-oriented. Values can stay commented out.
+
+
+B) Debug mode matrix (STACKCOMP_DBG)
+------------------------------------
+STACKCOMP_DBG=0 (release default):
+- --log-level error
+- --no-crash-handler
+
+STACKCOMP_DBG=1:
+- --log-level info
+- crash handler remains off
+
+STACKCOMP_DBG=2:
+- --log-level debug
+- crash handler on (--crash-log)
+
+
+C) Native test (TTY / DRM+libinput)
+-----------------------------------
+Run from a VT/TTY (outside another desktop session):
+
+  cd <your_local_repo>/scratch-compositor
+  ./testing/stackcomp_run
+
+Check:
+- startup summary contains session mode native-tty
+- WLR_BACKENDS is drm,libinput
+- run exits cleanly or emits actionable errors
+
+
+D) Nested test (inside X11 or Wayland session)
+----------------------------------------------
+Run from terminal inside existing desktop session:
+
+  cd <your_local_repo>/scratch-compositor
+  ./testing/stackcomp_run
+
+Check:
+- startup summary shows nested-x11 or nested-wayland
+- WLR_BACKENDS is x11 or wayland
+- nested startup/shutdown logs are used
+
+
+E) X11 bridge behavior (xwayland-satellite)
+-------------------------------------------
+Session-aware default when STACKCOMP_X11 is unset:
+- nested (x11/wayland): STACKCOMP_X11 defaults to 0
+- native (drm,libinput): STACKCOMP_X11 defaults to 1
+
+Force disable:
+  STACKCOMP_X11=0 ./testing/stackcomp_run
+
+Force enable:
+  STACKCOMP_X11=1 ./testing/stackcomp_run
+
+Force X11 display:
+  STACKCOMP_X11_DISPLAY=:12 ./testing/stackcomp_run
+
+Confirm:
+  rg -n "xwayland-satellite|DISPLAY=|WAYLAND_DISPLAY=|STACKCOMP_X11" "$XDG_STATE_HOME"/stackcomp/*.log
+
+
+F) Config override test
+-----------------------
+Use alternate config without editing launcher:
+
+  STACKCOMP_CFG=/path/to/other.conf ./testing/stackcomp_run
+
+Check startup summary line:
+- "Config file path: ... (override from STACKCOMP_CFG)"
+
+
+G) Log directory override test
+------------------------------
+Route logs to custom path:
+
+  STACKCOMP_LOG_DIR=/tmp/stackcomp-test ./testing/stackcomp_run
+
+Check:
+  ls -1 /tmp/stackcomp-test
+
+
+H) Direct binary test (bypass launcher)
+---------------------------------------
+Use when validating compositor flags directly:
+
+  cd <your_local_repo>/scratch-compositor
+  ./build/stackcomp \
+    -c ./testing/stackcomp.conf \
+    --log-level debug \
+    --log-file ~/.local/state/stackcomp/stackcomp.log \
+    --crash-log ~/.local/state/stackcomp/stackcomp-crash.log
+
+
+I) Crashdump path test (intentional)
+------------------------------------
+Use only to validate crash marker output:
+
+  cd <your_local_repo>/scratch-compositor
+  ./build/stackcomp \
+    -c ./testing/stackcomp.conf \
+    --log-level debug \
+    --log-file ~/.local/state/stackcomp/stackcomp.log \
+    --crash-log ~/.local/state/stackcomp/stackcomp-crash.log \
+    --crash-test
+
+Expected:
+- process terminates due to deliberate SIGSEGV
+- crash marker appears in stackcomp-crash.log
+- startup log reports non-zero exit and summary lines
+
+
+J) Fast triage commands
+-----------------------
+Set once for convenience:
+  LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
+
+Recent error scan:
+  rg -n -i "warn|warning|error|failed|crash|segv|sig" "$LOG_BASE"/*.log
+
+Check startup core lines:
+  rg -n "Selected session mode|WLR_BACKENDS|WLR_WL_SOCKET|STACKCOMP_DBG|STACKCOMP_X11|Config file path" "$LOG_BASE"/stackcomp*-startup.log
+
+Check crash markers only:
+  rg -n -i "crash|segv|signal|backtrace" "$LOG_BASE"/stackcomp-crash.log
+
+Also needed: the last 120 lines from startup log.
+
+K) Suggested test sequence
+--------------------------
+1) ninja -C build
+2) STACKCOMP_DBG=0 ./testing/stackcomp_run (baseline release mode)
+3) STACKCOMP_DBG=1 ./testing/stackcomp_run (release-debug logs)
+4) STACKCOMP_DBG=2 ./testing/stackcomp_run (debug + crash handler)
+5) STACKCOMP_CFG=/path/to/alt.conf ./testing/stackcomp_run
+6) Optional nested run with STACKCOMP_X11=0 and then STACKCOMP_X11=1
+
+
+L) 3-minute smoke check (before push)
+-------------------------------------
+Run once:
+  LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
+
+1) Verify invalid env fallback + warning logs:
+  STACKCOMP_DBG=abc STACKCOMP_X11=maybe STACKCOMP_X11_DISPLAY=foo ./testing/stackcomp_run
+  rg -n "invalid STACKCOMP_DBG|invalid STACKCOMP_X11|invalid STACKCOMP_X11_DISPLAY" "$LOG_BASE"/stackcomp*-startup.log
+
+2) Verify shutdown list is runtime state under XDG state path:
+  ls -l "$LOG_BASE"/shutdown_list.nfo
+
+3) Verify shutdown hook path/result:
+  rg -n "Triggering session shutdown script|session cleanup completed|No programs registered to kill|Performing dynamic session cleanup" "$LOG_BASE"/stackcomp*-startup.log "$LOG_BASE"/stackcomp*-shutdown.log
+
+4) Fast failure scan if start failed:
+  rg -n -i "error|failed|crash|segv|signal|backtrace" "$LOG_BASE"/*.log
+
+
+M) Grep/RG quick filters for crash triage
+-----------------------------------------
+If you prefer grep, replace rg -n with grep -nE.
+
+Launcher decision lines:
+  rg -n "Environment source|Selected session mode|X11 probe details|WLR_BACKENDS|WLR_WL_SOCKET|STACKCOMP_DBG|STACKCOMP_X11|STACKCOMP_X11_DISPLAY|Config file path|Shutdown list file" "$LOG_BASE"/stackcomp*-startup.log
+
+xwayland-satellite and display related:
+  rg -n "xwayland-satellite|DISPLAY=|WAYLAND_DISPLAY=|No free X display" "$LOG_BASE"/*.log
+
+Shutdown registration/readback hints:
+  rg -n "registered for automatic shutdown|Performing dynamic session cleanup|Sent SIGTERM|forcing SIGKILL|session cleanup completed" "$LOG_BASE"/stackcomp*-startup.log "$LOG_BASE"/stackcomp*-shutdown.log
+
+Bitte jetzt testen
+
+App mit CSD-Titelleiste starten (z. B. GTK/Qt/Java).
+Maximize, Minimize, Close über Buttons testen.
+Danach minimiertes Fenster über Panel/Taskbar wieder aktivieren.
+Wenn noch ein Edge Case bleibt (z. B. weiterhin zu große Maximized-Geometrie bei Reopen), dann schick mir bitte direkt nach einem reproduzierten Lauf diese Ausgaben:
+
+LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
+rg -n -i "request_maximize|request_minimize|request_fullscreen|maximized|fullscreen|arrange|layer_workarea|geometry|configure" "$LOG_BASE"/stackcomp*.log
+tail -n 250 "$LOG_BASE"/stackcomp*-startup.log
+tail -n 250 "$LOG_BASE"/stackcomp.log
+
+Dann gehe ich auf den zweiten Fix-Schritt für die Restore/Maximize-Geometrie.
+
+LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
+tail -n 200 "$LOG_BASE"/stackcomp-startup.log
+tail -n 120 "$LOG_BASE"/stackcomp-crash.log
+
+
+N) Manuelle Resize-Checkliste (Kanten/Ecken)
+--------------------------------------------
+Diese kurze Checkliste ist fuer den neuen Maus-Resize-Pfad gedacht.
+
+1) Basis-Start
+  - stackcomp normal starten
+  - 2-3 Fenster oeffnen (z. B. Terminal, Browser, LibreOffice)
+  - Erwartung: stabiler Betrieb ohne Hangs
+
+2) Resize-Cursor (8 Zonen)
+  - Maus langsam an: links, rechts, oben, unten,
+    oben-links, oben-rechts, unten-links, unten-rechts
+  - Erwartung: Cursorform passt zur jeweiligen Kante/Ecke
+
+3) Resize-Drag
+  - An jeder Kante/Ecke: Klick+Hold+Ziehen
+  - Erwartung: Fenstergroesse folgt direkt, ohne Spruenge
+
+4) Min-Groesse / Clamp
+  - Fenster sehr klein ziehen
+  - Erwartung: kein negativer/instabiler Zustand, weiterhin bedienbar
+
+5) Move-Regression
+  - Fensterbewegung wie gewohnt testen
+  - Erwartung: Move unveraendert funktionsfaehig
+
+6) Layout-spezifisch pruefen
+  - In tile/scroll: normale tiled Fenster nicht frei edge-resizable (by design)
+  - Tile-float Fenster sollen edge-resizable bleiben
+
+7) Maximize/Normalize + Resize
+  - Maximieren, normalisieren, danach wieder manuell resizen
+  - Erwartung: kein 0,0-Flicker, Geometrie bleibt plausibel
+
+8) Konfig-Wert pruefen
+  - derzeit entfällt (Resize-Rand ist fest im Compositor definiert)
+
+9) Kurzer Regression-Check
+  - scripts/test-nested-smoke.sh build
+  - Erwartung: erfolgreicher Durchlauf
+
+LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/stackcomp"
+rg -n "grab=|resize|cursor|request_set_cursor|button" "$LOG_BASE"/stackcomp*.log > rg_grab.txt
+tail -n 200 "$LOG_BASE"/stackcomp-startup.log > tail_startup.txt

@@ -1,0 +1,42 @@
+# stackcomp runtime environment defaults
+# This file is sourced by testing/stackcomp_run.
+#
+# Keep values commented unless you want to override launcher defaults.
+# Effective defaults live in testing/stackcomp_run.
+#
+# Modes:
+#   STACKCOMP_DBG=0 -> normal release run (error-level logging, crash handler off)
+#   STACKCOMP_DBG=1 -> release debug logging (info-level)
+#   STACKCOMP_DBG=2 -> debug logging + crash handler enabled
+
+# Optional config override path. Empty means launcher default.
+#STACKCOMP_CFG=/etc/stackcomp/stackcomp.conf
+
+# Debug mode selector (0,1,2)
+STACKCOMP_DBG=2
+
+# Optional XDG lifecycle debug logs in compositor (0=off, 1=on)
+STACKCOMP_DEBUG_XDG=1
+
+# wlroots/log verbosity helpers
+WAYLAND_DEBUG=1
+WLR_LOGTS=1
+
+# Java/X11 compatibility helpers
+_JAVA_AWT_WM_NONREPARENTING=1
+#WMNAME=LG3D
+
+# XKB defaults forwarded into compositor keyboard setup.
+# Leave commented to use system defaults from libxkbcommon.
+XKB_DEFAULT_LAYOUT=de,us
+XKB_DEFAULT_MODEL=pc105
+#XKB_DEFAULT_VARIANT=
+XKB_DEFAULT_OPTIONS=grp:alt_shift_toggle
+
+# X11 bridge controls (xwayland-satellite in compositor)
+# Empty STACKCOMP_X11 means session-aware default in launcher.
+#STACKCOMP_X11=0
+#STACKCOMP_X11_DISPLAY=:12
+
+# Optional runtime log directory override (empty uses XDG_STATE_HOME fallback).
+#STACKCOMP_LOG_DIR=/var/log/stackcomp

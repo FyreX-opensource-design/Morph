@@ -6,6 +6,7 @@
 
 # Editor / tooling (optional local symlinks)
 /compile_commands.json
+/.shellcheckrc
 
 # Debug / cores
 core
@@ -16,6 +17,10 @@ vgcore.*
 
 # KI files
 copilot-instructions.md
+.codexrules
 
 # Vscode folder
 .vscode/
+
+# Local scratch notes/log extracts
+*.txt

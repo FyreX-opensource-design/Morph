@@ -16,16 +16,16 @@
 
 #include "server.h"
 
-static char *xstrdup(const char *s)
-{
+/** strdup wrapper that tolerates NULL input. */
+static char *xstrdup(const char *s) {
 	if (!s) {
 		return NULL;
 	}
 	return strdup(s);
 }
 
-static void trim_inplace(char *s)
-{
+/** Trim ASCII whitespace at both ends of a mutable string in place. */
+static void trim_inplace(char *s) {
 	char *end;
 	while (*s && isspace((unsigned char)*s)) {
 		memmove(s, s + 1, strlen(s) + 1);
@@ -36,8 +36,8 @@ static void trim_inplace(char *s)
 	}
 }
 
-static bool append_bind(struct comp_config *cfg, struct comp_keybind *b)
-{
+/** Append one parsed keybind to cfg and reset the temporary bind object. */
+static bool append_bind(struct comp_config *cfg, struct comp_keybind *b) {
 	struct comp_keybind *n = realloc(cfg->binds, (cfg->n_binds + 1) * sizeof(*n));
 	if (!n) {
 		return false;
@@ -48,15 +48,13 @@ static bool append_bind(struct comp_config *cfg, struct comp_keybind *b)
 	return true;
 }
 
-static void keybind_clear(struct comp_keybind *b)
-{
+static void keybind_clear(struct comp_keybind *b) {
 	free(b->command);
 	free(b->when_shell);
 	memset(b, 0, sizeof(*b));
 }
 
-static void tile_rule_destroy(struct comp_tile_rule *r)
-{
+static void tile_rule_destroy(struct comp_tile_rule *r) {
 	if (r->have_app_id) {
 		regfree(&r->app_id_re);
 	}
@@ -66,8 +64,7 @@ static void tile_rule_destroy(struct comp_tile_rule *r)
 	memset(r, 0, sizeof(*r));
 }
 
-static void decoration_rule_destroy(struct comp_decoration_rule *r)
-{
+static void decoration_rule_destroy(struct comp_decoration_rule *r) {
 	if (r->have_app_id) {
 		regfree(&r->app_id_re);
 	}
@@ -77,8 +74,7 @@ static void decoration_rule_destroy(struct comp_decoration_rule *r)
 	memset(r, 0, sizeof(*r));
 }
 
-void comp_config_free(struct comp_config *cfg)
-{
+void comp_config_free(struct comp_config *cfg) {
 	if (!cfg) {
 		return;
 	}
@@ -108,8 +104,8 @@ void comp_config_free(struct comp_config *cfg)
 	free(cfg);
 }
 
-static uint32_t parse_mod_token(const char *tok)
-{
+/** Parse one modifier token used in mods= lines. */
+static uint32_t parse_mod_token(const char *tok) {
 	if (!strcasecmp(tok, "shift")) {
 		return WLR_MODIFIER_SHIFT;
 	}
@@ -120,14 +116,14 @@ static uint32_t parse_mod_token(const char *tok)
 		return WLR_MODIFIER_ALT;
 	}
 	if (!strcasecmp(tok, "super") || !strcasecmp(tok, "mod") || !strcasecmp(tok, "logo") ||
-	    !strcasecmp(tok, "win") || !strcasecmp(tok, "mod4")) {
+		!strcasecmp(tok, "win") || !strcasecmp(tok, "mod4")) {
 		return WLR_MODIFIER_LOGO;
 	}
 	return 0;
 }
 
-static bool parse_mods_string(const char *value, uint32_t *out)
-{
+/** Parse a mods= expression like Super+Shift into wlroots modifier bits. */
+static bool parse_mods_string(const char *value, uint32_t *out) {
 	char *buf = strdup(value);
 	if (!buf) {
 		return false;
@@ -146,8 +142,8 @@ static bool parse_mods_string(const char *value, uint32_t *out)
 	return true;
 }
 
-static bool parse_action(const char *v, enum comp_keybind_action *a)
-{
+/** Map action= strings (with aliases) to internal keybind actions. */
+static bool parse_action(const char *v, enum comp_keybind_action *a) {
 	if (!strcasecmp(v, "quit") || !strcasecmp(v, "exit")) {
 		*a = COMP_KEYBIND_QUIT;
 		return true;
@@ -217,7 +213,7 @@ static bool parse_action(const char *v, enum comp_keybind_action *a)
 		return true;
 	}
 	if (!strcasecmp(v, "tile_column_bottom") || !strcasecmp(v, "tile_col_bottom") ||
-	    !strcasecmp(v, "tile_grid_bottom")) {
+		!strcasecmp(v, "tile_grid_bottom")) {
 		*a = COMP_KEYBIND_TILE_TO_COLUMN_BOTTOM;
 		return true;
 	}
@@ -244,8 +240,7 @@ static bool parse_action(const char *v, enum comp_keybind_action *a)
 	return false;
 }
 
-static const char *layout_name(enum comp_layout layout)
-{
+static const char *layout_name(enum comp_layout layout) {
 	switch (layout) {
 	case COMP_LAYOUT_TILE:
 		return "tile";
@@ -257,33 +252,28 @@ static const char *layout_name(enum comp_layout layout)
 	}
 }
 
-void comp_config_sync_layout_env(enum comp_layout layout)
-{
+void comp_config_sync_layout_env(enum comp_layout layout) {
 	setenv("STACKCOMP_LAYOUT", layout_name(layout), 1);
 }
 
-void comp_config_sync_shell_env(struct comp_server *server)
-{
+void comp_config_sync_shell_env(struct comp_server *server) {
 	setenv("STACKCOMP_LAYOUT", layout_name(server->layout), 1);
 	char wbuf[16];
 	snprintf(wbuf, sizeof(wbuf), "%d", server->current_workspace + 1);
 	setenv("STACKCOMP_WORKSPACE", wbuf, 1);
 }
 
-static void apply_layout_anim_defaults(struct comp_config *cfg)
-{
+static void apply_layout_anim_defaults(struct comp_config *cfg) {
 	cfg->layout_anim_enabled = true;
 	cfg->layout_anim_lambda = 15.0;
 	cfg->layout_anim_epsilon = 0.35;
 }
 
-static void apply_decoration_defaults(struct comp_config *cfg)
-{
+static void apply_decoration_defaults(struct comp_config *cfg) {
 	cfg->decoration_strip_default = true;
 }
 
-static bool parse_bool_yes_no(const char *s, bool *out)
-{
+static bool parse_bool_yes_no(const char *s, bool *out) {
 	if (!strcasecmp(s, "1") || !strcasecmp(s, "true") || !strcasecmp(s, "yes") || !strcasecmp(s, "on")) {
 		*out = true;
 		return true;
@@ -296,8 +286,7 @@ static bool parse_bool_yes_no(const char *s, bool *out)
 }
 
 static bool parse_layout_anim_double(const char *path, size_t line_no, const char *key, const char *eq,
-	double min_v, double max_v, double *out)
-{
+									 double min_v, double max_v, double *out) {
 	char *end = NULL;
 	errno = 0;
 	const double v = strtod(eq, &end);
@@ -309,8 +298,7 @@ static bool parse_layout_anim_double(const char *path, size_t line_no, const cha
 	return true;
 }
 
-static void load_defaults(struct comp_config *cfg)
-{
+static void load_defaults(struct comp_config *cfg) {
 	struct comp_keybind b;
 
 	memset(&b, 0, sizeof(b));
@@ -342,27 +330,27 @@ static void load_defaults(struct comp_config *cfg)
 	append_bind(cfg, &b);
 }
 
-bool comp_config_default_path(char *out, size_t out_len)
-{
+/** Build config path candidates from XDG/HOME and return the first readable one. */
+bool comp_config_default_path(char *out, size_t out_len) {
 	const char *xdg = getenv("XDG_CONFIG_HOME");
 	if (xdg && xdg[0]) {
 		if (snprintf(out, out_len, "%s/stackcomp/config", xdg) < (int)out_len &&
-		    access(out, R_OK) == 0) {
+			access(out, R_OK) == 0) {
 			return true;
 		}
 	}
 	const char *home = getenv("HOME");
 	if (home && home[0]) {
 		if (snprintf(out, out_len, "%s/.config/stackcomp/config", home) < (int)out_len &&
-		    access(out, R_OK) == 0) {
+			access(out, R_OK) == 0) {
 			return true;
 		}
 	}
 	return false;
 }
 
-bool comp_keybind_when_ok(const struct comp_keybind *bind)
-{
+/** Evaluate optional when= shell predicate; only exit status 0 enables the bind. */
+bool comp_keybind_when_ok(const struct comp_keybind *bind) {
 	if (!bind->when_shell || !bind->when_shell[0]) {
 		return true;
 	}
@@ -391,8 +379,7 @@ bool comp_keybind_when_ok(const struct comp_keybind *bind)
 	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
-static void spawn_sh_c(const char *cmd)
-{
+static void spawn_sh_c(const char *cmd) {
 	if (!cmd || !cmd[0]) {
 		return;
 	}
@@ -429,8 +416,7 @@ static void spawn_sh_c(const char *cmd)
 	}
 }
 
-static void spawn_sh_c_wait(const char *cmd)
-{
+static void spawn_sh_c_wait(const char *cmd) {
 	if (!cmd || !cmd[0]) {
 		return;
 	}
@@ -458,32 +444,28 @@ static void spawn_sh_c_wait(const char *cmd)
 	}
 }
 
-void comp_config_run_startup(const struct comp_config *cfg)
-{
+void comp_config_run_startup(const struct comp_config *cfg) {
 	if (!cfg) {
 		return;
 	}
 	spawn_sh_c(cfg->hook_startup);
 }
 
-void comp_config_run_reload(const struct comp_config *cfg)
-{
+void comp_config_run_reload(const struct comp_config *cfg) {
 	if (!cfg) {
 		return;
 	}
 	spawn_sh_c(cfg->hook_reload);
 }
 
-void comp_config_run_shutdown(const struct comp_config *cfg)
-{
+void comp_config_run_shutdown(const struct comp_config *cfg) {
 	if (!cfg) {
 		return;
 	}
 	spawn_sh_c_wait(cfg->hook_shutdown);
 }
 
-static bool keysym_matches_bind(xkb_keysym_t want, xkb_keysym_t got)
-{
+static bool keysym_matches_bind(xkb_keysym_t want, xkb_keysym_t got) {
 	if (want == got) {
 		return true;
 	}
@@ -495,17 +477,18 @@ static bool keysym_matches_bind(xkb_keysym_t want, xkb_keysym_t got)
 }
 
 bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *server,
-	bool key_pressed, uint32_t mods_filtered, xkb_keysym_t sym)
-{
+							  bool key_pressed, uint32_t mods_filtered, xkb_keysym_t sym) {
 	if (!key_pressed || !cfg || !cfg->binds || !sym) {
 		return false;
 	}
 
+	/* Ignore unrelated modifier bits so binds stay layout/backend agnostic. */
 	uint32_t mods = mods_filtered & COMP_BIND_MOD_FILTER;
 	comp_config_sync_shell_env(server);
 
 	for (size_t i = 0; i < cfg->n_binds; i++) {
 		struct comp_keybind *b = &cfg->binds[i];
+		/* Matching is first exact key+mods, then optional when= gate. */
 		if (!keysym_matches_bind(b->keysym, sym) || b->mods != mods) {
 			continue;
 		}
@@ -516,7 +499,7 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 		case COMP_KEYBIND_NONE:
 			break;
 		case COMP_KEYBIND_QUIT:
-			wl_display_terminate(server->wl_display);
+			server_request_terminate(server, "Quit keybind pressed, terminating display loop");
 			return true;
 		case COMP_KEYBIND_CLOSE:
 			if (server->focused_toplevel) {
@@ -560,7 +543,8 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 		case COMP_KEYBIND_TILE_TO_LAST:
 			server_tile_move_focused_edge(server, false);
 			return true;
-		case COMP_KEYBIND_TILE_MOVE: {
+		case COMP_KEYBIND_TILE_MOVE:
+		{
 			int steps = 1;
 			if (b->command && b->command[0]) {
 				steps = (int)strtol(b->command, NULL, 10);
@@ -583,7 +567,8 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 		case COMP_KEYBIND_TILE_GRID_MOVE:
 			server_tile_grid_run_command(server, b->command);
 			return true;
-		case COMP_KEYBIND_WORKSPACE_GOTO: {
+		case COMP_KEYBIND_WORKSPACE_GOTO:
+		{
 			if (!b->command || !b->command[0]) {
 				return true;
 			}
@@ -599,7 +584,8 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 		case COMP_KEYBIND_WORKSPACE_PREV:
 			server_workspace_relative(server, -1);
 			return true;
-		case COMP_KEYBIND_WORKSPACE_MOVE: {
+		case COMP_KEYBIND_WORKSPACE_MOVE:
+		{
 			if (!b->command || !b->command[0]) {
 				return true;
 			}
@@ -614,15 +600,13 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 	return false;
 }
 
-static bool tile_grid_dir_word(const char *w)
-{
+static bool tile_grid_dir_word(const char *w) {
 	return !strcasecmp(w, "left") || !strcasecmp(w, "right") || !strcasecmp(w, "up") ||
-	       !strcasecmp(w, "down") || !strcasecmp(w, "top") || !strcasecmp(w, "bottom");
+		   !strcasecmp(w, "down") || !strcasecmp(w, "top") || !strcasecmp(w, "bottom");
 }
 
 /** True if tile_grid_move command= is valid (see server_tile_grid_run_command). */
-static bool tile_grid_move_command_ok(const char *cmd, size_t line_no)
-{
+static bool tile_grid_move_command_ok(const char *cmd, size_t line_no) {
 	if (!cmd || !cmd[0]) {
 		wlr_log(WLR_ERROR, "Config line ~%zu: tile_grid_move needs command=", line_no);
 		return false;
@@ -680,13 +664,13 @@ static bool tile_grid_move_command_ok(const char *cmd, size_t line_no)
 	return true;
 bad:
 	wlr_log(WLR_ERROR,
-		"Config line ~%zu: tile_grid_move expects left/right/up/down/top/bottom, \"DIR N\" (N≥1), or a signed integer",
-		line_no);
+			"Config line ~%zu: tile_grid_move expects left/right/up/down/top/bottom, \"DIR N\" (N≥1), or a signed integer",
+			line_no);
 	return false;
 }
 
-static bool flush_bind(struct comp_config *cfg, struct comp_keybind *cur, size_t line_no)
-{
+/** Validate and finalize one [bind] block before appending it to cfg. */
+static bool flush_bind(struct comp_config *cfg, struct comp_keybind *cur, size_t line_no) {
 	if (!cur->keysym) {
 		if (cur->mods || cur->command || cur->when_shell) {
 			wlr_log(WLR_ERROR, "Config line ~%zu: incomplete [bind] (missing key=)", line_no);
@@ -707,25 +691,25 @@ static bool flush_bind(struct comp_config *cfg, struct comp_keybind *cur, size_t
 		(void)strtol(cur->command, &end, 10);
 		if (!end || end == cur->command || *end) {
 			wlr_log(WLR_ERROR, "Config line ~%zu: tile_move command must be empty or a signed integer",
-				line_no);
+					line_no);
 			return false;
 		}
 	}
 	if (cur->action == COMP_KEYBIND_TILE_GRID_MOVE &&
-	    !tile_grid_move_command_ok(cur->command ? cur->command : "", line_no)) {
+		!tile_grid_move_command_ok(cur->command ? cur->command : "", line_no)) {
 		return false;
 	}
 	if (cur->action == COMP_KEYBIND_WORKSPACE_GOTO || cur->action == COMP_KEYBIND_WORKSPACE_MOVE) {
 		if (!cur->command || !cur->command[0]) {
 			wlr_log(WLR_ERROR, "Config line ~%zu: workspace / workspace_move needs command= 1..%d", line_no,
-				COMP_WORKSPACE_COUNT);
+					COMP_WORKSPACE_COUNT);
 			return false;
 		}
 		char *end = NULL;
 		const long w = strtol(cur->command, &end, 10);
 		if (!end || end == cur->command || *end || w < 1 || w > COMP_WORKSPACE_COUNT) {
 			wlr_log(WLR_ERROR, "Config line ~%zu: workspace command must be an integer 1..%d", line_no,
-				COMP_WORKSPACE_COUNT);
+					COMP_WORKSPACE_COUNT);
 			return false;
 		}
 	}
@@ -742,15 +726,14 @@ struct tile_rule_parse {
 	int order;
 };
 
-static void tile_rule_parse_reset(struct tile_rule_parse *p)
-{
+static void tile_rule_parse_reset(struct tile_rule_parse *p) {
 	free(p->app_id_pat);
 	free(p->title_pat);
 	memset(p, 0, sizeof(*p));
 }
 
-static bool flush_tile_rule(struct comp_config *cfg, struct tile_rule_parse *p, size_t line_no)
-{
+/** Compile and append one [tile_rule] entry from its parsed temporary fields. */
+static bool flush_tile_rule(struct comp_config *cfg, struct tile_rule_parse *p, size_t line_no) {
 	const bool have_app = p->app_id_pat && p->app_id_pat[0];
 	const bool have_tit = p->title_pat && p->title_pat[0];
 	if (!have_app && !have_tit) {
@@ -806,15 +789,14 @@ struct decoration_rule_parse {
 	bool strip_set;
 };
 
-static void decoration_rule_parse_reset(struct decoration_rule_parse *p)
-{
+static void decoration_rule_parse_reset(struct decoration_rule_parse *p) {
 	free(p->app_id_pat);
 	free(p->title_pat);
 	memset(p, 0, sizeof(*p));
 }
 
-static bool flush_decoration_rule(struct comp_config *cfg, struct decoration_rule_parse *p, size_t line_no)
-{
+/** Compile and append one [decoration_rule] entry from parsed temporary fields. */
+static bool flush_decoration_rule(struct comp_config *cfg, struct decoration_rule_parse *p, size_t line_no) {
 	const bool have_app = p->app_id_pat && p->app_id_pat[0];
 	const bool have_tit = p->title_pat && p->title_pat[0];
 	if (!have_app && !have_tit) {
@@ -865,8 +847,7 @@ static bool flush_decoration_rule(struct comp_config *cfg, struct decoration_rul
 	return true;
 }
 
-static bool parse_tile_mode(const char *v, bool *float_out)
-{
+static bool parse_tile_mode(const char *v, bool *float_out) {
 	if (!strcasecmp(v, "float") || !strcasecmp(v, "floating")) {
 		*float_out = true;
 		return true;
@@ -884,16 +865,15 @@ struct input_map_parse {
 	char *type_str;
 };
 
-static void input_map_parse_reset(struct input_map_parse *p)
-{
+static void input_map_parse_reset(struct input_map_parse *p) {
 	free(p->match_pat);
 	free(p->output_name);
 	free(p->type_str);
 	memset(p, 0, sizeof(*p));
 }
 
-static bool parse_input_map_type_field(const char *value, uint32_t *types_out, size_t line_no, const char *path)
-{
+/** Parse input_map type= tokens into a device-type bitmask. */
+static bool parse_input_map_type_field(const char *value, uint32_t *types_out, size_t line_no, const char *path) {
 	if (!value || !value[0]) {
 		*types_out = COMP_INPUT_MAP_TYPE_TOUCH | COMP_INPUT_MAP_TYPE_TABLET;
 		return true;
@@ -914,7 +894,7 @@ static bool parse_input_map_type_field(const char *value, uint32_t *types_out, s
 			*types_out |= COMP_INPUT_MAP_TYPE_TOUCH | COMP_INPUT_MAP_TYPE_TABLET | COMP_INPUT_MAP_TYPE_POINTER;
 		} else {
 			wlr_log(WLR_ERROR, "%s:%zu: unknown input_map type token '%s' (use touch, tablet, pointer, or all)",
-				path, line_no, tok);
+					path, line_no, tok);
 			free(buf);
 			return false;
 		}
@@ -927,9 +907,9 @@ static bool parse_input_map_type_field(const char *value, uint32_t *types_out, s
 	return true;
 }
 
+/** Validate and append one [input_map] block to cfg. */
 static bool flush_input_map_rule(struct comp_config *cfg, struct input_map_parse *p, size_t line_no,
-	const char *path)
-{
+								 const char *path) {
 	const bool have_match = p->match_pat && p->match_pat[0];
 	const bool have_out = p->output_name && p->output_name[0];
 	if (!have_match && !have_out) {
@@ -981,8 +961,7 @@ static bool flush_input_map_rule(struct comp_config *cfg, struct input_map_parse
 }
 
 bool comp_config_decoration_prefer_server_side_tile_scroll(const struct comp_config *cfg, const char *app_id,
-	const char *title)
-{
+														   const char *title) {
 	if (!cfg) {
 		return true;
 	}
@@ -1002,8 +981,7 @@ bool comp_config_decoration_prefer_server_side_tile_scroll(const struct comp_con
 }
 
 void comp_config_tile_props_for_toplevel(const struct comp_config *cfg, const char *app_id,
-	const char *title, bool *out_float_in_tile, int *out_order)
-{
+										 const char *title, bool *out_float_in_tile, int *out_order) {
 	*out_float_in_tile = false;
 	*out_order = 0;
 	if (!cfg || cfg->n_tile_rules == 0) {
@@ -1025,8 +1003,13 @@ void comp_config_tile_props_for_toplevel(const struct comp_config *cfg, const ch
 	}
 }
 
-bool comp_config_load(const char *path, struct comp_config **cfg_out)
-{
+/**
+ * Load compositor config from disk, applying defaults when no file exists.
+ *
+ * The parser is section-based and performs strict key validation per section,
+ * except for explicitly accepted compatibility keys.
+ */
+bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 	struct comp_config *cfg = calloc(1, sizeof(*cfg));
 	if (!cfg) {
 		return false;
@@ -1041,7 +1024,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 	if (!f) {
 		if (path) {
 			wlr_log(WLR_INFO, "No config at %s (%s), using built-in defaults", path,
-				strerror(errno));
+					strerror(errno));
 		}
 		load_defaults(cfg);
 		*cfg_out = cfg;
@@ -1057,12 +1040,14 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 	bool in_layout_anim = false;
 	bool in_decoration = false;
 	bool in_decoration_rule = false;
+	bool in_pointer = false;
 	bool in_input_map = false;
 	struct input_map_parse cur_imap = {0};
 	char linebuf[4096];
 	size_t line_no = 0;
 	bool ok = true;
 
+	/* Single-pass parser: section switches flush pending block state. */
 	while (fgets(linebuf, sizeof(linebuf), f)) {
 		line_no++;
 		char *line = linebuf;
@@ -1071,6 +1056,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 			continue;
 		}
 		if (line[0] == '[') {
+			/* Section switch: flush pending block objects before resetting section flags. */
 			if (in_bind && !flush_bind(cfg, &cur, line_no)) {
 				ok = false;
 				break;
@@ -1096,6 +1082,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 			in_layout_anim = false;
 			in_decoration = false;
 			in_decoration_rule = false;
+			in_pointer = false;
 			in_input_map = false;
 			if (!strcasecmp(line, "[bind]")) {
 				in_bind = true;
@@ -1109,6 +1096,9 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 				in_decoration = true;
 			} else if (!strcasecmp(line, "[decoration_rule]")) {
 				in_decoration_rule = true;
+			} else if (!strcasecmp(line, "[pointer]")) {
+				/* Compatibility-only section: accepted for old configs, no runtime effect. */
+				in_pointer = true;
 			} else if (!strcasecmp(line, "[input_map]")) {
 				in_input_map = true;
 			} else {
@@ -1118,10 +1108,11 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 			continue;
 		}
 		if (!in_bind && !in_tile && !in_hooks && !in_layout_anim && !in_decoration && !in_decoration_rule &&
-		    !in_input_map) {
+			!in_pointer &&
+			!in_input_map) {
 			wlr_log(WLR_ERROR,
-				"%s:%zu: key=value outside a recognized [section]",
-				path, line_no);
+					"%s:%zu: key=value outside a recognized [section]",
+					path, line_no);
 			ok = false;
 			break;
 		}
@@ -1170,7 +1161,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 			} else if (!strcasecmp(line, "mode")) {
 				if (!parse_tile_mode(eq, &cur_tile.float_in_tile)) {
 					wlr_log(WLR_ERROR, "%s:%zu: unknown tile_rule mode '%s' (use tile or float)", path,
-						line_no, eq);
+							line_no, eq);
 					ok = false;
 				}
 			} else if (!strcasecmp(line, "order")) {
@@ -1205,7 +1196,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 				bool b;
 				if (!parse_bool_yes_no(eq, &b)) {
 					wlr_log(WLR_ERROR, "%s:%zu: %s= expects yes/no, true/false, 1/0, or on/off", path,
-						line_no, line);
+							line_no, line);
 					ok = false;
 				} else {
 					cfg->layout_anim_enabled = b;
@@ -1224,11 +1215,11 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 			}
 		} else if (in_decoration) {
 			if (!strcasecmp(line, "strip_in_tile_scroll") || !strcasecmp(line, "default_strip") ||
-			    !strcasecmp(line, "strip")) {
+				!strcasecmp(line, "strip")) {
 				bool b;
 				if (!parse_bool_yes_no(eq, &b)) {
 					wlr_log(WLR_ERROR, "%s:%zu: %s= expects yes/no, true/false, 1/0, or on/off", path,
-						line_no, line);
+							line_no, line);
 					ok = false;
 				} else {
 					cfg->decoration_strip_default = b;
@@ -1248,7 +1239,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 				bool b;
 				if (!parse_bool_yes_no(eq, &b)) {
 					wlr_log(WLR_ERROR, "%s:%zu: strip= expects yes/no, true/false, 1/0, or on/off", path,
-						line_no);
+							line_no);
 					ok = false;
 				} else {
 					cur_dec.strip = b;
@@ -1256,6 +1247,15 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 				}
 			} else {
 				wlr_log(WLR_ERROR, "%s:%zu: unknown decoration_rule key '%s'", path, line_no, line);
+				ok = false;
+			}
+		} else if (in_pointer) {
+			if (!strcasecmp(line, "resize_border_px") || !strcasecmp(line, "resize_border")) {
+				/* Backward compatibility only: parsed to avoid startup failure on legacy
+				 * configs, but the compositor now uses a fixed minimal outside edge zone. */
+				(void)eq;
+			} else {
+				wlr_log(WLR_ERROR, "%s:%zu: unknown pointer key '%s'", path, line_no, line);
 				ok = false;
 			}
 		} else if (in_input_map) {
@@ -1279,6 +1279,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out)
 	}
 	fclose(f);
 
+	/* Flush the last open block because file end has no section boundary. */
 	if (ok && in_bind) {
 		ok = flush_bind(cfg, &cur, line_no);
 	}

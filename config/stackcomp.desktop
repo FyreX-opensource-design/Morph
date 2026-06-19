@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=stackcomp
+TryExec=/usr/local/bin/stackcomp
+Exec=/usr/local/bin/stackcomp
+Type=Application
+DesktopNames=stackcomp

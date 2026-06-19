@@ -132,3 +132,46 @@ Interpretation:
 
 - If stackcomp exits and no assertions/crashes follow, this message is expected and not treated as a functional failure.
 - Investigate only if the message appears repeatedly during normal runtime or is followed by new fatal errors.
+
+## 10) Nested shutdown logs `(EE) failed to read Wayland events: Broken pipe`
+
+This can appear during a clean quit path in nested sessions and is currently treated as expected shutdown noise.
+
+Context:
+
+- A quit action triggers orderly compositor shutdown.
+- While the Wayland side is already closing, Xwayland can still attempt a final event read.
+- That race during teardown can emit `(EE) failed to read Wayland events: Broken pipe` even when exit status is successful.
+
+Interpretation:
+
+- If stackcomp exits with code 0 and no follow-up fatal signal/assertion appears, this line is considered harmless.
+- Investigate further only if it occurs repeatedly during normal runtime or is followed by new crashes.
+
+## 11) Why does yEd / some Java apps only show a close button?
+
+Some Java applications under native Wayland stackcomp sessions (for example yEd) only expose a close button in the titlebar, while minimize/maximize are missing.
+
+Observed behavior:
+
+- the app starts normally under stackcomp
+- the window closes correctly
+- minimize/maximize buttons are not offered by the client titlebar
+
+Cause:
+
+- the client negotiates xdg-shell version 3
+- stackcomp can only advertise `wm_capabilities` starting at xdg-shell version 5
+- with version 3, the compositor cannot legally signal maximize/minimize support
+
+Current status:
+
+- this cannot be fixed cleanly in the existing client-side decoration path alone
+- a real fix would require server-side decorations (SSD) with compositor-drawn window controls
+- stackcomp does not currently implement SSD decoration
+
+In short:
+
+- close works because it is supported by xdg-shell v3
+- minimize/maximize are unavailable because the protocol version is too old
+- the proper long-term solution is SSD, not another xdg-shell workaround

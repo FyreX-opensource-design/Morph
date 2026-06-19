@@ -11,6 +11,7 @@
 #include "ext-workspace-v1-protocol.h"
 #include "server.h"
 
+/** Per-client ext_workspace session with one manager, one group, and workspace handles. */
 struct comp_ext_workspace_session {
 	struct wl_list link;
 	struct comp_server *server;
@@ -20,11 +21,13 @@ struct comp_ext_workspace_session {
 	bool on_sessions_list;
 };
 
+/** User-data attached to each workspace handle resource (session + workspace index). */
 struct comp_ext_ws_handle_ud {
 	struct comp_ext_workspace_session *session;
 	int index;
 };
 
+/** Tracks one output to forward bind/destroy events into ext_workspace output enter/leave. */
 struct ext_out_track {
 	struct wl_list link;
 	struct wlr_output *wlr;
@@ -37,8 +40,8 @@ static struct wl_global *workspace_global;
 static struct wl_list sessions;
 static struct wl_list output_tracks;
 
-static struct wl_resource *output_resource_for_client(struct wlr_output *wlr_out, struct wl_client *client)
-{
+/** Resolve the wl_output resource for one client, if that client is bound to this output. */
+static struct wl_resource *output_resource_for_client(struct wlr_output *wlr_out, struct wl_client *client) {
 	struct wl_resource *r;
 	wl_resource_for_each(r, &wlr_out->resources) {
 		if (wl_resource_get_client(r) == client) {
@@ -48,8 +51,8 @@ static struct wl_resource *output_resource_for_client(struct wlr_output *wlr_out
 	return NULL;
 }
 
-static void session_send_workspace_states(struct comp_ext_workspace_session *s)
-{
+/** Broadcast active workspace state for an existing manager session. */
+static void session_send_workspace_states(struct comp_ext_workspace_session *s) {
 	for (int i = 0; i < COMP_WORKSPACE_COUNT; i++) {
 		struct wl_resource *wsr = s->handles[i];
 		if (!wsr) {
@@ -68,8 +71,8 @@ static void session_send_workspace_states(struct comp_ext_workspace_session *s)
 	}
 }
 
-void ext_workspace_notify(struct comp_server *server)
-{
+/** Notify all bound ext_workspace manager sessions after workspace changes. */
+void ext_workspace_notify(struct comp_server *server) {
 	(void)server;
 	struct comp_ext_workspace_session *s;
 	wl_list_for_each(s, &sessions, link) {
@@ -77,8 +80,8 @@ void ext_workspace_notify(struct comp_server *server)
 	}
 }
 
-static void handle_resource_destroy(struct wl_resource *resource)
-{
+/** Handle resource finalizer for one workspace handle and clear session slot. */
+static void handle_resource_destroy(struct wl_resource *resource) {
 	struct comp_ext_ws_handle_ud *ud = wl_resource_get_user_data(resource);
 	if (!ud) {
 		return;
@@ -89,14 +92,13 @@ static void handle_resource_destroy(struct wl_resource *resource)
 	free(ud);
 }
 
-static void handle_destroy_request(struct wl_client *client, struct wl_resource *resource)
-{
+static void handle_destroy_request(struct wl_client *client, struct wl_resource *resource) {
 	(void)client;
 	wl_resource_destroy(resource);
 }
 
-static void handle_activate(struct wl_client *client, struct wl_resource *resource)
-{
+/** Handle activate requests from clients and switch compositor workspace. */
+static void handle_activate(struct wl_client *client, struct wl_resource *resource) {
 	(void)client;
 	struct comp_ext_ws_handle_ud *ud = wl_resource_get_user_data(resource);
 	if (!ud || !ud->session || !ud->session->server) {
@@ -105,22 +107,19 @@ static void handle_activate(struct wl_client *client, struct wl_resource *resour
 	server_workspace_go(ud->session->server, ud->index);
 }
 
-static void handle_deactivate(struct wl_client *client, struct wl_resource *resource)
-{
+static void handle_deactivate(struct wl_client *client, struct wl_resource *resource) {
 	(void)client;
 	(void)resource;
 }
 
 static void handle_assign(struct wl_client *client, struct wl_resource *resource,
-	struct wl_resource *workspace_group)
-{
+						  struct wl_resource *workspace_group) {
 	(void)client;
 	(void)resource;
 	(void)workspace_group;
 }
 
-static void handle_remove(struct wl_client *client, struct wl_resource *resource)
-{
+static void handle_remove(struct wl_client *client, struct wl_resource *resource) {
 	(void)client;
 	(void)resource;
 }
@@ -133,23 +132,21 @@ static const struct ext_workspace_handle_v1_interface handle_interface = {
 	.remove = handle_remove,
 };
 
-static void group_create_workspace(struct wl_client *client, struct wl_resource *resource, const char *workspace)
-{
+static void group_create_workspace(struct wl_client *client, struct wl_resource *resource, const char *workspace) {
 	(void)client;
 	(void)resource;
 	(void)workspace;
 }
 
-static void group_resource_destroy(struct wl_resource *resource)
-{
+/** Group resource finalizer: drop dangling back-reference from session. */
+static void group_resource_destroy(struct wl_resource *resource) {
 	struct comp_ext_workspace_session *s = wl_resource_get_user_data(resource);
 	if (s) {
 		s->group = NULL;
 	}
 }
 
-static void group_destroy_request(struct wl_client *client, struct wl_resource *resource)
-{
+static void group_destroy_request(struct wl_client *client, struct wl_resource *resource) {
 	(void)client;
 	wl_resource_destroy(resource);
 }
@@ -159,21 +156,25 @@ static const struct ext_workspace_group_handle_v1_interface group_interface = {
 	.destroy = group_destroy_request,
 };
 
-static void manager_commit(struct wl_client *client, struct wl_resource *resource)
-{
+static void manager_commit(struct wl_client *client, struct wl_resource *resource) {
 	(void)client;
 	(void)resource;
 }
 
-static void manager_stop(struct wl_client *client, struct wl_resource *resource)
-{
+/** Manager stop request: send finished event and destroy manager resource. */
+static void manager_stop(struct wl_client *client, struct wl_resource *resource) {
 	(void)client;
 	ext_workspace_manager_v1_send_finished(resource);
 	wl_resource_destroy(resource);
 }
 
-static void manager_destroy(struct wl_resource *resource)
-{
+/**
+ * Manager resource finalizer.
+ *
+ * Tears down all per-session workspace handles/group resources and unlinks the
+ * session from the global list.
+ */
+static void manager_destroy(struct wl_resource *resource) {
 	struct comp_ext_workspace_session *s = wl_resource_get_user_data(resource);
 	if (!s) {
 		return;
@@ -200,9 +201,14 @@ static const struct ext_workspace_manager_v1_interface manager_interface = {
 	.stop = manager_stop,
 };
 
+/**
+ * Send the initial ext_workspace snapshot for a newly bound client.
+ *
+ * Creates one workspace group and COMP_WORKSPACE_COUNT workspace handles,
+ * then emits a final manager.done as atomic barrier.
+ */
 static bool send_session_initial(struct comp_ext_workspace_session *sess, struct wl_client *client,
-	struct wl_resource *man, int version)
-{
+								 struct wl_resource *man, int version) {
 	struct wl_resource *grp = wl_resource_create(client, &ext_workspace_group_handle_v1_interface, version, 0);
 	if (!grp) {
 		wl_client_post_no_memory(client);
@@ -237,6 +243,7 @@ static bool send_session_initial(struct comp_ext_workspace_session *sess, struct
 		ud->index = i;
 		wl_resource_set_implementation(wsr, &handle_interface, ud, handle_resource_destroy);
 		ext_workspace_manager_v1_send_workspace(man, wsr);
+		/* Stable IDs keep client-side workspace widgets ordered across reconnects. */
 		char idbuf[40];
 		snprintf(idbuf, sizeof(idbuf), "stackcomp-ws-%d", i);
 		ext_workspace_handle_v1_send_id(wsr, idbuf);
@@ -257,16 +264,17 @@ static bool send_session_initial(struct comp_ext_workspace_session *sess, struct
 		const uint32_t st = sess->server->current_workspace == i ? EXT_WORKSPACE_HANDLE_V1_STATE_ACTIVE : 0;
 		ext_workspace_handle_v1_send_state(wsr, st);
 		ext_workspace_handle_v1_send_capabilities(wsr,
-			EXT_WORKSPACE_HANDLE_V1_WORKSPACE_CAPABILITIES_ACTIVATE);
+												  EXT_WORKSPACE_HANDLE_V1_WORKSPACE_CAPABILITIES_ACTIVATE);
 		ext_workspace_group_handle_v1_send_workspace_enter(grp, wsr);
 		sess->handles[i] = wsr;
 	}
+	/* Marks the end of the initial burst so clients can render atomically. */
 	ext_workspace_manager_v1_send_done(man);
 	return true;
 }
 
-static void ext_workspace_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id)
-{
+/** Global bind handler for ext_workspace_manager_v1. */
+static void ext_workspace_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
 	struct comp_server *server = data;
 	int ver = (int)version > 1 ? 1 : (int)version;
 	struct comp_ext_workspace_session *sess = calloc(1, sizeof(*sess));
@@ -291,8 +299,8 @@ static void ext_workspace_bind(struct wl_client *client, void *data, uint32_t ve
 	wl_list_insert(&sessions, &sess->link);
 }
 
-static void output_bind_notify(struct wl_listener *listener, void *data)
-{
+/** Output bind event: if the same client has a manager session, announce output enter. */
+static void output_bind_notify(struct wl_listener *listener, void *data) {
 	struct ext_out_track *track = wl_container_of(listener, track, bind);
 	(void)track;
 	struct wlr_output_event_bind *ev = data;
@@ -304,8 +312,8 @@ static void output_bind_notify(struct wl_listener *listener, void *data)
 	}
 }
 
-static void output_track_destroy(struct wl_listener *listener, void *data)
-{
+/** Output tracker destroy callback: remove listeners/list node and free wrapper. */
+static void output_track_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct ext_out_track *t = wl_container_of(listener, t, destroy);
 	wl_list_remove(&t->bind.link);
@@ -314,8 +322,8 @@ static void output_track_destroy(struct wl_listener *listener, void *data)
 	free(t);
 }
 
-void ext_workspace_on_output_new(struct comp_server *server, struct wlr_output *wlr_output)
-{
+/** Track one new output for ext_workspace output enter/leave propagation. */
+void ext_workspace_on_output_new(struct comp_server *server, struct wlr_output *wlr_output) {
 	struct ext_out_track *t = calloc(1, sizeof(*t));
 	if (!t) {
 		return;
@@ -338,8 +346,8 @@ void ext_workspace_on_output_new(struct comp_server *server, struct wlr_output *
 	}
 }
 
-void ext_workspace_on_output_remove(struct comp_server *server, struct wlr_output *wlr_output)
-{
+/** Broadcast output leave for all sessions and drop output tracking state. */
+void ext_workspace_on_output_remove(struct comp_server *server, struct wlr_output *wlr_output) {
 	(void)server;
 	struct ext_out_track *t, *tmp;
 	wl_list_for_each_safe(t, tmp, &output_tracks, link) {
@@ -349,7 +357,7 @@ void ext_workspace_on_output_remove(struct comp_server *server, struct wlr_outpu
 		struct comp_ext_workspace_session *s;
 		wl_list_for_each(s, &sessions, link) {
 			struct wl_resource *out_res = output_resource_for_client(wlr_output,
-				wl_resource_get_client(s->manager));
+																	 wl_resource_get_client(s->manager));
 			if (out_res && s->group) {
 				ext_workspace_group_handle_v1_send_output_leave(s->group, out_res);
 			}
@@ -362,12 +370,12 @@ void ext_workspace_on_output_remove(struct comp_server *server, struct wlr_outpu
 	}
 }
 
-void ext_workspace_init(struct comp_server *server)
-{
+/** Initialize ext_workspace global and per-process tracking lists. */
+void ext_workspace_init(struct comp_server *server) {
 	wl_list_init(&sessions);
 	wl_list_init(&output_tracks);
 	workspace_global = wl_global_create(server->wl_display, &ext_workspace_manager_v1_interface, 1, server,
-		ext_workspace_bind);
+										ext_workspace_bind);
 	if (!workspace_global) {
 		wlr_log(WLR_ERROR, "ext_workspace: wl_global_create failed");
 		return;
@@ -375,8 +383,8 @@ void ext_workspace_init(struct comp_server *server)
 	wlr_log(WLR_INFO, "ext_workspace_manager_v1 advertised");
 }
 
-void ext_workspace_fini(struct comp_server *server)
-{
+/** Destroy global/tracking state for ext_workspace on compositor shutdown. */
+void ext_workspace_fini(struct comp_server *server) {
 	(void)server;
 	if (workspace_global) {
 		wl_global_destroy(workspace_global);

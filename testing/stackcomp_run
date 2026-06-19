@@ -1,0 +1,319 @@
+#!/bin/sh
+# Main stackcomp startup script.
+# - Sets environment variables and logging.
+# - Supports nested mode (inside X11/Wayland) and native mode (TTY).
+# - Can run test clients in nested mode.
+# - Starts compositor, checks exit code, and logs crashes.
+# - Sources shared helpers from scripts/shell-helpers.sh.
+# - Uses log_startup <level> <message> to write to
+#   $STACKCOMP_STARTUP_LOG_FILE.
+# - Starts shutdown script only on compositor error exit.
+################################################################################
+
+# Get the root path of the project
+# ==============================================================================
+REAL_SCRIPT_PATH=$(readlink -f "$0")
+FILE_DIR=$(dirname "$REAL_SCRIPT_PATH")
+COMP_ROOT_DIR=$(dirname "$FILE_DIR")
+export COMP_ROOT_DIR
+
+
+# Load environment defaults/overrides.
+# ==============================================================================
+# Override the file path with STACKCOMP_ENV_FILE if needed.
+ENV_FILE="${STACKCOMP_ENV_FILE:-$COMP_ROOT_DIR/config/environment}"
+ENV_FILE_NOTE="defaults-only (no environment file found)"
+if [ -f "$ENV_FILE" ]; then
+    . "$ENV_FILE"
+    ENV_FILE_NOTE="loaded: $ENV_FILE"
+fi
+
+# Launcher defaults (single source of truth for release behavior).
+WAYLAND_DEBUG_DEFAULT=0
+WLR_LOGTS_DEFAULT=0
+JAVA_NONREPARENT_DEFAULT=1
+WMNAME_DEFAULT=LG3D
+STACKCOMP_X11_DEFAULT=
+STACKCOMP_X11_DISPLAY_DEFAULT=
+STACKCOMP_DBG_DEFAULT=0
+STACKCOMP_CFG_DEFAULT=
+STACKCOMP_LOG_DIR_DEFAULT=
+
+# Apply defaults only when unset by caller or environment file.
+if [ -z "${WAYLAND_DEBUG+x}" ]; then WAYLAND_DEBUG="$WAYLAND_DEBUG_DEFAULT"; fi
+if [ -z "${WLR_LOGTS+x}" ]; then WLR_LOGTS="$WLR_LOGTS_DEFAULT"; fi
+if [ -z "${_JAVA_AWT_WM_NONREPARENTING+x}" ]; then _JAVA_AWT_WM_NONREPARENTING="$JAVA_NONREPARENT_DEFAULT"; fi
+if [ -z "${WMNAME+x}" ]; then WMNAME="$WMNAME_DEFAULT"; fi
+if [ -z "${STACKCOMP_X11+x}" ]; then STACKCOMP_X11="$STACKCOMP_X11_DEFAULT"; fi
+if [ -z "${STACKCOMP_X11_DISPLAY+x}" ]; then STACKCOMP_X11_DISPLAY="$STACKCOMP_X11_DISPLAY_DEFAULT"; fi
+if [ -z "${STACKCOMP_DBG+x}" ]; then STACKCOMP_DBG="$STACKCOMP_DBG_DEFAULT"; fi
+if [ -z "${STACKCOMP_CFG+x}" ]; then STACKCOMP_CFG="$STACKCOMP_CFG_DEFAULT"; fi
+if [ -z "${STACKCOMP_LOG_DIR+x}" ]; then STACKCOMP_LOG_DIR="$STACKCOMP_LOG_DIR_DEFAULT"; fi
+
+STACKCOMP_DBG_NOTE=""
+case "$STACKCOMP_DBG" in
+    0|1|2) ;;
+    *)
+    STACKCOMP_DBG_NOTE="invalid STACKCOMP_DBG='$STACKCOMP_DBG' (using default $STACKCOMP_DBG_DEFAULT)"
+    STACKCOMP_DBG="$STACKCOMP_DBG_DEFAULT"
+        ;;
+esac
+
+export WAYLAND_DEBUG
+export WLR_LOGTS
+export _JAVA_AWT_WM_NONREPARENTING
+export WMNAME
+
+# Forward optional XKB overrides from environment file/caller into stackcomp.
+# Keep unset values untouched so libxkbcommon can use system defaults.
+if [ -n "${XKB_DEFAULT_LAYOUT+x}" ]; then export XKB_DEFAULT_LAYOUT; fi
+if [ -n "${XKB_DEFAULT_MODEL+x}" ]; then export XKB_DEFAULT_MODEL; fi
+if [ -n "${XKB_DEFAULT_VARIANT+x}" ]; then export XKB_DEFAULT_VARIANT; fi
+if [ -n "${XKB_DEFAULT_OPTIONS+x}" ]; then export XKB_DEFAULT_OPTIONS; fi
+
+# Optional compositor XDG lifecycle debug flag.
+if [ -n "${STACKCOMP_DEBUG_XDG+x}" ]; then export STACKCOMP_DEBUG_XDG; fi
+
+
+# Load shared helper functions before first use.
+# ==============================================================================
+. "$COMP_ROOT_DIR/scripts/shell-helpers.sh"
+
+
+# Path Definitions and Log Setup
+# ==============================================================================
+# Use XDG state path by default for runtime logs.
+CONFIG_DEFAULT="$COMP_ROOT_DIR/testing/stackcomp.conf"
+if [ -n "$STACKCOMP_CFG" ]; then
+    if [ -r "$STACKCOMP_CFG" ]; then
+        CONFIG_FILE="$STACKCOMP_CFG"
+        CONFIG_NOTE="override from STACKCOMP_CFG"
+    else
+        CONFIG_FILE="$CONFIG_DEFAULT"
+        CONFIG_NOTE="STACKCOMP_CFG not readable, fallback to default"
+    fi
+else
+    CONFIG_FILE="$CONFIG_DEFAULT"
+    CONFIG_NOTE="default"
+fi
+
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+STATE_DIR="$STATE_HOME/stackcomp"
+LOG_DIR="${STACKCOMP_LOG_DIR:-$STATE_HOME/stackcomp}"
+LOG_FILE="$LOG_DIR/stackcomp.log"
+CRASH_LOG_FILE="$LOG_DIR/stackcomp-crash.log"
+SESSION_MODE_NOTE=""
+X11_PROBE_NOTE=""
+STARTUP_LOG_BASELINE=0
+CORE_LOG_BASELINE=0
+CRASH_LOG_BASELINE=0
+CHOSEN_X11_DISPLAY=""
+
+# Create runtime directories if they do not exist
+mkdir -p "$STATE_DIR"
+mkdir -p "$LOG_DIR"
+
+
+# Current session detection and mode setup
+# ==============================================================================
+if choose_reachable_x11_display; then
+    # X11 session: register compositor as "wayland-nested".
+    export DISPLAY="$CHOSEN_X11_DISPLAY"
+    export WLR_BACKENDS=x11
+    export WLR_WL_SOCKET="wayland-nested"
+    SESSION_MODE_NOTE="nested-x11"
+    echo "Starting in Nested-Mode under X11 (DISPLAY=$CHOSEN_X11_DISPLAY)..."
+elif [ -n "$WAYLAND_DISPLAY" ]; then
+    # Wayland session: use "wayland-nested" to avoid socket collisions.
+    export WLR_BACKENDS=wayland
+    export WLR_WL_SOCKET="wayland-nested"
+    SESSION_MODE_NOTE="nested-wayland"
+    echo "Starting in Nested-Mode under Wayland..."
+else
+    # Console (TTY) or unreachable nested displays: run native backend stack.
+    if [ -n "$DISPLAY" ]; then
+        echo "DISPLAY=$DISPLAY is unreachable and no WAYLAND_DISPLAY found; falling back to native backend."
+    fi
+    unset DISPLAY
+    export WLR_BACKENDS=drm,libinput
+    unset WLR_WL_SOCKET
+    SESSION_MODE_NOTE="native-tty"
+fi
+
+# Session-aware default for xwayland-satellite behavior.
+# ==============================================================================
+# Keep native sessions X11-capable by default, but avoid unnecessary bridge
+# startup in nested sessions unless explicitly requested.
+STACKCOMP_X11_NOTE=""
+if [ "$WLR_BACKENDS" = "x11" ] || [ "$WLR_BACKENDS" = "wayland" ]; then
+    STACKCOMP_X11_SESSION_DEFAULT=0
+else
+    STACKCOMP_X11_SESSION_DEFAULT=1
+fi
+
+if [ -z "$STACKCOMP_X11" ]; then
+    STACKCOMP_X11="$STACKCOMP_X11_SESSION_DEFAULT"
+else
+    case "$STACKCOMP_X11" in
+        0|1) ;;
+        *)
+            STACKCOMP_X11_NOTE="invalid STACKCOMP_X11='$STACKCOMP_X11' (using session default $STACKCOMP_X11_SESSION_DEFAULT)"
+            STACKCOMP_X11="$STACKCOMP_X11_SESSION_DEFAULT"
+            ;;
+    esac
+fi
+export STACKCOMP_X11
+
+STACKCOMP_X11_DISPLAY_NOTE=""
+if [ -n "$STACKCOMP_X11_DISPLAY" ]; then
+    case "$STACKCOMP_X11_DISPLAY" in
+        :[0-9]*)
+            if [ "$STACKCOMP_X11_DISPLAY" = ":" ]; then
+                STACKCOMP_X11_DISPLAY_NOTE="invalid STACKCOMP_X11_DISPLAY=':' (using auto :2..:99)"
+                STACKCOMP_X11_DISPLAY=""
+            fi
+            ;;
+        *)
+            STACKCOMP_X11_DISPLAY_NOTE="invalid STACKCOMP_X11_DISPLAY='$STACKCOMP_X11_DISPLAY' (using auto :2..:99)"
+            STACKCOMP_X11_DISPLAY=""
+            ;;
+    esac
+fi
+
+if [ -n "$STACKCOMP_X11_DISPLAY" ]; then
+    export STACKCOMP_X11_DISPLAY
+fi
+
+# Log settings
+# ==============================================================================
+STACKCOMP_LOG_LEVEL="error"
+STACKCOMP_ENABLE_CRASH_HANDLER=0
+case "$STACKCOMP_DBG" in
+    1)
+        STACKCOMP_LOG_LEVEL="info"
+        ;;
+    2)
+        STACKCOMP_LOG_LEVEL="debug"
+        STACKCOMP_ENABLE_CRASH_HANDLER=1
+        ;;
+esac
+export STACKCOMP_LOG_LEVEL
+export STACKCOMP_ENABLE_CRASH_HANDLER
+
+# Use separate logs in nested mode to avoid overwriting main logs.
+if [ "$WLR_BACKENDS" = "x11" ] || [ "$WLR_BACKENDS" = "wayland" ]; then
+    export STACKCOMP_STARTUP_LOG_FILE="$LOG_DIR/stackcomp-nested-startup.log"
+    export STACKCOMP_SHUTDOWN_LOG_FILE="$LOG_DIR/stackcomp-nested-shutdown.log"
+else
+    export STACKCOMP_STARTUP_LOG_FILE="$LOG_DIR/stackcomp-startup.log"
+    export STACKCOMP_SHUTDOWN_LOG_FILE="$LOG_DIR/stackcomp-shutdown.log"
+fi
+
+# Activate Helper functions for logging and launching services
+export CURRENT_LOG_FILE="$STACKCOMP_STARTUP_LOG_FILE"
+
+# Capture per-file baselines so the error summary only scans this run.
+STARTUP_LOG_BASELINE=$(line_count_or_zero "$STACKCOMP_STARTUP_LOG_FILE")
+CORE_LOG_BASELINE=$(line_count_or_zero "$LOG_FILE")
+CRASH_LOG_BASELINE=$(line_count_or_zero "$CRASH_LOG_FILE")
+
+
+# Dynamic program list shared by startup.sh and shutdown.sh for shutdown cleanup.
+# ==============================================================================
+export STACKCOMP_SHUTDOWN_LIST="$STATE_DIR/shutdown_list.nfo"
+# Clear shutdown list at startup to avoid leftovers from previous sessions
+: > "$STACKCOMP_SHUTDOWN_LIST"
+log_startup INFO "============================= N E W  S T A R T ================================"
+log_startup INFO "Cleared shutdown list file."
+
+
+# Startup Summary
+# ==============================================================================
+log_startup INFO "Runtime summary (release-relevant):"
+log_startup INFO "--------------------------------------------------------------------------------"
+log_startup INFO "Environment source:           $ENV_FILE_NOTE"
+log_startup INFO "Selected session mode:        $SESSION_MODE_NOTE"
+log_startup INFO "X11 probe details:            $X11_PROBE_NOTE"
+log_startup INFO "Config file path:             $CONFIG_FILE ($CONFIG_NOTE)"
+log_startup INFO "WLR_BACKENDS:                 $WLR_BACKENDS..."
+log_startup INFO "WLR_WL_SOCKET:                $WLR_WL_SOCKET"
+log_startup INFO "STACKCOMP_DBG:                $STACKCOMP_DBG"
+log_startup INFO "STACKCOMP_LOG_LEVEL:          $STACKCOMP_LOG_LEVEL"
+log_startup INFO "Crash handler enabled:        $STACKCOMP_ENABLE_CRASH_HANDLER"
+log_startup INFO "STACKCOMP_X11:                $STACKCOMP_X11"
+log_startup INFO "STACKCOMP_X11_DISPLAY:        ${STACKCOMP_X11_DISPLAY:-auto (:2..:99)}"
+log_startup INFO "Compositor root path:         $COMP_ROOT_DIR"
+log_startup INFO "Log file path:                $LOG_FILE"
+log_startup INFO "Crash log file path:          $CRASH_LOG_FILE"
+log_startup INFO "Startup log file:             $STACKCOMP_STARTUP_LOG_FILE"
+log_startup INFO "Shutdown log file:            $STACKCOMP_SHUTDOWN_LOG_FILE"
+log_startup INFO "Shutdown list file:           $STACKCOMP_SHUTDOWN_LIST"
+
+if [ -n "$STACKCOMP_DBG_NOTE" ]; then
+    log_startup WARN "$STACKCOMP_DBG_NOTE"
+fi
+if [ -n "$STACKCOMP_X11_NOTE" ]; then
+    log_startup WARN "$STACKCOMP_X11_NOTE"
+fi
+if [ -n "$STACKCOMP_X11_DISPLAY_NOTE" ]; then
+    log_startup WARN "$STACKCOMP_X11_DISPLAY_NOTE"
+fi
+
+if [ "$STACKCOMP_DBG" -ge 1 ]; then
+    log_startup INFO "Debug summary:"
+    log_startup INFO "--------------------------------------------------------------------------------"
+    log_startup INFO "WAYLAND_DEBUG:                $WAYLAND_DEBUG"
+    log_startup INFO "WLR_LOGTS:                    $WLR_LOGTS"
+    log_startup INFO "_JAVA_AWT_WM_NONREPARENTING:  $_JAVA_AWT_WM_NONREPARENTING"
+    log_startup INFO "WMNAME:                       $WMNAME"
+fi
+
+
+# Compositor start and monitoring
+# ==============================================================================
+# Start compositor (without exec to get exit code)
+if [ "$STACKCOMP_ENABLE_CRASH_HANDLER" -eq 1 ]; then
+    CRASH_HANDLER_NOTE="enabled (--crash-log)"
+else
+    CRASH_HANDLER_NOTE="disabled (--no-crash-handler)"
+fi
+log_startup INFO "Execution mode: log-level=$STACKCOMP_LOG_LEVEL, crash-handler=$CRASH_HANDLER_NOTE"
+log_startup INFO "Capturing compositor stdout/stderr into startup log: $STACKCOMP_STARTUP_LOG_FILE"
+run_stackcomp_with_capture
+EXIT_CODE=$?
+
+# Check exit status for crash detection.
+if [ $EXIT_CODE -eq 0 ]; then
+    log_startup INFO "Compositor exited normally with exit code 0."
+else
+    log_startup ERROR "Compositor crashed or exited with an error! Exit code: $EXIT_CODE"
+    if [ "$EXIT_CODE" -eq 137 ]; then
+        log_startup ERROR "Exit 137 means SIGKILL (often debugger stop, external kill, or OOM killer)."
+    fi
+    if [ "$STACKCOMP_ENABLE_CRASH_HANDLER" -eq 1 ]; then
+        if [ -s "$CRASH_LOG_FILE" ]; then
+            log_startup ERROR "Check the detailed crash log at: $CRASH_LOG_FILE"
+        elif [ -f "$CRASH_LOG_FILE" ]; then
+            log_startup INFO "No crash marker recorded in crash log (file exists but is empty): $CRASH_LOG_FILE"
+        else
+            log_startup INFO "No crash marker recorded (crash log file not found): $CRASH_LOG_FILE"
+        fi
+    else
+        log_startup INFO "Crash handler is disabled (--no-crash-handler); no crash marker file is expected."
+    fi
+    dump_recent_error_summary
+fi
+
+
+# Automatically trigger the shutdown script
+# ==============================================================================
+if [ "$EXIT_CODE" -ne 0 ]; then
+    log_startup INFO "Compositor exited with rc=$EXIT_CODE; triggering session shutdown script..."
+    if [ -f "$COMP_ROOT_DIR/config/shutdown.sh" ]; then
+        "$COMP_ROOT_DIR/config/shutdown.sh"
+    else
+        log_startup WARN "shutdown.sh not found at expected path!"
+    fi
+else
+    log_startup INFO "Compositor exited cleanly; relying on config shutdown hooks."
+fi

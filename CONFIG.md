@@ -16,6 +16,20 @@ A starting point for your own file is **`stackcomp.conf.example`** in this repos
 
 ---
 
+## Launcher environment (stackcomp_run)
+
+Besides CLI `-c/--config` and `$STACKCOMP_CONFIG`, the config path can also be
+selected via launcher environment variable `STACKCOMP_CFG` in
+`testing/stackcomp_run`.
+
+Further launcher details are documented in:
+
+- `testing/LAUNCHER.md`
+
+This keeps CONFIG.md focused on INI syntax and behavior.
+
+---
+
 ## Section `[bind]`
 
 Each `[bind]` block describes **one** shortcut. Start a new `[bind]` section for each binding.
@@ -106,6 +120,27 @@ Use **`strip = no`** on specific apps (e.g. video players) to keep their client 
 
 ---
 
+## Section `[input_map]` (optional)
+
+Rules in **`[input_map]`** map physical input devices to one output by connector name. This is mainly for touch and tablet devices that should always follow a specific monitor. **First matching rule wins** in file order.
+
+| Key | Meaning |
+|-----|---------|
+| **`match`** / **`name`** | POSIX **extended** regex matched against the device name. |
+| **`output`** | Output connector name, for example `eDP-1`, `HDMI-A-1`, or `DP-2`. |
+| **`type`** | Optional comma/space-separated filter: **`touch`**, **`tablet`** / **`stylus`** / **`pen`**, **`pointer`** / **`mouse`**, or **`all`** / **`both`**. If omitted, the rule applies to **touch** and **tablet** devices. |
+
+If both **`match`** and **`output`** are present, the rule is applied to matching devices of the selected type(s). A rule that omits either key is rejected at load time.
+
+Example:
+
+```ini
+[input_map]
+match = ^HUION .*
+output = DP-2
+type = tablet
+```
+
 ## Actions reference
 
 Unless noted, tiling-related actions are **no-ops** when not in **tile** layout, when there is **no focused** toplevel, when the focused surface is **unmapped**, or when the focused window is a **tile float** (floating within tile mode).
@@ -187,6 +222,8 @@ If both **`app_id`** and **`title`** are set on a rule, **both** must match. At 
 ## Related: IPC and CLI (not config syntax)
 
 From another terminal you can send one-line commands to a running instance (Unix socket under **`$XDG_RUNTIME_DIR/stackcomp-ipc.sock`** when IPC is enabled), for example:
+
+These are the current compositor entrypoints for local control. The Wayland-facing workspace protocol is intentionally narrower for now: **`activate`** works, while **`create_workspace`**, **`remove_workspace`**, and **`assign_workspace`** are still no-ops for external clients that talk to **`ext_workspace_manager_v1`**.
 
 - **`layout stack`**, **`layout tile`**, **`layout scroll`**, **`layout toggle`**
 - **`tile move …`** (same semantics as sort-order actions above)
