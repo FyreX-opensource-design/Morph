@@ -52,6 +52,8 @@
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_export_dmabuf_v1.h>
+#include <wlr/types/wlr_ext_data_control_v1.h>
 #include <wlr/util/box.h>
 #include <wlr/util/region.h>
 #include <wlr/util/edges.h>
@@ -61,7 +63,11 @@
 #include "config.h"
 #include "crash_handler.h"
 #include "ext_workspace.h"
+#include "gamma_control.h"
+#include "output_mgmt.h"
+#include "output_power.h"
 #include "server.h"
+#include "virtual_input.h"
 
 /**
  * Runtime state for one tablet tool cursor stream.
@@ -151,7 +157,7 @@ static struct comp_output *toplevel_preferred_output(struct comp_toplevel *view)
 static struct comp_output *toplevel_tile_output(struct comp_toplevel *t);
 static void foreign_toplevel_refresh(struct comp_toplevel *view);
 static void foreign_toplevel_sync_all(struct comp_server *server);
-static void server_update_seat_capabilities(struct comp_server *server);
+void server_update_seat_capabilities(struct comp_server *server);
 static void layer_surface_try_keyboard_focus_click(struct comp_server *server, double lx, double ly);
 static void track_input_device(struct comp_server *server, struct wlr_input_device *dev);
 static void input_device_apply_libinput_defaults(struct wlr_input_device *dev);
@@ -220,6 +226,9 @@ static void server_detach_global_listeners(struct comp_server *server)
 	detach_listener_if_linked(&server->seat_pointer_focus_change);
 	detach_listener_if_linked(&server->new_pointer_constraint);
 	detach_listener_if_linked(&server->pointer_constraint_commit);
+	output_power_fini(server);
+	virtual_input_fini(server);
+	output_mgmt_fini(server);
 }
 
 /** Return the root wl_surface for an XDG or Xwayland toplevel, or NULL if unavailable. */
@@ -1614,6 +1623,7 @@ static void output_commit(struct wl_listener *listener, void *data)
 	struct comp_output *output = wl_container_of(listener, output, commit);
 	struct comp_server *srv = output->server;
 	layer_shell_arrange(srv);
+	output_mgmt_update_config(srv);
 }
 
 /** Output destroy callback: leave foreign outputs, detach scene/output layout, and free state. */
@@ -1632,6 +1642,7 @@ static void output_destroy(struct wl_listener *listener, void *data)
 	}
 	server_apply_input_device_maps(output->server);
 	ext_workspace_on_output_remove(output->server, output->wlr_output);
+	output_mgmt_update_config(output->server);
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->commit.link);
 	wl_list_remove(&output->destroy.link);
@@ -1708,6 +1719,7 @@ static void server_new_output(struct wl_listener *listener, void *data)
 	}
 	ext_workspace_on_output_new(server, wlr_output);
 	layer_shell_arrange(server);
+	output_mgmt_update_config(server);
 	server_apply_input_device_maps(server);
 }
 
@@ -4653,6 +4665,30 @@ static void keyboard_handle_destroy(struct wl_listener *listener, void *data)
 
 /* wlr_keyboard_notify_key() re-emits keyboard->events.key; ignore nested calls. */
 static int keyboard_key_dispatch_depth;
+static void keyboard_handle_key(struct wl_listener *listener, void *data);
+static void keyboard_handle_modifiers(struct wl_listener *listener, void *data);
+
+void server_keyboard_register(struct comp_server *server, struct wlr_keyboard *wlr_kbd)
+{
+	struct wlr_input_device *dev = &wlr_kbd->base;
+	struct comp_keyboard *kbd = calloc(1, sizeof(*kbd));
+	if (!kbd)
+	{
+		wlr_log(WLR_ERROR, "Out of memory allocating keyboard state");
+		return;
+	}
+	kbd->server = server;
+	kbd->dev = dev;
+
+	kbd->destroy.notify = keyboard_handle_destroy;
+	wl_signal_add(&dev->events.destroy, &kbd->destroy);
+	kbd->key.notify = keyboard_handle_key;
+	wl_signal_add(&wlr_kbd->events.key, &kbd->key);
+	kbd->modifiers.notify = keyboard_handle_modifiers;
+	wl_signal_add(&wlr_kbd->events.modifiers, &kbd->modifiers);
+
+	wlr_seat_set_keyboard(server->seat, wlr_kbd);
+}
 
 /**
  * Keyboard key callback.
@@ -4867,7 +4903,7 @@ static void server_clear_tracked_inputs(struct comp_server *server)
 }
 
 /** Recompute wl_seat capability bitset from currently tracked devices. */
-static void server_update_seat_capabilities(struct comp_server *server)
+void server_update_seat_capabilities(struct comp_server *server)
 {
 	uint32_t caps = WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
 	struct comp_tracked_input *ti;
@@ -5380,14 +5416,6 @@ static void server_new_input(struct wl_listener *listener, void *data)
 	case WLR_INPUT_DEVICE_KEYBOARD:
 	{
 		struct wlr_keyboard *wlr_kbd = wlr_keyboard_from_input_device(dev);
-		struct comp_keyboard *kbd = calloc(1, sizeof(*kbd));
-		if (!kbd)
-		{
-			wlr_log(WLR_ERROR, "Out of memory allocating keyboard state");
-			return;
-		}
-		kbd->server = server;
-		kbd->dev = dev;
 
 		const char *xkb_layout = getenv("XKB_DEFAULT_LAYOUT");
 		const char *xkb_model = getenv("XKB_DEFAULT_MODEL");
@@ -5448,14 +5476,7 @@ static void server_new_input(struct wl_listener *listener, void *data)
 		xkb_context_unref(ctx);
 		wlr_keyboard_set_repeat_info(wlr_kbd, 25, 600);
 
-		kbd->destroy.notify = keyboard_handle_destroy;
-		wl_signal_add(&dev->events.destroy, &kbd->destroy);
-		kbd->key.notify = keyboard_handle_key;
-		wl_signal_add(&wlr_kbd->events.key, &kbd->key);
-		kbd->modifiers.notify = keyboard_handle_modifiers;
-		wl_signal_add(&wlr_kbd->events.modifiers, &kbd->modifiers);
-
-		wlr_seat_set_keyboard(server->seat, wlr_kbd);
+		server_keyboard_register(server, wlr_kbd);
 		server_update_seat_capabilities(server);
 		/* Do not wlr_cursor_attach_input_device(keyboard): only pointer/touch/tablet. */
 		break;
@@ -6379,6 +6400,20 @@ bool server_init(struct comp_server *server)
 		return false;
 	}
 
+	server->export_dmabuf_manager = wlr_export_dmabuf_manager_v1_create(dpy);
+	if (!server->export_dmabuf_manager)
+	{
+		wlr_log(WLR_ERROR, "Failed to create wlr_export_dmabuf_manager_v1");
+		return false;
+	}
+
+	server->ext_data_control_manager = wlr_ext_data_control_manager_v1_create(dpy, 1);
+	if (!server->ext_data_control_manager)
+	{
+		wlr_log(WLR_ERROR, "Failed to create wlr_ext_data_control_manager_v1");
+		return false;
+	}
+
 	server->pointer_constraints = wlr_pointer_constraints_v1_create(dpy);
 	if (!server->pointer_constraints)
 	{
@@ -6406,6 +6441,11 @@ bool server_init(struct comp_server *server)
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = wlr_scene_tree_create(&server->scene->tree);
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] =
 		wlr_scene_tree_create(&server->scene->tree);
+
+	if (!gamma_control_init(server))
+	{
+		return false;
+	}
 
 	server->xdg_shell = wlr_xdg_shell_create(dpy, 3);
 	server->foreign_toplevel_manager = wlr_foreign_toplevel_manager_v1_create(dpy);
@@ -6461,6 +6501,10 @@ bool server_init(struct comp_server *server)
 		wlr_log(WLR_ERROR, "Failed to create wlr_tablet_v2 manager");
 		return false;
 	}
+	if (!virtual_input_init(server))
+	{
+		return false;
+	}
 	wl_list_init(&server->tablets);
 	wl_list_init(&server->tracked_inputs);
 
@@ -6507,6 +6551,16 @@ bool server_init(struct comp_server *server)
 
 	wl_list_init(&server->outputs);
 	wl_list_init(&server->toplevels);
+
+	if (!output_power_init(server))
+	{
+		return false;
+	}
+	if (!output_mgmt_init(server))
+	{
+		return false;
+	}
+
 	server->ipc_listen_fd = -1;
 	server->ipc_socket_path[0] = '\0';
 	server->grab = COMP_GRAB_NONE;
@@ -6539,6 +6593,7 @@ static void server_finish(struct comp_server *server)
 	 */
 	server_detach_global_listeners(server);
 	compositor_session_active = false;
+	gamma_control_fini(server);
 	ext_workspace_fini(server);
 	ipc_fini(server);
 	comp_config_free(server->config);

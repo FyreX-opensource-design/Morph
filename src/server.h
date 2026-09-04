@@ -43,6 +43,14 @@ struct wlr_viewporter;
 struct wlr_tablet_manager_v2;
 struct wlr_tablet;
 struct wlr_tablet_v2_tablet;
+struct wlr_export_dmabuf_manager_v1;
+struct wlr_ext_data_control_manager_v1;
+struct wlr_gamma_control_manager_v1;
+struct wlr_output_power_manager_v1;
+struct wlr_virtual_pointer_manager_v1;
+struct wlr_virtual_keyboard_manager_v1;
+struct wlr_output_manager_v1;
+struct wlr_keyboard;
 
 struct comp_config;
 
@@ -232,9 +240,21 @@ struct comp_server
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *cursor_mgr;
 	struct wlr_tablet_manager_v2 *tablet_manager;
+	struct wlr_export_dmabuf_manager_v1 *export_dmabuf_manager;
+	struct wlr_ext_data_control_manager_v1 *ext_data_control_manager;
+	struct wlr_gamma_control_manager_v1 *gamma_control_manager;
+	struct wlr_output_power_manager_v1 *output_power_manager;
+	struct wlr_virtual_pointer_manager_v1 *virtual_pointer_manager;
+	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_manager;
+	struct wlr_output_manager_v1 *output_manager;
 	struct wl_list tablets;
 	struct wl_list tracked_inputs;
 	struct wlr_seat *seat;
+	struct wl_listener output_power_set_mode;
+	struct wl_listener output_manager_apply;
+	struct wl_listener output_manager_test;
+	struct wl_listener new_virtual_pointer;
+	struct wl_listener new_virtual_keyboard;
 	struct wl_listener backend_destroy;
 	struct wl_listener new_output;
 	struct wl_listener new_input;
@@ -318,6 +338,12 @@ static inline void server_request_terminate(struct comp_server *server, const ch
 }
 
 bool server_init(struct comp_server *server);
+
+/** Wire keyboard key/modifier listeners for a physical or virtual keyboard device. */
+void server_keyboard_register(struct comp_server *server, struct wlr_keyboard *wlr_kbd);
+
+/** Refresh wl_seat capability flags from attached input devices. */
+void server_update_seat_capabilities(struct comp_server *server);
 
 /** Apply `[input_map]` rules to cursor-attached devices (call after new input/output and config reload). */
 void server_apply_input_device_maps(struct comp_server *server);

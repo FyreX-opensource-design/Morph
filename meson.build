@@ -54,6 +54,14 @@ layer_shell_server_h = custom_target(
   command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
 )
 
+output_power_xml = files('protocols/wlr-output-power-management-unstable-v1.xml')
+output_power_server_h = custom_target(
+  'wlr-output-power-protocol',
+  output: 'wlr-output-power-management-unstable-v1-protocol.h',
+  input: output_power_xml,
+  command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+
 ext_workspace_xml = wayland_protocols.get_variable('pkgdatadir') / 'staging/ext-workspace/ext-workspace-v1.xml'
 ext_workspace_server_h = custom_target(
   'ext-workspace-v1-protocol-h',
@@ -96,8 +104,13 @@ executable(
   'src/main.c',
   'src/config.c',
   'src/ext_workspace.c',
+  'src/gamma_control.c',
+  'src/output_mgmt.c',
+  'src/output_power.c',
+  'src/virtual_input.c',
   xdg_shell_server_h,
   layer_shell_server_h,
+  output_power_server_h,
   ext_workspace_server_h,
   ext_workspace_private_c,
   tablet_v2_server_h,
