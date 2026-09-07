@@ -52,6 +52,7 @@
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/util/box.h>
 #include <wlr/util/region.h>
 #include <wlr/util/edges.h>
@@ -6406,6 +6407,15 @@ bool server_init(struct comp_server *server)
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = wlr_scene_tree_create(&server->scene->tree);
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] =
 		wlr_scene_tree_create(&server->scene->tree);
+
+	server->gamma_control_manager = wlr_gamma_control_manager_v1_create(dpy);
+	if (!server->gamma_control_manager)
+	{
+		wlr_log(WLR_ERROR, "Failed to create wlr_gamma_control_manager_v1");
+		return false;
+	}
+	/* Scene applies client gamma LUTs on each output commit (wlsunset, gammastep). */
+	wlr_scene_set_gamma_control_manager_v1(server->scene, server->gamma_control_manager);
 
 	server->xdg_shell = wlr_xdg_shell_create(dpy, 3);
 	server->foreign_toplevel_manager = wlr_foreign_toplevel_manager_v1_create(dpy);

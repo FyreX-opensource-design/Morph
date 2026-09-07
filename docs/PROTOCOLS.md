@@ -20,6 +20,7 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`zxdg_output_manager_v1`** (xdg-output-unstable) | `wlr_xdg_output_manager_v1_create(dpy, output_layout)` | Logical output geometry for clients (e.g. **waybar**). |
 | **`xdg_activation_v1`** | `wlr_xdg_activation_v1_create(dpy)` | Launcher / notification activation tokens; morph maps requests onto existing workspace and focus policy. |
 | **`zwlr_screencopy_manager_v1`** (wlr-screencopy-unstable) | `wlr_screencopy_manager_v1_create(dpy)` | Screen capture (**grim**, some recorders). Uses **`wlr_scene_output`** commit path. |
+| **`zwlr_gamma_control_manager_v1`** (wlr-gamma-control-unstable) | `wlr_gamma_control_manager_v1_create(dpy)` + `wlr_scene_set_gamma_control_manager_v1` | Night light (**wlsunset**, **gammastep**); scene applies LUTs on output commit. |
 | **`xdg_wm_base`** (XDG shell) | `wlr_xdg_shell_create(dpy, 3)` | Version **3**. Toplevels; **xdg popups** (menus, tooltips) are added to the scene graph and unconstrained in `main.c`. |
 | **`ext_workspace_manager_v1`** (staging **ext-workspace-v1**) | `wl_global_create` + [`src/ext_workspace.c`](../src/ext_workspace.c) | Nine fixed workspaces; **`activate`** switches desktop; **`state`** + **`done`** for bars (e.g. **waybar** `ext/workspaces`). No create/remove/assign. |
 | **`zxdg_decoration_manager_v1`** (xdg-decoration-unstable-v1) | `wlr_xdg_decoration_manager_v1_create(dpy)` | Client vs server-side decorations; morph picks mode per layout / tile-float / config. |
@@ -33,7 +34,7 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`wp_viewporter`** | `wlr_viewporter_create(dpy)` | Required for **xwayland-satellite** (X11 → XDG bridge). |
 | **X11 (via satellite)** | `xwayland-satellite` child process | Not in-process Xwayland; **Morph** spawns satellite after startup and sets `DISPLAY`. |
 
-**Not created anywhere in this repo:** output management, export-dmabuf, gamma control, idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, virtual keyboard/pointer, etc.
+**Not created anywhere in this repo:** output management, export-dmabuf, idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, virtual keyboard/pointer, etc.
 
 ---
 
@@ -89,7 +90,7 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 - **Core:** compositor, subcompositor, SHM/dmabuf (via renderer), outputs, seat (pointer/keyboard/touch), data device manager, primary selection.
 - **Shell:** XDG shell (toplevels + popups), xdg-output, wlr-layer-shell, foreign-toplevel, ext-workspace.
 - **Input extras:** pointer constraints, relative pointer, tablet-v2; X11 via xwayland-satellite.
-- **Decoration / capture:** xdg-decoration, screencopy.
+- **Decoration / capture:** xdg-decoration, screencopy, gamma control.
 - **Rendering:** scene graph, output layout, frame loop.
 
 ### Not implemented (common gaps, by impact)
@@ -108,7 +109,6 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 **Lower**
 
 - **Output management** — wdisplays/kanshi-style monitor GUI.
-- **Gamma control** — compositor night light.
 - **wp_cursor_shape** — named cursors (many apps use `set_cursor` surfaces instead).
 - **presentation-time**, **security-context**, etc.
 

@@ -49,7 +49,7 @@ _JAVA_AWT_WM_NONREPARENTING=1
 
 # XKB defaults forwarded into compositor keyboard setup.
 # Leave commented to use system defaults from libxkbcommon.
-XKB_DEFAULT_LAYOUT=de,us
+XKB_DEFAULT_LAYOUT=us
 XKB_DEFAULT_MODEL=pc105
 #XKB_DEFAULT_VARIANT=
 # grp:alt_shift_toggle is typically Left Alt + Left Shift
