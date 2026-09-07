@@ -16,11 +16,19 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`wl_subcompositor`** | `wlr_subcompositor_create` | Subsurfaces. |
 | **`wl_data_device_manager`** | `wlr_data_device_manager_create` | Clipboard and drag-and-drop plumbing; regular clipboard selection is wired from the seat’s `request_set_selection`. |
 | **`zwp_primary_selection_device_manager_v1`** | `wlr_primary_selection_v1_device_manager_create` | Primary selection support for select-to-copy / middle-click paste; ownership is wired from the seat’s `request_set_primary_selection`. |
+| **`ext_data_control_manager_v1`** (staging **ext-data-control-v1**) | `wlr_ext_data_control_manager_v1_create(dpy, 1)` | Clipboard control for **wl-clipboard** / **cliphist**; syncs from seat selection state. |
 | **`wl_output`** | Via **backend** / output layout | Physical outputs; layout uses `wlr_output_layout` + `wlr_scene_attach_output_layout`. |
 | **`zxdg_output_manager_v1`** (xdg-output-unstable) | `wlr_xdg_output_manager_v1_create(dpy, output_layout)` | Logical output geometry for clients (e.g. **waybar**). |
+| **`zwlr_output_manager_v1`** (wlr-output-management-unstable) | `wlr_output_manager_v1_create(dpy)` + [`src/output_mgmt.c`](../src/output_mgmt.c) | Publishes layout on hotplug/commit; **apply** / **test** via `wlr_output_commit_state`. |
+| **`zwlr_output_power_v1`** (wlr-output-power-management-unstable) | `wlr_output_power_manager_v1_create(dpy)` + [`src/output_power.c`](../src/output_power.c) | DPMS-style output on/off. |
 | **`xdg_activation_v1`** | `wlr_xdg_activation_v1_create(dpy)` | Launcher / notification activation tokens; morph maps requests onto existing workspace and focus policy. |
 | **`zwlr_screencopy_manager_v1`** (wlr-screencopy-unstable) | `wlr_screencopy_manager_v1_create(dpy)` | Screen capture (**grim**, some recorders). Uses **`wlr_scene_output`** commit path. |
+<<<<<<< HEAD
 | **`zwlr_gamma_control_manager_v1`** (wlr-gamma-control-unstable) | `wlr_gamma_control_manager_v1_create(dpy)` + `wlr_scene_set_gamma_control_manager_v1` | Night light (**wlsunset**, **gammastep**); scene applies LUTs on output commit. |
+=======
+| **`zwlr_export_dmabuf_v1`** (wlr-export-dmabuf-unstable) | `wlr_export_dmabuf_manager_v1_create(dpy)` | DMA-BUF export for **OBS** / some portal capture paths. |
+| **`zwlr_gamma_control_v1`** (wlr-gamma-control-unstable) | `wlr_gamma_control_manager_v1_create(dpy)` + [`src/gamma_control.c`](../src/gamma_control.c) | Night light via **`wlsunset`** / **gammastep**; scene-integrated gamma LUTs. |
+>>>>>>> 3dcca8c41afd4a104c1195b150e9ca135d438cfa
 | **`xdg_wm_base`** (XDG shell) | `wlr_xdg_shell_create(dpy, 3)` | Version **3**. Toplevels; **xdg popups** (menus, tooltips) are added to the scene graph and unconstrained in `main.c`. |
 | **`ext_workspace_manager_v1`** (staging **ext-workspace-v1**) | `wl_global_create` + [`src/ext_workspace.c`](../src/ext_workspace.c) | Nine fixed workspaces; **`activate`** switches desktop; **`state`** + **`done`** for bars (e.g. **waybar** `ext/workspaces`). No create/remove/assign. |
 | **`zxdg_decoration_manager_v1`** (xdg-decoration-unstable-v1) | `wlr_xdg_decoration_manager_v1_create(dpy)` | Client vs server-side decorations; morph picks mode per layout / tile-float / config. |
@@ -29,12 +37,18 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`zwp_pointer_constraints_v1`** | `wlr_pointer_constraints_v1_create(dpy)` | Lock/confine pointer for games and confined UIs; activated on pointer focus and new constraints. |
 | **`zwp_relative_pointer_manager_v1`** | `wlr_relative_pointer_manager_v1_create(dpy)` | Relative motion while constrained (paired with pointer constraints). |
 | **`zwp_tablet_manager_v2`** | `wlr_tablet_v2_create(dpy)` | Tablet/stylus input. |
+| **`zwlr_virtual_pointer_manager_v1`** | `wlr_virtual_pointer_manager_v1_create(dpy)` + [`src/virtual_input.c`](../src/virtual_input.c) | Synthetic pointer (**ydotool**, etc.). |
+| **`zwp_virtual_keyboard_v1`** | `wlr_virtual_keyboard_manager_v1_create(dpy)` + [`src/virtual_input.c`](../src/virtual_input.c) | Synthetic keyboard (**wtype**, etc.); shares `server_keyboard_register` keybind path. |
 | **`wl_seat`** | `wlr_seat_create(dpy, "seat0")` | Pointer, keyboard, touch (when devices present). |
 | **`wl_shm`** / **`linux_dmabuf`** (and related buffer support) | `wlr_renderer_init_wl_display(renderer, dpy)` | Buffer formats for clients (exact globals depend on renderer/backend). |
 | **`wp_viewporter`** | `wlr_viewporter_create(dpy)` | Required for **xwayland-satellite** (X11 → XDG bridge). |
 | **X11 (via satellite)** | `xwayland-satellite` child process | Not in-process Xwayland; **Morph** spawns satellite after startup and sets `DISPLAY`. |
 
+<<<<<<< HEAD
 **Not created anywhere in this repo:** output management, export-dmabuf, idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, virtual keyboard/pointer, etc.
+=======
+**Not created anywhere in this repo:** idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, legacy `zwlr_data_control` (superseded by **ext-data-control** above), etc.
+>>>>>>> 3dcca8c41afd4a104c1195b150e9ca135d438cfa
 
 ---
 
@@ -54,6 +68,7 @@ From the seat and cursor wiring in `main.c`:
 - **Pointer constraints:** lock (no on-screen cursor motion; relative events still flow) and confine (motion clipped to region); focus and `new_constraint` drive activation.
 - **Touch:** down/up/motion/cancel/frame when touch devices are present (with pointer emulation fallback).
 - **Tablet v2:** proximity, motion, tip, buttons.
+- **Virtual pointer / keyboard:** attached via [`src/virtual_input.c`](../src/virtual_input.c).
 - **Clipboard:** `request_set_selection` → `wlr_seat_set_selection` (regular clipboard).
 - **Primary selection:** `request_set_primary_selection` → `wlr_seat_set_primary_selection` (select-to-copy / middle-click paste).
 
@@ -61,7 +76,7 @@ From the seat and cursor wiring in `main.c`:
 
 ## `wayland-protocols` in this project
 
-`meson.build` runs **wayland-scanner** on **stable `xdg-shell`**, **tablet-v2**, and **ext-workspace-v1** (plus vendored **wlr-layer-shell** XML). Other unstable protocols come from **wlroots** internal generated code (pointer constraints, relative pointer, screencopy, foreign toplevel, xdg-decoration, layer-shell).
+`meson.build` runs **wayland-scanner** on **stable `xdg-shell`**, **tablet-v2**, and **ext-workspace-v1** (plus vendored **wlr-layer-shell** and **wlr-output-power-management** XML). Other unstable protocols come from **wlroots** internal generated code (pointer constraints, relative pointer, screencopy, foreign toplevel, xdg-decoration, layer-shell, export-dmabuf, gamma, output management, virtual input).
 
 ---
 
@@ -72,9 +87,10 @@ Tools such as **xdg-desktop-portal-wlr** expect a mix of **D-Bus** and composito
 | Need (examples) | Typical Wayland / wlroots side | In Morph? |
 |-----------------|----------------------------------|---------------|
 | Screen / window capture (grim-style) | `zwlr_screencopy_unstable_v1` | **Yes** |
-| PipeWire portal capture (some paths) | screencopy + **export-dmabuf** | **Partial** (no export-dmabuf) |
+| PipeWire portal capture (some paths) | screencopy + **export-dmabuf** | **Yes** |
 | Inhibit shortcuts / idle | `zwp_keyboard_shortcuts_inhibit_v1`, idle inhibit | **No** |
 | Output layout for clients | `xdg_wm_base`, `zxdg_output_manager_v1` | **Yes** |
+| Monitor layout tools | `zwlr_output_manager_v1` | **Yes** |
 | Settings / dark mode (portal) | D-Bus + optional compositor hooks | **No** compositor hook |
 | File open/save (portal) | Mostly D-Bus + GTK/Qt | Often works without extra globals |
 | Games / confined pointer | pointer constraints + relative pointer | **Yes** |
@@ -87,10 +103,16 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 
 ### Implemented (directly or via wlroots)
 
-- **Core:** compositor, subcompositor, SHM/dmabuf (via renderer), outputs, seat (pointer/keyboard/touch), data device manager, primary selection.
+- **Core:** compositor, subcompositor, SHM/dmabuf (via renderer), outputs, seat (pointer/keyboard/touch), data device manager, primary selection, ext-data-control.
 - **Shell:** XDG shell (toplevels + popups), xdg-output, wlr-layer-shell, foreign-toplevel, ext-workspace.
+<<<<<<< HEAD
 - **Input extras:** pointer constraints, relative pointer, tablet-v2; X11 via xwayland-satellite.
 - **Decoration / capture:** xdg-decoration, screencopy, gamma control.
+=======
+- **Input extras:** pointer constraints, relative pointer, tablet-v2, virtual pointer/keyboard; X11 via xwayland-satellite.
+- **Decoration / capture:** xdg-decoration, screencopy, export-dmabuf.
+- **Outputs:** output management, output power, gamma control.
+>>>>>>> 3dcca8c41afd4a104c1195b150e9ca135d438cfa
 - **Rendering:** scene graph, output layout, frame loop.
 
 ### Not implemented (common gaps, by impact)
@@ -104,26 +126,31 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 
 - **Idle inhibit** — prevent dim during video.
 - **Fractional scale** — HiDPI blur on some clients.
-- **export-dmabuf** — some portal/OBS capture paths.
 
 **Lower**
 
+<<<<<<< HEAD
 - **Output management** — wdisplays/kanshi-style monitor GUI.
+=======
+>>>>>>> 3dcca8c41afd4a104c1195b150e9ca135d438cfa
 - **wp_cursor_shape** — named cursors (many apps use `set_cursor` surfaces instead).
 - **presentation-time**, **security-context**, etc.
 
 ### Suggested order for further work
 
-1. **Text input / input method** — IME users.
-2. **Keyboard shortcuts inhibit** — fullscreen apps.
-3. **Fractional scale** — HiDPI clarity.
-4. **Idle inhibit** — presentations / video.
+1. **Keyboard shortcuts inhibit** — fullscreen apps.
+2. **Fractional scale** — HiDPI clarity.
+3. **Idle inhibit** — presentations / video.
+4. **Text input / input method** — IME users (when test coverage is available).
 
 Each addition needs new globals (often `wayland-protocols` or wlroots unstable headers) and event wiring; portal features also need the **portal service** in the session.
 
 ---
 
-The [**`wlr-layer-shell-unstable-v1.xml`**](../protocols/wlr-layer-shell-unstable-v1.xml) file under **`protocols/`** is a vendored copy (for `wayland-scanner`); it tracks upstream **wlr-protocols**.
+Vendored **wlr-protocols** XML under **`protocols/`** (for `wayland-scanner` where needed):
+
+- [`wlr-layer-shell-unstable-v1.xml`](../protocols/wlr-layer-shell-unstable-v1.xml)
+- [`wlr-output-power-management-unstable-v1.xml`](../protocols/wlr-output-power-management-unstable-v1.xml)
 
 ## See also
 
