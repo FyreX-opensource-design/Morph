@@ -160,7 +160,10 @@ static int test_valid_config_parse(void)
         "\n"
         "[decoration_rule]\n"
         "app_id = ^foot$\n"
-        "strip = no\n";
+        "strip = no\n"
+        "\n"
+        "[focus]\n"
+        "policy = FocusFollowsMouse\n";
 
     char path[128];
     if (!write_temp_file(cfg_text, path, sizeof(path)))
@@ -189,6 +192,14 @@ static int test_valid_config_parse(void)
     if (cfg->layout_anim_enabled || cfg->layout_anim_lambda != 20.0 || cfg->layout_anim_epsilon != 0.5)
     {
         fprintf(stderr, "layout_anim settings mismatch\n");
+        comp_config_free(cfg);
+        unlink(path);
+        return 1;
+    }
+
+    if (cfg->focus_policy != COMP_FOCUS_FOLLOWS_MOUSE)
+    {
+        fprintf(stderr, "focus policy should parse FocusFollowsMouse\n");
         comp_config_free(cfg);
         unlink(path);
         return 1;
@@ -332,10 +343,100 @@ static int test_unresolved_config_path_can_use_builtin_fallback(void)
     return 0;
 }
 
+/**
+ * Focus policy parsing: defaults, aliases, and rejection of unknown values.
+ */
+static int test_focus_policy_parse(void)
+{
+    const char *cfg_sloppy =
+        "[bind]\n"
+        "mods = Super\n"
+        "key = Escape\n"
+        "action = quit\n"
+        "\n"
+        "[focus]\n"
+        "mode = sloppy\n";
+
+    char path[128];
+    if (!write_temp_file(cfg_sloppy, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp focus config\n");
+        return 1;
+    }
+
+    struct comp_config *cfg = NULL;
+    if (!comp_config_load(path, &cfg) || !cfg || cfg->focus_policy != COMP_FOCUS_SLOPPY)
+    {
+        fprintf(stderr, "sloppy focus alias should parse as SloppyFocus\n");
+        comp_config_free(cfg);
+        unlink(path);
+        return 1;
+    }
+    comp_config_free(cfg);
+    unlink(path);
+
+    const char *cfg_default =
+        "[bind]\n"
+        "mods = Super\n"
+        "key = Escape\n"
+        "action = quit\n";
+    if (!write_temp_file(cfg_default, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp default-focus config\n");
+        return 1;
+    }
+    cfg = NULL;
+    if (!comp_config_load(path, &cfg) || !cfg || cfg->focus_policy != COMP_FOCUS_CLICK)
+    {
+        fprintf(stderr, "omitted [focus] should default to ClickToFocus\n");
+        comp_config_free(cfg);
+        unlink(path);
+        return 1;
+    }
+    comp_config_free(cfg);
+    unlink(path);
+
+    enum comp_focus_policy pol = COMP_FOCUS_CLICK;
+    if (!comp_config_parse_focus_policy("mouse", &pol) || pol != COMP_FOCUS_FOLLOWS_MOUSE)
+    {
+        fprintf(stderr, "mouse alias should parse as FocusFollowsMouse\n");
+        return 1;
+    }
+    if (!comp_config_parse_focus_policy("sloppy", &pol) || pol != COMP_FOCUS_SLOPPY)
+    {
+        fprintf(stderr, "sloppy alias should parse as SloppyFocus\n");
+        return 1;
+    }
+
+    fprintf(stderr, "NOTE: the following config parser ERROR messages are expected; this test intentionally feeds invalid focus policy.\n");
+    const char *cfg_bad =
+        "[focus]\n"
+        "policy = NotARealPolicy\n";
+    if (!write_temp_file(cfg_bad, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp invalid focus config\n");
+        return 1;
+    }
+    cfg = NULL;
+    bool ok = comp_config_load(path, &cfg);
+    unlink(path);
+    if (ok)
+    {
+        fprintf(stderr, "invalid focus policy unexpectedly parsed\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+    return 0;
+}
+
 /** Execute all config parser regression tests; return non-zero on first failure. */
 int main(void)
 {
     if (test_valid_config_parse() != 0)
+    {
+        return 1;
+    }
+    if (test_focus_policy_parse() != 0)
     {
         return 1;
     }

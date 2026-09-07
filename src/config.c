@@ -273,6 +273,46 @@ static void apply_decoration_defaults(struct comp_config *cfg) {
 	cfg->decoration_strip_default = true;
 }
 
+static void apply_focus_defaults(struct comp_config *cfg) {
+	cfg->focus_policy = COMP_FOCUS_CLICK;
+}
+
+/** Parse ClickToFocus / FocusFollowsMouse / SloppyFocus (and short aliases). */
+bool comp_config_parse_focus_policy(const char *s, enum comp_focus_policy *out) {
+	if (!s || !out) {
+		return false;
+	}
+	if (!strcasecmp(s, "ClickToFocus") || !strcasecmp(s, "click_to_focus") ||
+		!strcasecmp(s, "click-to-focus") || !strcasecmp(s, "click")) {
+		*out = COMP_FOCUS_CLICK;
+		return true;
+	}
+	if (!strcasecmp(s, "FocusFollowsMouse") || !strcasecmp(s, "focus_follows_mouse") ||
+		!strcasecmp(s, "focus-follows-mouse") || !strcasecmp(s, "ffm") ||
+		!strcasecmp(s, "mouse")) {
+		*out = COMP_FOCUS_FOLLOWS_MOUSE;
+		return true;
+	}
+	if (!strcasecmp(s, "SloppyFocus") || !strcasecmp(s, "sloppy_focus") ||
+		!strcasecmp(s, "sloppy-focus") || !strcasecmp(s, "sloppy")) {
+		*out = COMP_FOCUS_SLOPPY;
+		return true;
+	}
+	return false;
+}
+
+const char *comp_config_focus_policy_name(enum comp_focus_policy policy) {
+	switch (policy) {
+	case COMP_FOCUS_FOLLOWS_MOUSE:
+		return "FocusFollowsMouse";
+	case COMP_FOCUS_SLOPPY:
+		return "SloppyFocus";
+	case COMP_FOCUS_CLICK:
+	default:
+		return "ClickToFocus";
+	}
+}
+
 static bool parse_bool_yes_no(const char *s, bool *out) {
 	if (!strcasecmp(s, "1") || !strcasecmp(s, "true") || !strcasecmp(s, "yes") || !strcasecmp(s, "on")) {
 		*out = true;
@@ -1153,6 +1193,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 	}
 	apply_layout_anim_defaults(cfg);
 	apply_decoration_defaults(cfg);
+	apply_focus_defaults(cfg);
 
 	FILE *f = NULL;
 	if (path) {
@@ -1185,6 +1226,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 	bool in_layout_anim = false;
 	bool in_decoration = false;
 	bool in_decoration_rule = false;
+	bool in_focus = false;
 	bool in_pointer = false;
 	bool in_input_map = false;
 	struct input_map_parse cur_imap = {0};
@@ -1228,6 +1270,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 			in_layout_anim = false;
 			in_decoration = false;
 			in_decoration_rule = false;
+			in_focus = false;
 			in_pointer = false;
 			in_input_map = false;
 			if (!strcasecmp(line, "[bind]")) {
@@ -1242,6 +1285,8 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 				in_decoration = true;
 			} else if (!strcasecmp(line, "[decoration_rule]")) {
 				in_decoration_rule = true;
+			} else if (!strcasecmp(line, "[focus]")) {
+				in_focus = true;
 			} else if (!strcasecmp(line, "[pointer]")) {
 				/* Compatibility-only section: accepted for old configs, no runtime effect. */
 				in_pointer = true;
@@ -1254,7 +1299,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 			continue;
 		}
 		if (!in_bind && !in_tile && !in_hooks && !in_layout_anim && !in_decoration && !in_decoration_rule &&
-			!in_pointer &&
+			!in_focus && !in_pointer &&
 			!in_input_map) {
 			wlr_log(WLR_ERROR,
 					"%s:%zu: key=value outside a recognized [section]",
@@ -1372,6 +1417,22 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 				}
 			} else {
 				wlr_log(WLR_ERROR, "%s:%zu: unknown decoration key '%s'", path, line_no, line);
+				ok = false;
+			}
+		} else if (in_focus) {
+			if (!strcasecmp(line, "policy") || !strcasecmp(line, "mode") ||
+				!strcasecmp(line, "focus_policy")) {
+				enum comp_focus_policy pol;
+				if (!comp_config_parse_focus_policy(eq, &pol)) {
+					wlr_log(WLR_ERROR,
+							"%s:%zu: %s= expects ClickToFocus, FocusFollowsMouse, or SloppyFocus", path,
+							line_no, line);
+					ok = false;
+				} else {
+					cfg->focus_policy = pol;
+				}
+			} else {
+				wlr_log(WLR_ERROR, "%s:%zu: unknown focus key '%s'", path, line_no, line);
 				ok = false;
 			}
 		} else if (in_decoration_rule) {

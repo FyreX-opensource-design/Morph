@@ -2219,6 +2219,11 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 	}
 	free(view->foreign_title);
 	free(view->foreign_app_id);
+	if (view->server->motion_focus_target == view)
+	{
+		view->server->motion_focus_target = NULL;
+		view->server->motion_focus_clear = false;
+	}
 	if (view->server->focused_toplevel == view)
 	{
 		clear_keyboard_focus(view->server);
@@ -2777,9 +2782,25 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 		 * otherwise later pointer motion keeps driving the old client after a new map/focus. */
 		cancel_active_grab(server);
 	}
+	struct wlr_surface *surf = toplevel_wlr_surface(toplevel);
 	struct comp_toplevel *prev = server->focused_toplevel;
 	if (prev == toplevel)
 	{
+		/* Same toplevel: still repair seat keyboard focus if pointer leave or a
+		 * layer click left the seat keyboard on a different surface. */
+		if (surf && server->seat && server->seat->keyboard_state.focused_surface != surf)
+		{
+			struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
+			if (kbd)
+			{
+				wlr_seat_keyboard_notify_enter(server->seat, surf, kbd->keycodes, kbd->num_keycodes,
+											   &kbd->modifiers);
+			}
+			else
+			{
+				wlr_seat_keyboard_notify_enter(server->seat, surf, NULL, 0, NULL);
+			}
+		}
 		return;
 	}
 	if (prev && toplevel_surface_initialized(prev))
@@ -2799,7 +2820,6 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 	foreign_toplevel_refresh(toplevel);
 	scroll_sync_to_focused(server);
 
-	struct wlr_surface *surf = toplevel_wlr_surface(toplevel);
 	if (!surf)
 	{
 		return;
@@ -2857,6 +2877,232 @@ static void clear_keyboard_focus(struct comp_server *server)
 	}
 	server->focused_toplevel = NULL;
 	wlr_seat_keyboard_notify_clear_focus(server->seat);
+}
+
+/** Active pointer-driven keyboard focus policy from config (defaults to click-to-focus). */
+static enum comp_focus_policy server_focus_policy(struct comp_server *server)
+{
+	if (server && server->config)
+	{
+		return server->config->focus_policy;
+	}
+	return COMP_FOCUS_CLICK;
+}
+
+/** Cancel a pending deferred motion-focus handoff without applying it. */
+static void motion_focus_idle_cancel(struct comp_server *server)
+{
+	if (!server)
+	{
+		return;
+	}
+	if (server->motion_focus_idle)
+	{
+		wl_event_source_remove(server->motion_focus_idle);
+		server->motion_focus_idle = NULL;
+	}
+	server->motion_focus_target = NULL;
+	server->motion_focus_clear = false;
+}
+
+/** Idle callback: apply the latest scheduled FocusFollowsMouse / SloppyFocus handoff. */
+static void motion_focus_idle_apply(void *data)
+{
+	struct comp_server *server = data;
+	server->motion_focus_idle = NULL;
+	if (!server->seat || server->display_terminate_requested || server->grab != COMP_GRAB_NONE)
+	{
+		server->motion_focus_target = NULL;
+		server->motion_focus_clear = false;
+		return;
+	}
+	struct comp_toplevel *target = server->motion_focus_target;
+	const bool clear = server->motion_focus_clear;
+	server->motion_focus_target = NULL;
+	server->motion_focus_clear = false;
+	if (target)
+	{
+		/* Target may have been destroyed between schedule and idle. */
+		struct comp_toplevel *t;
+		bool alive = false;
+		wl_list_for_each(t, &server->toplevels, link)
+		{
+			if (t == target)
+			{
+				alive = true;
+				break;
+			}
+		}
+		if (alive)
+		{
+			focus_toplevel(server, target);
+		}
+		return;
+	}
+	if (clear && server->focused_toplevel)
+	{
+		clear_keyboard_focus(server);
+	}
+}
+
+/**
+ * Schedule FocusFollowsMouse / SloppyFocus keyboard handoff for after the current
+ * pointer event finishes. ClickToFocus is a no-op. Layer-shell panel hover is ignored.
+ *
+ * empty_root must be true for true empty layout space and for desktop-like
+ * BACKGROUND/BOTTOM layer surfaces (wallpapers). TOP/OVERLAY panels are not empty root.
+ */
+static void apply_motion_focus_policy(struct comp_server *server, struct comp_toplevel *under_cursor,
+									  bool empty_root)
+{
+	enum comp_focus_policy policy = server_focus_policy(server);
+	if (policy == COMP_FOCUS_CLICK || !server || !server->wl_display ||
+		server->grab != COMP_GRAB_NONE || server->display_terminate_requested)
+	{
+		return;
+	}
+
+	struct comp_toplevel *target = NULL;
+	bool clear = false;
+	if (under_cursor)
+	{
+		if (under_cursor == server->focused_toplevel)
+		{
+			/* Pointer is back over the focused window: drop a pending empty-root clear. */
+			if (server->motion_focus_idle && server->motion_focus_clear && !server->motion_focus_target)
+			{
+				motion_focus_idle_cancel(server);
+			}
+			/* Reassert seat keyboard on idle if a leave/layer click left it elsewhere. */
+			struct wlr_surface *surf = toplevel_wlr_surface(under_cursor);
+			if (!surf || !server->seat || server->seat->keyboard_state.focused_surface == surf)
+			{
+				return;
+			}
+			target = under_cursor;
+		}
+		else
+		{
+			target = under_cursor;
+		}
+	}
+	else if (empty_root)
+	{
+		if (policy == COMP_FOCUS_FOLLOWS_MOUSE)
+		{
+			/* Empty desktop only: FocusFollowsMouse clears; SloppyFocus keeps the last focus.
+			 * Hovering layer-shell panels does not clear keyboard focus. */
+			if (!server->focused_toplevel)
+			{
+				return;
+			}
+			clear = true;
+		}
+		else if (policy == COMP_FOCUS_SLOPPY)
+		{
+			/* Keep last focus. Cancel a pending clear only; keep a pending enter-focus. */
+			if (server->motion_focus_idle && server->motion_focus_clear && !server->motion_focus_target)
+			{
+				motion_focus_idle_cancel(server);
+			}
+			if (server->motion_focus_idle && server->motion_focus_target)
+			{
+				return;
+			}
+			if (!server->focused_toplevel)
+			{
+				return;
+			}
+			/* Reassert keyboard focus on the last toplevel after pointer leave to desktop. */
+			struct wlr_surface *surf = toplevel_wlr_surface(server->focused_toplevel);
+			if (!surf || !server->seat || server->seat->keyboard_state.focused_surface == surf)
+			{
+				return;
+			}
+			target = server->focused_toplevel;
+		}
+		else
+		{
+			return;
+		}
+	}
+	else
+	{
+		return;
+	}
+
+	/* Coalesce to the latest pointer target; replace any pending idle request. */
+	if (server->motion_focus_idle)
+	{
+		wl_event_source_remove(server->motion_focus_idle);
+		server->motion_focus_idle = NULL;
+	}
+	server->motion_focus_target = target;
+	server->motion_focus_clear = clear;
+	struct wl_event_loop *loop = wl_display_get_event_loop(server->wl_display);
+	server->motion_focus_idle = wl_event_loop_add_idle(loop, motion_focus_idle_apply, server);
+	if (!server->motion_focus_idle)
+	{
+		server->motion_focus_target = NULL;
+		server->motion_focus_clear = false;
+		wlr_log(WLR_ERROR, "focus: failed to schedule motion focus idle");
+	}
+}
+
+/**
+ * True when a layer-shell surface should count as "desktop" for focus policy
+ * (FocusFollowsMouse clears; SloppyFocus keeps). BACKGROUND/BOTTOM wallpapers
+ * qualify; TOP/OVERLAY panels do not.
+ */
+static bool layer_surface_is_desktop_backdrop(struct wlr_layer_surface_v1 *ls)
+{
+	if (!ls || !ls->surface || !ls->surface->mapped)
+	{
+		return false;
+	}
+	const enum zwlr_layer_shell_v1_layer lyr = ls->current.layer;
+	return lyr == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND || lyr == ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM;
+}
+
+/**
+ * Classify the pointer position for keyboard focus policy.
+ * Sets *out_toplevel when an XDG toplevel is under the cursor.
+ * Returns true when the point is empty desktop (no toplevel; no panel).
+ */
+static bool pointer_focus_target_at(struct comp_server *server, double lx, double ly,
+									struct comp_toplevel **out_toplevel)
+{
+	if (out_toplevel)
+	{
+		*out_toplevel = NULL;
+	}
+	if (!server)
+	{
+		return true;
+	}
+	double sx, sy;
+	struct wlr_surface *surface = surface_at(server, lx, ly, &sx, &sy);
+	if (!surface)
+	{
+		return true;
+	}
+	struct wlr_surface *root = wlr_surface_get_root_surface(surface);
+	if (root && wlr_xdg_toplevel_try_from_wlr_surface(root))
+	{
+		struct comp_toplevel *under = toplevel_at(server, lx, ly, &sx, &sy);
+		if (out_toplevel)
+		{
+			*out_toplevel = under;
+		}
+		return false;
+	}
+	struct wlr_layer_surface_v1 *ls = root ? wlr_layer_surface_v1_try_from_wlr_surface(root) : NULL;
+	if (layer_surface_is_desktop_backdrop(ls))
+	{
+		return true;
+	}
+	/* Panels / overlays / other layer surfaces: not empty desktop. */
+	return false;
 }
 
 /** Start move grab and capture cursor/view origin for delta-based motion. */
@@ -4491,6 +4737,29 @@ static void ipc_process_line(struct comp_server *server, char *line)
 		}
 		return;
 	}
+	if (!strncmp(line, "focus ", 6))
+	{
+		const char *rest = line + 6;
+		while (*rest == ' ' || *rest == '\t')
+		{
+			rest++;
+		}
+		enum comp_focus_policy pol;
+		if (!comp_config_parse_focus_policy(rest, &pol))
+		{
+			wlr_log(WLR_INFO,
+					"ipc: unknown focus '%s' (use ClickToFocus, FocusFollowsMouse, or SloppyFocus)", rest);
+			return;
+		}
+		if (!server->config)
+		{
+			wlr_log(WLR_ERROR, "ipc: focus set failed (no config)");
+			return;
+		}
+		server->config->focus_policy = pol;
+		wlr_log(WLR_INFO, "ipc: focus policy set to %s", comp_config_focus_policy_name(pol));
+		return;
+	}
 	wlr_log(WLR_INFO, "ipc: unknown command '%s'", line);
 }
 
@@ -5964,6 +6233,14 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 		/* Re-entering transfers cursor ownership back to the client immediately. */
 		wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
 		wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
+		/* FocusFollowsMouse / SloppyFocus: keyboard follows XDG toplevel enter only.
+		 * Desktop-like BACKGROUND/BOTTOM layers count as empty root; panels do not. */
+		if (server_focus_policy(server) != COMP_FOCUS_CLICK)
+		{
+			struct comp_toplevel *under = NULL;
+			const bool empty_root = pointer_focus_target_at(server, server->cursor->x, server->cursor->y, &under);
+			apply_motion_focus_policy(server, under, empty_root);
+		}
 		return;
 	}
 
@@ -5978,6 +6255,7 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 			 * spurious resizer jumps in transient surface holes. */
 			/* Keep last client-owned pointer focus/cursor untouched to prevent
 			 * mode flapping while crossing tiny no-surface gaps near edges. */
+			apply_motion_focus_policy(server, edge_view, false);
 			return;
 		}
 		const uint32_t edges = toplevel_resize_edges_at_cursor(server, edge_view);
@@ -6001,6 +6279,7 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 	/* Background/empty space: compositor default cursor and no focused pointer surface. */
 	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 	wlr_seat_pointer_notify_clear_focus(server->seat);
+	apply_motion_focus_policy(server, NULL, true);
 }
 
 /** Relative pointer motion callback. */
@@ -6196,7 +6475,11 @@ static void server_cursor_button(struct wl_listener *listener, void *data)
 		else
 		{
 			layer_surface_try_keyboard_focus_click(server, server->cursor->x, server->cursor->y);
-			if (!surface_at(server, server->cursor->x, server->cursor->y, NULL, NULL))
+			/* ClickToFocus and FocusFollowsMouse clear on empty root / desktop backdrop;
+			 * SloppyFocus keeps focus. Panels are not empty root. */
+			struct comp_toplevel *under = NULL;
+			if (server_focus_policy(server) != COMP_FOCUS_SLOPPY &&
+				pointer_focus_target_at(server, server->cursor->x, server->cursor->y, &under) && !under)
 			{
 				clear_keyboard_focus(server);
 			}
@@ -6548,6 +6831,7 @@ static void server_finish(struct comp_server *server)
 	 * protocol/backend listener lists before the display/global teardown starts.
 	 */
 	server_detach_global_listeners(server);
+	motion_focus_idle_cancel(server);
 	compositor_session_active = false;
 	ext_workspace_fini(server);
 	ipc_fini(server);
@@ -6586,6 +6870,7 @@ static void print_usage(const char *argv0)
 	printf("  --scroll-move ARG          prev|next|left|right|N\n");
 	printf("  --workspace ARG            1..%d|next|prev\n", COMP_WORKSPACE_COUNT);
 	printf("  --workspace-move N         Move focused window to workspace N\n");
+	printf("  --focus POLICY             ClickToFocus|FocusFollowsMouse|SloppyFocus\n");
 	printf("  --reload-config            Send reload request to running compositor\n");
 	printf("  --allow-builtin-fallback   Start with synthesized config defaults if no file resolves\n");
 	printf("  --ipc                      Keep compatibility; IPC is default-on\n");
@@ -6765,6 +7050,8 @@ int main(int argc, char **argv)
 	bool no_ipc = false;
 	bool reload_config_from_argv = false;
 	bool allow_builtin_fallback = false;
+	bool focus_from_argv = false;
+	enum comp_focus_policy initial_focus_policy = COMP_FOCUS_CLICK;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -7018,6 +7305,22 @@ int main(int argc, char **argv)
 		{
 			reload_config_from_argv = true;
 		}
+		else if (!strcmp(argv[i], "--focus"))
+		{
+			if (i + 1 >= argc)
+			{
+				wlr_log(WLR_ERROR, "Missing value after --focus");
+				return 1;
+			}
+			const char *v = argv[++i];
+			if (!comp_config_parse_focus_policy(v, &initial_focus_policy))
+			{
+				wlr_log(WLR_ERROR,
+						"Unknown --focus %s (use ClickToFocus, FocusFollowsMouse, or SloppyFocus)", v);
+				return 1;
+			}
+			focus_from_argv = true;
+		}
 		else if (!strcmp(argv[i], "--allow-builtin-fallback"))
 		{
 			allow_builtin_fallback = true;
@@ -7100,6 +7403,16 @@ int main(int argc, char **argv)
 			return 0;
 		}
 	}
+	if (focus_from_argv)
+	{
+		char line[64];
+		snprintf(line, sizeof(line), "focus %s\n", comp_config_focus_policy_name(initial_focus_policy));
+		if (ipc_client_send_line(line) == 0)
+		{
+			wlr_log(WLR_INFO, "Applied focus policy to running morph via IPC");
+			return 0;
+		}
+	}
 	if (tile_move_from_argv || tile_grid_from_argv || scroll_move_from_argv ||
 		workspace_from_argv || workspace_move_from_argv)
 	{
@@ -7129,6 +7442,12 @@ int main(int argc, char **argv)
 	{
 		wlr_log(WLR_ERROR, "Failed to load keybind config");
 		return 1;
+	}
+	if (focus_from_argv)
+	{
+		cfg->focus_policy = initial_focus_policy;
+		wlr_log(WLR_INFO, "Startup focus policy override: %s",
+				comp_config_focus_policy_name(initial_focus_policy));
 	}
 
 	char ipc_probe[108];

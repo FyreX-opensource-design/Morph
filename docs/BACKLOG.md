@@ -138,22 +138,23 @@ Relevant implementation points:
 
 ## Current State
 
-Morph currently behaves as a click-to-focus compositor: clicking a toplevel gives it keyboard focus, and clicking empty root space clears toplevel focus. This default should stay stable before adding configurable alternatives.
+Morph supports configurable pointer-driven keyboard focus policies via **`[focus]`** in the INI config. The default remains **`ClickToFocus`**. **`FocusFollowsMouse`** and **`SloppyFocus`** are implemented, and interaction rules with layer-shell, root clicks, grabs, and future SSD are documented in **`docs/CONFIG.md`**.
 
 Relevant implementation points:
 
-- [`src/main.c:2110`](../src/main.c#L2110) activates the focused toplevel and forwards keyboard focus to its root surface.
-- [`src/main.c:4827`](../src/main.c#L4827) handles pointer button focus handoff for toplevel clicks.
-- [`src/main.c:4923`](../src/main.c#L4923) clears keyboard focus when a click lands on empty root space.
-- [`docs/CONFIG.md`](CONFIG.md) currently has no focus policy config option.
+- [`src/config.h`](../src/config.h) defines `enum comp_focus_policy` and `comp_config.focus_policy`.
+- [`src/config.c`](../src/config.c) parses the **`[focus]`** section (`policy` / `mode` / `focus_policy`).
+- [`src/main.c`](../src/main.c) applies enter/leave policy from pointer motion and gates empty-root click clearing for SloppyFocus.
+- [`docs/CONFIG.md`](CONFIG.md) documents policies and interaction rules.
 
 ## What Still Needs Work
 
-- [x] Default click-to-focus behavior exists for normal toplevel clicks and root-click focus clearing. Source: [`src/main.c:4827`](../src/main.c#L4827), [`src/main.c:4923`](../src/main.c#L4923)
-- [ ] Add a config option for `ClickToFocus` as the explicit default policy.
-- [ ] Add `FocusFollowsMouse`: pointer enter gives keyboard focus to that window, and pointer leave to root clears focus.
-- [ ] Add `SloppyFocus`: pointer enter gives keyboard focus, but passing over root space does not clear focus until another focus target is selected.
-- [ ] Define how focus policies interact with layer-shell surfaces, root clicks, compositor-owned move/resize grabs, and future server-side decorations before exposing them in `docs/CONFIG.md`.
+- [x] Default click-to-focus behavior exists for normal toplevel clicks and root-click focus clearing.
+- [x] Config option for `ClickToFocus` as the explicit default policy. Source: [`src/config.c`](../src/config.c), [`docs/CONFIG.md`](CONFIG.md)
+- [x] `FocusFollowsMouse`: pointer enter gives keyboard focus; leave to root clears focus.
+- [x] `SloppyFocus`: pointer enter gives keyboard focus; root does not clear until another focus target is selected.
+- [x] Focus policy interactions with layer-shell, root clicks, compositor-owned move/resize grabs, and future SSD are documented in `docs/CONFIG.md`.
+- [ ] Manual nested/native session checks for FocusFollowsMouse / SloppyFocus against panels, grabs, and multi-window stack raise behavior (until a compositor input harness exists).
 
 # ----------------------------------------------------------------------------
 # Compositor input test coverage
