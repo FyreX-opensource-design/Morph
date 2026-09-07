@@ -85,6 +85,12 @@ These flags are IPC-aware and may talk to a running Morph instance.
 | `--workspace ARG` | `1`..`9`, `next`, `prev` | Sends `workspace ...` over IPC; exits `1` if no compositor is listening |
 | `--workspace-move N` | `1`..`9` | Sends `workspace move N` over IPC; exits `1` if no compositor is listening |
 
+### Focus Policy
+
+| Option | Accepted Values | Behavior |
+|---|---|---|
+| `--focus POLICY` | `ClickToFocus`, `FocusFollowsMouse`, `SloppyFocus` (and aliases such as `click`, `ffm`, `mouse`, `sloppy`) | Sends `focus …` over IPC when a compositor is listening; otherwise starts a new instance with that policy overriding the config file value. A later `reload config` restores the file value. |
+
 ### Reload Control
 
 | Option | Meaning | Behavior |
@@ -95,10 +101,10 @@ These flags are IPC-aware and may talk to a running Morph instance.
 
 - `--config` only affects the process being started locally; it does not send a config path to an already running instance.
 - `--reload-config`, `--tile-move`, `--tile-grid`, `--scroll-move`, `--workspace`, and `--workspace-move` require a running Morph instance with IPC enabled.
-- `--layout` and `--scroll` are special: they can start a new compositor instance or talk to an existing one.
+- `--layout`, `--scroll`, and `--focus` are special: they can start a new compositor instance or talk to an existing one.
 - `--no-ipc` disables socket creation for the current process, so later IPC-based commands cannot target that instance.
 - `--allow-builtin-fallback` exports the same policy into the process environment so startup and reload follow the same fallback contract.
-- Runtime command behavior is implemented in [`src/main.c:4518`](../src/main.c#L4518) through [`src/main.c:4713`](../src/main.c#L4713).
+- Runtime command behavior is implemented in [`src/main.c`](../src/main.c) (`ipc_process_line`).
 
 ## Examples
 
@@ -142,6 +148,12 @@ Reload the running compositor config:
 
 ```bash
 morph --reload-config
+```
+
+Set FocusFollowsMouse on a running compositor (or at startup if none is listening):
+
+```bash
+morph --focus FocusFollowsMouse
 ```
 
 Run without IPC socket creation:

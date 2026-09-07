@@ -295,6 +295,13 @@ struct comp_server
 	char ipc_socket_path[108];
 	/** CLOCK_MONOTONIC ns; used for layout position easing in tile/scroll. */
 	uint64_t layout_anim_last_ns;
+	/**
+	 * Deferred FocusFollowsMouse / SloppyFocus handoff. Applied on the event-loop idle
+	 * path so keyboard focus never changes re-entrantly inside pointer motion handling.
+	 */
+	struct wl_event_source *motion_focus_idle;
+	struct comp_toplevel *motion_focus_target;
+	bool motion_focus_clear;
 };
 
 /** Request wl_display_run() shutdown exactly once (safe against duplicate callers). */

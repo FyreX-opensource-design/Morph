@@ -88,6 +88,25 @@ struct comp_decoration_rule {
 	bool prefer_server_side;
 };
 
+/**
+ * Keyboard focus policy for XDG toplevels (see `[focus]` in docs/CONFIG.md).
+ * Non-mouse focus paths (map, activation, workspace switch, keybinds) ignore this.
+ */
+enum comp_focus_policy {
+	/** Click a toplevel to focus; empty-root click clears focus. Default. */
+	COMP_FOCUS_CLICK = 0,
+	/** Pointer enter focuses; leave to empty root clears focus. */
+	COMP_FOCUS_FOLLOWS_MOUSE,
+	/** Pointer enter focuses; empty root does not clear until another target is selected. */
+	COMP_FOCUS_SLOPPY,
+};
+
+/** Parse a focus policy name (ClickToFocus / FocusFollowsMouse / SloppyFocus and aliases). */
+bool comp_config_parse_focus_policy(const char *s, enum comp_focus_policy *out);
+
+/** Canonical name for logging / IPC (`ClickToFocus`, …). */
+const char *comp_config_focus_policy_name(enum comp_focus_policy policy);
+
 struct comp_config {
 	struct comp_keybind *binds;
 	size_t n_binds;
@@ -99,6 +118,8 @@ struct comp_config {
 	size_t n_input_map_rules;
 	/** When no `[decoration_rule]` matches, use this for tile/scroll (default true = hide client title bars). */
 	bool decoration_strip_default;
+	/** Pointer-driven keyboard focus policy (default COMP_FOCUS_CLICK). */
+	enum comp_focus_policy focus_policy;
 	/** Optional `sh -c` snippets from `[hooks]` (trusted like exec). */
 	char *hook_startup;
 	char *hook_shutdown;

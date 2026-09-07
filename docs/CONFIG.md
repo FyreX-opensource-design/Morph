@@ -92,6 +92,43 @@ Changes apply after **config reload** (or compositor restart).
 
 ---
 
+## Section `[focus]` (optional)
+
+A single **`[focus]`** block selects the pointer-driven keyboard focus policy for XDG toplevels. If omitted, Morph uses **`ClickToFocus`** (unchanged from the historical default).
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| **`policy`** / **`mode`** / **`focus_policy`** | `ClickToFocus` | One of the policies below. |
+
+Accepted policy names (case-insensitive; underscores and hyphens are allowed):
+
+| Policy | Aliases | Behavior |
+|--------|---------|----------|
+| **`ClickToFocus`** | `click`, `click_to_focus`, `click-to-focus` | Clicking a toplevel gives it keyboard focus. Clicking empty root space clears keyboard focus. Pointer motion alone does not change keyboard focus. |
+| **`FocusFollowsMouse`** | `ffm`, `focus_follows_mouse`, `focus-follows-mouse`, `mouse` | Pointer enter over an XDG toplevel gives it keyboard focus. Leaving to empty root space or a desktop-like BACKGROUND/BOTTOM layer (wallpaper) clears keyboard focus. |
+| **`SloppyFocus`** | `sloppy`, `sloppy_focus`, `sloppy-focus` | Pointer enter over an XDG toplevel gives it keyboard focus. Passing over empty root or a desktop-like wallpaper layer does **not** clear focus; focus stays until another focus target is selected (another window via enter/click, map/activation, workspace switch, etc.). Empty-root clicks also keep focus. |
+
+### Interaction rules
+
+These rules apply to all policies and are part of the stable contract:
+
+- **Layer-shell** (panels / overlays): keyboard focus moves to an interactive layer surface only on **click/tap**, never on pointer enter. Hovering a panel does not clear an XDG toplevel’s keyboard focus under FocusFollowsMouse or SloppyFocus.
+- **Root / empty desktop**: ClickToFocus and FocusFollowsMouse clear keyboard focus on an empty-root click (or a click on a BACKGROUND/BOTTOM wallpaper layer); SloppyFocus does not. FocusFollowsMouse additionally clears when the pointer leaves onto empty root / desktop wallpaper via motion. In a fully tiled layout with no visible desktop, SloppyFocus and FocusFollowsMouse look the same until the pointer rests on uncovered desktop or wallpaper.
+- **Compositor move/resize grabs** (`Super+drag`, edge resize): motion during an active grab does not apply FocusFollowsMouse / SloppyFocus handoff. Explicit focus still happens when a grab is armed on a toplevel.
+- **Non-pointer focus** (toplevel map, foreign-toplevel / xdg-activation, workspace switch, keybinds): always uses the compositor’s normal focus path and ignores the mouse policy.
+- **Future server-side decorations**: SSD chrome belonging to a toplevel is expected to follow the same enter/click rules as the window body (no separate focus policy for chrome).
+
+Example:
+
+```ini
+[focus]
+policy = FocusFollowsMouse
+```
+
+Changes apply after **config reload** (or compositor restart). Runtime overrides are also available via IPC **`focus …`** / **`morph --focus`** (see below); a later **`reload config`** restores the value from the file.
+
+---
+
 ## Section `[decoration]` (optional)
 
 Optional defaults for **xdg-decoration** (see **`[decoration_rule]`** below). If omitted, the compositor defaults to **stripping** client-side title bars in **tile** and **scroll** layouts, for clients that support the protocol.
@@ -224,6 +261,7 @@ From another terminal you can send one-line commands to a running instance (Unix
 These are the current compositor control commands for local use. The Wayland-facing workspace protocol is intentionally narrower for now: **`activate`** works, while **`create_workspace`**, **`remove_workspace`**, and **`assign_workspace`** are still no-ops for external clients that talk to **`ext_workspace_manager_v1`**.
 
 - **`layout stack`**, **`layout tile`**, **`layout scroll`**, **`layout toggle`**
+- **`focus ClickToFocus`**, **`focus FocusFollowsMouse`**, **`focus SloppyFocus`** (aliases: `click`, `ffm`, `sloppy`, …) — set pointer-driven keyboard focus policy at runtime (does not rewrite the config file; **`reload config`** restores the file value)
 - **`tile move …`** (same semantics as sort-order actions above)
 - **`scroll …`** or **`scroll move …`** — **`prev`** / **`left`**, **`next`** / **`right`**, or a **signed integer** (viewport steps in scroll layout; no-op if not in scroll layout)
 - **`tile grid …`** (same forms as **`tile_grid_move` `command=`**)
@@ -232,7 +270,7 @@ These are the current compositor control commands for local use. The Wayland-fac
 - **`workspace next`** / **`workspace prev`** — cycle workspaces (wraps)
 - **`workspace move N`** — move the focused toplevel to workspace **`N`**
 
-The **`morph`** binary also accepts **`--layout`**, **`--scroll`** (same as **`--layout scroll`**), **`--tile-move`**, **`--scroll-move`**, **`--tile-grid`**, **`--workspace`** **`1`**..**`9`** or **`next`** / **`prev`**, **`--workspace-move`** **`N`** (move focused window to workspace **`N`**), **`--reload-config`** for scripting, and **`--allow-builtin-fallback`** to keep the old no-config fallback behavior; see **`docs/COMPOSITOR.md`** for behavior when no compositor is listening.
+The **`morph`** binary also accepts **`--layout`**, **`--scroll`** (same as **`--layout scroll`**), **`--focus`**, **`--tile-move`**, **`--scroll-move`**, **`--tile-grid`**, **`--workspace`** **`1`**..**`9`** or **`next`** / **`prev`**, **`--workspace-move`** **`N`** (move focused window to workspace **`N`**), **`--reload-config`** for scripting, and **`--allow-builtin-fallback`** to keep the old no-config fallback behavior; see **`docs/CLI.md`** for behavior when no compositor is listening.
 
 ---
 
