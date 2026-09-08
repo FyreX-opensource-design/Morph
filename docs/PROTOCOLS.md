@@ -23,12 +23,8 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`zwlr_output_power_v1`** (wlr-output-power-management-unstable) | `wlr_output_power_manager_v1_create(dpy)` + [`src/output_power.c`](../src/output_power.c) | DPMS-style output on/off. |
 | **`xdg_activation_v1`** | `wlr_xdg_activation_v1_create(dpy)` | Launcher / notification activation tokens; morph maps requests onto existing workspace and focus policy. |
 | **`zwlr_screencopy_manager_v1`** (wlr-screencopy-unstable) | `wlr_screencopy_manager_v1_create(dpy)` | Screen capture (**grim**, some recorders). Uses **`wlr_scene_output`** commit path. |
-<<<<<<< HEAD
-| **`zwlr_gamma_control_manager_v1`** (wlr-gamma-control-unstable) | `wlr_gamma_control_manager_v1_create(dpy)` + `wlr_scene_set_gamma_control_manager_v1` | Night light (**wlsunset**, **gammastep**); scene applies LUTs on output commit. |
-=======
 | **`zwlr_export_dmabuf_v1`** (wlr-export-dmabuf-unstable) | `wlr_export_dmabuf_manager_v1_create(dpy)` | DMA-BUF export for **OBS** / some portal capture paths. |
-| **`zwlr_gamma_control_v1`** (wlr-gamma-control-unstable) | `wlr_gamma_control_manager_v1_create(dpy)` + [`src/gamma_control.c`](../src/gamma_control.c) | Night light via **`wlsunset`** / **gammastep**; scene-integrated gamma LUTs. |
->>>>>>> 3dcca8c41afd4a104c1195b150e9ca135d438cfa
+| **`zwlr_gamma_control_manager_v1`** (wlr-gamma-control-unstable) | `wlr_gamma_control_manager_v1_create(dpy)` + [`src/gamma_control.c`](../src/gamma_control.c) | Night light (**wlsunset**, **gammastep**); scene applies LUTs on output commit. |
 | **`xdg_wm_base`** (XDG shell) | `wlr_xdg_shell_create(dpy, 3)` | Version **3**. Toplevels; **xdg popups** (menus, tooltips) are added to the scene graph and unconstrained in `main.c`. |
 | **`ext_workspace_manager_v1`** (staging **ext-workspace-v1**) | `wl_global_create` + [`src/ext_workspace.c`](../src/ext_workspace.c) | Nine fixed workspaces; **`activate`** switches desktop; **`state`** + **`done`** for bars (e.g. **waybar** `ext/workspaces`). No create/remove/assign. |
 | **`zxdg_decoration_manager_v1`** (xdg-decoration-unstable-v1) | `wlr_xdg_decoration_manager_v1_create(dpy)` | Client vs server-side decorations; morph picks mode per layout / tile-float / config. |
@@ -44,11 +40,7 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`wp_viewporter`** | `wlr_viewporter_create(dpy)` | Required for **xwayland-satellite** (X11 → XDG bridge). |
 | **X11 (via satellite)** | `xwayland-satellite` child process | Not in-process Xwayland; **Morph** spawns satellite after startup and sets `DISPLAY`. |
 
-<<<<<<< HEAD
-**Not created anywhere in this repo:** output management, export-dmabuf, idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, virtual keyboard/pointer, etc.
-=======
 **Not created anywhere in this repo:** idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, legacy `zwlr_data_control` (superseded by **ext-data-control** above), etc.
->>>>>>> 3dcca8c41afd4a104c1195b150e9ca135d438cfa
 
 ---
 
@@ -105,14 +97,9 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 
 - **Core:** compositor, subcompositor, SHM/dmabuf (via renderer), outputs, seat (pointer/keyboard/touch), data device manager, primary selection, ext-data-control.
 - **Shell:** XDG shell (toplevels + popups), xdg-output, wlr-layer-shell, foreign-toplevel, ext-workspace.
-<<<<<<< HEAD
-- **Input extras:** pointer constraints, relative pointer, tablet-v2; X11 via xwayland-satellite.
-- **Decoration / capture:** xdg-decoration, screencopy, gamma control.
-=======
 - **Input extras:** pointer constraints, relative pointer, tablet-v2, virtual pointer/keyboard; X11 via xwayland-satellite.
-- **Decoration / capture:** xdg-decoration, screencopy, export-dmabuf.
+- **Decoration / capture:** xdg-decoration, screencopy, export-dmabuf, gamma control.
 - **Outputs:** output management, output power, gamma control.
->>>>>>> 3dcca8c41afd4a104c1195b150e9ca135d438cfa
 - **Rendering:** scene graph, output layout, frame loop.
 
 ### Not implemented (common gaps, by impact)
@@ -129,10 +116,6 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 
 **Lower**
 
-<<<<<<< HEAD
-- **Output management** — wdisplays/kanshi-style monitor GUI.
-=======
->>>>>>> 3dcca8c41afd4a104c1195b150e9ca135d438cfa
 - **wp_cursor_shape** — named cursors (many apps use `set_cursor` surfaces instead).
 - **presentation-time**, **security-context**, etc.
 

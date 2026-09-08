@@ -43,9 +43,6 @@ struct wlr_viewporter;
 struct wlr_tablet_manager_v2;
 struct wlr_tablet;
 struct wlr_tablet_v2_tablet;
-<<<<<<< HEAD
-struct wlr_gamma_control_manager_v1;
-=======
 struct wlr_export_dmabuf_manager_v1;
 struct wlr_ext_data_control_manager_v1;
 struct wlr_gamma_control_manager_v1;
@@ -54,7 +51,6 @@ struct wlr_virtual_pointer_manager_v1;
 struct wlr_virtual_keyboard_manager_v1;
 struct wlr_output_manager_v1;
 struct wlr_keyboard;
->>>>>>> 3dcca8c41afd4a104c1195b150e9ca135d438cfa
 
 struct comp_config;
 
@@ -226,8 +222,6 @@ struct comp_server
 	/** Routes launcher/notification activation tokens into the compositor's focus policy. */
 	struct wlr_xdg_activation_v1 *xdg_activation;
 	struct wlr_screencopy_manager_v1 *screencopy_manager;
-	/** Night-light / gamma LUTs for clients such as wlsunset (scene-integrated). */
-	struct wlr_gamma_control_manager_v1 *gamma_control_manager;
 	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
 	struct wlr_pointer_constraints_v1 *pointer_constraints;
 	struct wlr_relative_pointer_manager_v1 *relative_pointer_manager;
@@ -248,6 +242,7 @@ struct comp_server
 	struct wlr_tablet_manager_v2 *tablet_manager;
 	struct wlr_export_dmabuf_manager_v1 *export_dmabuf_manager;
 	struct wlr_ext_data_control_manager_v1 *ext_data_control_manager;
+	/** Night-light / gamma LUTs for clients such as wlsunset (scene-integrated). */
 	struct wlr_gamma_control_manager_v1 *gamma_control_manager;
 	struct wlr_output_power_manager_v1 *output_power_manager;
 	struct wlr_virtual_pointer_manager_v1 *virtual_pointer_manager;
