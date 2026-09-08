@@ -85,7 +85,7 @@ See [`INSTALL.md`](INSTALL.md) for:
 
 ## Runtime Notes
 
-- wlroots `0.19.x` API is targeted
+- wlroots `0.20.2+` API is targeted
 - X11 support depends on `xwayland-satellite` plus `xorg-xwayland`
 - Disable X11 satellite with [`MORPH_X11=0`](docs/ENVIRONMENT.md#morph-x11)
 - Java/X11 apps may need [`_JAVA_AWT_WM_NONREPARENTING=1`](docs/ENVIRONMENT.md#java-awt-wm-nonreparenting)

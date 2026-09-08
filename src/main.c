@@ -2272,7 +2272,7 @@ static void toplevel_commit(struct wl_listener *listener, void *data)
 	{
 		view->pending_configure_serial = 0;
 	}
-	/* wlroots 0.19 asserts if we schedule configure before initialized. */
+	/* wlroots asserts if we schedule configure before initialized. */
 	if (xdg->initial_commit && xdg->initialized)
 	{
 		const struct wlr_box *geo = &xdg->geometry;

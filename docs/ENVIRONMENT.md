@@ -145,7 +145,7 @@ locally-specific directory that Morph cannot auto-detect.
 Optional dynamic linker search path used by runtime loader resolution.
 
 Use this only when Morph depends on locally installed shared libraries
-(for example a locally built `wlroots-0.19`) that are not available through
+(for example a locally built `wlroots-0.20`) that are not available through
 system runtime library paths.
 
 Recommended setup:

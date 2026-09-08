@@ -1,6 +1,6 @@
 # Wayland protocols and desktop integration in **Morph**
 
-This document lists what **Morph** exposes today, what **wlroots** adds through its helper functions, and what is still missing. It is based on [`src/main.c`](../src/main.c), [`meson.build`](../meson.build), and wlroots 0.19 behavior.
+This document lists what **Morph** exposes today, what **wlroots** adds through its helper functions, and what is still missing. It is based on [`src/main.c`](../src/main.c), [`meson.build`](../meson.build), and wlroots 0.20 behavior.
 
 **Important distinction:** **xdg-desktop-portal** (settings, file chooser, screen cast, and similar features) talks to implementations over **D-Bus** and, for some features, expects the **Wayland compositor** to expose specific **Wayland protocol** extensions. **Morph** exposes a **moderate** set of globals for tiling, panels, capture, and games; several desktop and portal features still need more protocols or session services.
 
@@ -40,7 +40,7 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`wp_viewporter`** | `wlr_viewporter_create(dpy)` | Required for **xwayland-satellite** (X11 → XDG bridge). |
 | **X11 (via satellite)** | `xwayland-satellite` child process | Not in-process Xwayland; **Morph** spawns satellite after startup and sets `DISPLAY`. |
 
-**Not created anywhere in this repo:** idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, legacy `zwlr_data_control` (superseded by **ext-data-control** above), etc.
+**Not created anywhere in this repo:** idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, ext-image-copy-capture / ext-image-capture-source (window/app capture), legacy `zwlr_data_control` (superseded by **ext-data-control** above), etc.
 
 ---
 
@@ -113,6 +113,7 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 
 - **Idle inhibit** — prevent dim during video.
 - **Fractional scale** — HiDPI blur on some clients.
+- **ext-image-copy-capture** / **ext-image-capture-source** — window/app capture (wlroots 0.20+ helpers exist; Morph does not create these globals yet). Screen capture still uses `zwlr_screencopy` + `export-dmabuf`.
 
 **Lower**
 
@@ -139,4 +140,4 @@ Vendored **wlr-protocols** XML under **`protocols/`** (for `wayland-scanner` whe
 
 - [**`docs/COMPOSITOR.md`**](COMPOSITOR.md) — feature scope, workspaces, build/run.
 - [**`docs/CONFIG.md`**](CONFIG.md) — keybinds, `when=`, IPC.
-- **wlroots** [documentation](https://gitlab.freedesktop.org/wlroots/wlroots) for protocol modules in 0.19.
+- **wlroots** [documentation](https://gitlab.freedesktop.org/wlroots/wlroots) for protocol modules in 0.20.

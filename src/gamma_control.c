@@ -15,6 +15,8 @@ bool gamma_control_init(struct comp_server *server)
 		wlr_log(WLR_ERROR, "Failed to create wlr_gamma_control_manager_v1");
 		return false;
 	}
+	/* Software LUT size when an output has no hardware gamma (wlroots >= 0.20). */
+	server->gamma_control_manager->fallback_gamma_size = 1024;
 	wlr_scene_set_gamma_control_manager_v1(server->scene, server->gamma_control_manager);
 	return true;
 }

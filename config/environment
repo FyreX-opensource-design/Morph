@@ -37,10 +37,10 @@ MORPH_DEBUG_XDG=0
 WAYLAND_DEBUG=0
 WLR_LOGTS=0
 
-# Local wlroots runtime fallback (for systems without distro wlroots-0.19).
+# Local wlroots runtime fallback (for systems without distro wlroots-0.20).
 # Prefer system runtime libraries when available.
 # Uncomment when morph-session runs from a display manager and cannot resolve
-# libwlroots-0.19.so without shell-provided LD_LIBRARY_PATH.
+# libwlroots-0.20.so without shell-provided LD_LIBRARY_PATH.
 #export LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 # Java/X11 compatibility helpers

@@ -18,8 +18,8 @@ cc = meson.get_compiler('c')
 m_dep = cc.find_library('m', required: false)
 
 wlroots = dependency(
-  ['wlroots-0.19', 'wlroots-0.20', 'wlroots-0.22', 'wlroots-git', 'wlroots'],
-  version: '>=0.19'
+  ['wlroots-0.20', 'wlroots-0.22', 'wlroots-git', 'wlroots'],
+  version: '>=0.20.2'
 )
 # Needed for compositor-side touchpad defaults such as tap-to-click.
 libinput = dependency('libinput')
