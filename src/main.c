@@ -64,6 +64,7 @@
 #include "crash_handler.h"
 #include "ext_workspace.h"
 #include "gamma_control.h"
+#include "image_capture.h"
 #include "output_mgmt.h"
 #include "output_power.h"
 #include "server.h"
@@ -229,6 +230,11 @@ static void server_detach_global_listeners(struct comp_server *server)
 	output_power_fini(server);
 	virtual_input_fini(server);
 	output_mgmt_fini(server);
+	if (server->image_capture_new_request.link.prev)
+	{
+		wl_list_remove(&server->image_capture_new_request.link);
+		wl_list_init(&server->image_capture_new_request.link);
+	}
 }
 
 /** Return the root wl_surface for an XDG or Xwayland toplevel, or NULL if unavailable. */
@@ -716,46 +722,57 @@ static bool foreign_toplevel_cache_string(char **cached, const char *value)
  */
 static void foreign_toplevel_refresh(struct comp_toplevel *view)
 {
-	if (!view || !view->foreign_toplevel)
+	if (!view)
 	{
 		return;
 	}
 	const char *title = "";
 	const char *app_id = "";
 	toplevel_title_app_for_config(view, &title, &app_id);
-	if (foreign_toplevel_cache_string(&view->foreign_title, title))
+	const bool title_changed = foreign_toplevel_cache_string(&view->foreign_title, title);
+	const bool app_changed = foreign_toplevel_cache_string(&view->foreign_app_id, app_id);
+
+	if (view->foreign_toplevel)
 	{
-		wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel, view->foreign_title);
+		if (title_changed)
+		{
+			wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel, view->foreign_title);
+		}
+		if (app_changed)
+		{
+			wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel, view->foreign_app_id);
+		}
+		const bool activated = view->server->focused_toplevel == view && toplevel_surface_mapped(view) &&
+							   view->workspace == view->server->current_workspace;
+		const bool maximized = view->xdg_toplevel && view->xdg_toplevel->current.maximized;
+		const bool fullscreen = view->xdg_toplevel && view->xdg_toplevel->current.fullscreen;
+		if (!view->foreign_state_valid || view->foreign_activated != activated)
+		{
+			wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, activated);
+			view->foreign_activated = activated;
+		}
+		if (!view->foreign_state_valid || view->foreign_maximized != maximized)
+		{
+			wlr_foreign_toplevel_handle_v1_set_maximized(view->foreign_toplevel, maximized);
+			view->foreign_maximized = maximized;
+		}
+		if (!view->foreign_state_valid || view->foreign_fullscreen != fullscreen)
+		{
+			wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel, fullscreen);
+			view->foreign_fullscreen = fullscreen;
+		}
+		if (!view->foreign_state_valid || view->foreign_minimized != view->minimized)
+		{
+			wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, view->minimized);
+			view->foreign_minimized = view->minimized;
+		}
+		view->foreign_state_valid = true;
 	}
-	if (foreign_toplevel_cache_string(&view->foreign_app_id, app_id))
+
+	if (title_changed || app_changed)
 	{
-		wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel, view->foreign_app_id);
+		image_capture_toplevel_refresh(view);
 	}
-	const bool activated = view->server->focused_toplevel == view && toplevel_surface_mapped(view) &&
-						   view->workspace == view->server->current_workspace;
-	const bool maximized = view->xdg_toplevel && view->xdg_toplevel->current.maximized;
-	const bool fullscreen = view->xdg_toplevel && view->xdg_toplevel->current.fullscreen;
-	if (!view->foreign_state_valid || view->foreign_activated != activated)
-	{
-		wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, activated);
-		view->foreign_activated = activated;
-	}
-	if (!view->foreign_state_valid || view->foreign_maximized != maximized)
-	{
-		wlr_foreign_toplevel_handle_v1_set_maximized(view->foreign_toplevel, maximized);
-		view->foreign_maximized = maximized;
-	}
-	if (!view->foreign_state_valid || view->foreign_fullscreen != fullscreen)
-	{
-		wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel, fullscreen);
-		view->foreign_fullscreen = fullscreen;
-	}
-	if (!view->foreign_state_valid || view->foreign_minimized != view->minimized)
-	{
-		wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, view->minimized);
-		view->foreign_minimized = view->minimized;
-	}
-	view->foreign_state_valid = true;
 }
 
 /** Refresh foreign-toplevel metadata for all known toplevels. */
@@ -2228,6 +2245,7 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
 		view->foreign_toplevel = NULL;
 	}
+	image_capture_toplevel_destroy(view);
 	free(view->foreign_title);
 	free(view->foreign_app_id);
 	if (view->server->motion_focus_target == view)
@@ -2712,6 +2730,7 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 		view->foreign_request_close.notify = foreign_toplevel_handle_request_close;
 		wl_signal_add(&view->foreign_toplevel->events.request_close, &view->foreign_request_close);
 	}
+	image_capture_toplevel_create(view);
 
 	view->set_title.notify = toplevel_handle_set_title;
 	wl_signal_add(&xdg_toplevel->events.set_title, &view->set_title);
@@ -6735,6 +6754,10 @@ bool server_init(struct comp_server *server)
 	if (!server->foreign_toplevel_manager)
 	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_foreign_toplevel_manager_v1");
+		return false;
+	}
+	if (!image_capture_init(server))
+	{
 		return false;
 	}
 	/* Keep backend lifetime wired to compositor shutdown. */

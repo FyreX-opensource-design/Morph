@@ -51,6 +51,11 @@ struct wlr_virtual_pointer_manager_v1;
 struct wlr_virtual_keyboard_manager_v1;
 struct wlr_output_manager_v1;
 struct wlr_keyboard;
+struct wlr_ext_foreign_toplevel_list_v1;
+struct wlr_ext_foreign_toplevel_handle_v1;
+struct wlr_ext_image_copy_capture_manager_v1;
+struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1;
+struct wlr_ext_image_capture_source_v1;
 
 struct comp_config;
 
@@ -157,6 +162,11 @@ struct comp_toplevel
 	int restore_height;
 	bool has_restore;
 	struct wlr_foreign_toplevel_handle_v1 *foreign_toplevel;
+	/** Staging ext-foreign-toplevel handle used by window/app capture clients. */
+	struct wlr_ext_foreign_toplevel_handle_v1 *ext_foreign_toplevel;
+	/** Lazily created scene-node capture source for ext-image-copy-capture. */
+	struct wlr_ext_image_capture_source_v1 *image_capture_source;
+	struct wl_listener image_capture_source_destroy;
 	/** Last title sent to foreign-toplevel clients; suppresses redundant panel redraws. */
 	char *foreign_title;
 	/** Last app_id sent to foreign-toplevel clients; suppresses redundant panel redraws. */
@@ -223,6 +233,10 @@ struct comp_server
 	struct wlr_xdg_activation_v1 *xdg_activation;
 	struct wlr_screencopy_manager_v1 *screencopy_manager;
 	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
+	struct wlr_ext_foreign_toplevel_list_v1 *ext_foreign_toplevel_list;
+	struct wlr_ext_image_copy_capture_manager_v1 *ext_image_copy_capture_manager;
+	struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1 *ext_foreign_toplevel_image_capture_manager;
+	struct wl_listener image_capture_new_request;
 	struct wlr_pointer_constraints_v1 *pointer_constraints;
 	struct wlr_relative_pointer_manager_v1 *relative_pointer_manager;
 	struct wlr_pointer_constraint_v1 *active_pointer_constraint;

@@ -24,6 +24,10 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`xdg_activation_v1`** | `wlr_xdg_activation_v1_create(dpy)` | Launcher / notification activation tokens; morph maps requests onto existing workspace and focus policy. |
 | **`zwlr_screencopy_manager_v1`** (wlr-screencopy-unstable) | `wlr_screencopy_manager_v1_create(dpy)` | Screen capture (**grim**, some recorders). Uses **`wlr_scene_output`** commit path. |
 | **`zwlr_export_dmabuf_v1`** (wlr-export-dmabuf-unstable) | `wlr_export_dmabuf_manager_v1_create(dpy)` | DMA-BUF export for **OBS** / some portal capture paths. |
+| **`ext_image_copy_capture_manager_v1`** | `wlr_ext_image_copy_capture_manager_v1_create` + [`src/image_capture.c`](../src/image_capture.c) | Frame copy sessions for screen/window capture (wlroots 0.20+). |
+| **`ext_output_image_capture_source_manager_v1`** | `wlr_ext_output_image_capture_source_manager_v1_create` | Per-output capture sources. |
+| **`ext_foreign_toplevel_list_v1`** | `wlr_ext_foreign_toplevel_list_v1_create` | Window list used by window/app capture clients. |
+| **`ext_foreign_toplevel_image_capture_source_manager_v1`** | foreign-toplevel capture manager + scene-node sources | Per-window capture; accepts requests with `wlr_ext_image_capture_source_v1_create_with_scene_node`. |
 | **`zwlr_gamma_control_manager_v1`** (wlr-gamma-control-unstable) | `wlr_gamma_control_manager_v1_create(dpy)` + [`src/gamma_control.c`](../src/gamma_control.c) | Night light (**wlsunset**, **gammastep**); scene applies LUTs on output commit. |
 | **`xdg_wm_base`** (XDG shell) | `wlr_xdg_shell_create(dpy, 3)` | Version **3**. Toplevels; **xdg popups** (menus, tooltips) are added to the scene graph and unconstrained in `main.c`. |
 | **`ext_workspace_manager_v1`** (staging **ext-workspace-v1**) | `wl_global_create` + [`src/ext_workspace.c`](../src/ext_workspace.c) | Nine fixed workspaces; **`activate`** switches desktop; **`state`** + **`done`** for bars (e.g. **waybar** `ext/workspaces`). No create/remove/assign. |
@@ -40,7 +44,7 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`wp_viewporter`** | `wlr_viewporter_create(dpy)` | Required for **xwayland-satellite** (X11 → XDG bridge). |
 | **X11 (via satellite)** | `xwayland-satellite` child process | Not in-process Xwayland; **Morph** spawns satellite after startup and sets `DISPLAY`. |
 
-**Not created anywhere in this repo:** idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, ext-image-copy-capture / ext-image-capture-source (window/app capture), legacy `zwlr_data_control` (superseded by **ext-data-control** above), etc.
+**Not created anywhere in this repo:** idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, legacy `zwlr_data_control` (superseded by **ext-data-control** above), etc.
 
 ---
 
@@ -79,7 +83,7 @@ Tools such as **xdg-desktop-portal-wlr** expect a mix of **D-Bus** and composito
 | Need (examples) | Typical Wayland / wlroots side | In Morph? |
 |-----------------|----------------------------------|---------------|
 | Screen / window capture (grim-style) | `zwlr_screencopy_unstable_v1` | **Yes** |
-| PipeWire portal capture (some paths) | screencopy + **export-dmabuf** | **Yes** |
+| PipeWire portal capture (some paths) | screencopy / **ext-image-copy-capture** + export-dmabuf | **Yes** (output + window sources) |
 | Inhibit shortcuts / idle | `zwp_keyboard_shortcuts_inhibit_v1`, idle inhibit | **No** |
 | Output layout for clients | `xdg_wm_base`, `zxdg_output_manager_v1` | **Yes** |
 | Monitor layout tools | `zwlr_output_manager_v1` | **Yes** |
@@ -98,7 +102,7 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 - **Core:** compositor, subcompositor, SHM/dmabuf (via renderer), outputs, seat (pointer/keyboard/touch), data device manager, primary selection, ext-data-control.
 - **Shell:** XDG shell (toplevels + popups), xdg-output, wlr-layer-shell, foreign-toplevel, ext-workspace.
 - **Input extras:** pointer constraints, relative pointer, tablet-v2, virtual pointer/keyboard; X11 via xwayland-satellite.
-- **Decoration / capture:** xdg-decoration, screencopy, export-dmabuf, gamma control.
+- **Decoration / capture:** xdg-decoration, screencopy, export-dmabuf, gamma control, ext-image-copy-capture (output + window/app sources).
 - **Outputs:** output management, output power, gamma control.
 - **Rendering:** scene graph, output layout, frame loop.
 
@@ -113,7 +117,6 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 
 - **Idle inhibit** — prevent dim during video.
 - **Fractional scale** — HiDPI blur on some clients.
-- **ext-image-copy-capture** / **ext-image-capture-source** — window/app capture (wlroots 0.20+ helpers exist; Morph does not create these globals yet). Screen capture still uses `zwlr_screencopy` + `export-dmabuf`.
 
 **Lower**
 

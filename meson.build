@@ -105,6 +105,7 @@ executable(
   'src/config.c',
   'src/ext_workspace.c',
   'src/gamma_control.c',
+  'src/image_capture.c',
   'src/output_mgmt.c',
   'src/output_power.c',
   'src/virtual_input.c',

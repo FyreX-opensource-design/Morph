@@ -16,8 +16,9 @@
 
 - `zwlr_layer_shell_v1` (tested with Waybar/swaybg)
 - `zwlr_screencopy_manager_v1` (tested with grim)
+- `ext_image_copy_capture_manager_v1` + output/window capture sources (wlroots 0.20+)
 - `ext_workspace_manager_v1` (tested with Waybar ext/workspaces)
-- `zwlr_foreign_toplevel_manager_v1`
+- `zwlr_foreign_toplevel_manager_v1` / `ext_foreign_toplevel_list_v1`
 - `zxdg_decoration_manager_v1`
 - `zwp_pointer_constraints_v1`
 - `zwp_relative_pointer_manager_v1`
