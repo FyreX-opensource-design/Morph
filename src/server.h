@@ -116,6 +116,9 @@ struct comp_layer
 struct comp_toplevel
 {
 	struct wl_list link;
+	/** Link in server->focus_order (most-recently-focused first); valid while focus_listed. */
+	struct wl_list focus_link;
+	bool focus_listed;
 	struct comp_server *server;
 	struct wlr_xdg_toplevel *xdg_toplevel;
 	struct wlr_scene_tree *scene_tree;
@@ -300,6 +303,11 @@ struct comp_server
 	struct wl_listener cursor_tablet_tool_button;
 	struct wl_list outputs;
 	struct wl_list toplevels;
+	/**
+	 * Focus history (MRU) over the same toplevels as `toplevels`, newest first.
+	 * `toplevels` stays in creation order for tiling; window cycling reads this list.
+	 */
+	struct wl_list focus_order;
 	enum comp_layout layout;
 	struct comp_toplevel *focused_toplevel;
 	int current_workspace;
@@ -384,6 +392,14 @@ void server_workspace_go(struct comp_server *server, int idx);
 void server_workspace_relative(struct comp_server *server, int delta);
 /** Move focused toplevel to workspace `target` (0-based). */
 void server_workspace_move_focused(struct comp_server *server, int target);
+
+/**
+ * Focus the next (`delta` > 0) or previous (`delta` < 0) window in focus-history order.
+ *
+ * Candidates are mapped, initialized, non-minimized toplevels on the current workspace.
+ * Cycling wraps and leaves focus unchanged when no other candidate exists.
+ */
+void server_window_focus_cycle(struct comp_server *server, int delta);
 
 /** Move focused tiled window by `steps` in sort order (+ toward end, − toward start). No-op if not tiled/focused. */
 void server_tile_move_focused_n(struct comp_server *server, int steps);

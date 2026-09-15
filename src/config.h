@@ -56,6 +56,10 @@ enum comp_keybind_action {
 	COMP_KEYBIND_WORKSPACE_PREV,
 	/** command= target workspace 1..COMP_WORKSPACE_COUNT. */
 	COMP_KEYBIND_WORKSPACE_MOVE,
+	/** Focus the next window in focus-history order (Alt-Tab). */
+	COMP_KEYBIND_WINDOW_NEXT,
+	/** Focus the previous window in focus-history order (Alt-Shift-Tab). */
+	COMP_KEYBIND_WINDOW_PREV,
 };
 
 struct comp_keybind {

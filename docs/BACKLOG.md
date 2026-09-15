@@ -101,9 +101,11 @@ Relevant implementation points:
 
 ## What Still Needs Work
 
+- [x] Add a real WindowList / MRU structure separate from `server->toplevels`, since the existing toplevel list is not a focus-history model. Source: [`src/server.h`](../src/server.h) (`comp_server.focus_order`, `comp_toplevel.focus_link`), [`src/main.c`](../src/main.c) (`server_window_focus_cycle`, `toplevel_focus_candidate`)
+- [x] Ship `Alt-Tab` / `Alt-Shift-Tab` without an overlay first: `nextWindow` / `prevWindow` keybind actions, `window focus next|prev` IPC, and `--window-focus next|prev` CLI all commit focus immediately.
 - [ ] Build a small reusable compositor-owned UI foundation before implementing multiple one-off UI features independently.
-- [ ] Use that shared UI layer first for WinList / `Alt-Tab` / `Alt-Shift-Tab`, then for root menus, and only after that for SSD titlebars and other compositor-owned chrome.
-- [ ] Add a real WindowList / MRU structure separate from `server->toplevels`, since the existing toplevel list is not a focus-history model.
+- [ ] Use that shared UI layer for the held-modifier WinList switcher (title / app_id / icon, highlight current candidate, commit on modifier release, cancel on `Esc`), then for root menus, and only after that for SSD titlebars and other compositor-owned chrome. The MRU list above is the data source it should read.
+- [ ] Decide whether scratchpad, fullscreen, and future per-output workspaces participate in the cycle candidate set; currently the filter is mapped + initialized + non-minimized + current workspace.
 - [ ] Keep the root-menu DSL and registry work separate from the shared popup/overlay runtime so menus do not become the implicit UI foundation for everything else.
 - [ ] Revisit theme integration later so compositor-owned UI can eventually align with client-side styling where practical, without making GTK/Qt a hard dependency for the first implementation.
 

@@ -52,6 +52,12 @@ void server_workspace_move_focused(struct comp_server *server, int target)
     (void)target;
 }
 
+void server_window_focus_cycle(struct comp_server *server, int delta)
+{
+    (void)server;
+    (void)delta;
+}
+
 void server_tile_move_focused_n(struct comp_server *server, int steps)
 {
     (void)server;
@@ -429,6 +435,70 @@ static int test_focus_policy_parse(void)
     return 0;
 }
 
+/**
+ * Window-cycle action parsing: canonical names, aliases, and case insensitivity.
+ */
+static int test_window_cycle_actions_parse(void)
+{
+    const char *cfg_text =
+        "[bind]\n"
+        "mods = Alt\n"
+        "key = Tab\n"
+        "action = nextWindow\n"
+        "\n"
+        "[bind]\n"
+        "mods = Alt+Shift\n"
+        "key = Tab\n"
+        "action = prevWindow\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super\n"
+        "key = j\n"
+        "action = window_next\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super\n"
+        "key = k\n"
+        "action = FOCUS_PREV\n";
+
+    char path[128];
+    if (!write_temp_file(cfg_text, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp window-cycle config\n");
+        return 1;
+    }
+
+    struct comp_config *cfg = NULL;
+    bool ok = comp_config_load(path, &cfg);
+    unlink(path);
+    if (!ok || !cfg || cfg->n_binds != 4)
+    {
+        fprintf(stderr, "expected four window-cycle binds\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+
+    const enum comp_keybind_action want[] = {
+        COMP_KEYBIND_WINDOW_NEXT,
+        COMP_KEYBIND_WINDOW_PREV,
+        COMP_KEYBIND_WINDOW_NEXT,
+        COMP_KEYBIND_WINDOW_PREV,
+    };
+    for (size_t i = 0; i < sizeof(want) / sizeof(want[0]); i++)
+    {
+        if (cfg->binds[i].action != want[i])
+        {
+            fprintf(stderr, "bind %zu parsed as action %d, expected %d\n", i,
+                    (int)cfg->binds[i].action, (int)want[i]);
+            comp_config_free(cfg);
+            return 1;
+        }
+    }
+
+    comp_config_free(cfg);
+    return 0;
+}
+
 /** Execute all config parser regression tests; return non-zero on first failure. */
 int main(void)
 {
@@ -437,6 +507,10 @@ int main(void)
         return 1;
     }
     if (test_focus_policy_parse() != 0)
+    {
+        return 1;
+    }
+    if (test_window_cycle_actions_parse() != 0)
     {
         return 1;
     }

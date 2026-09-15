@@ -237,6 +237,14 @@ static bool parse_action(const char *v, enum comp_keybind_action *a) {
 		*a = COMP_KEYBIND_WORKSPACE_MOVE;
 		return true;
 	}
+	if (!strcasecmp(v, "nextWindow") || !strcasecmp(v, "window_next") || !strcasecmp(v, "focus_next")) {
+		*a = COMP_KEYBIND_WINDOW_NEXT;
+		return true;
+	}
+	if (!strcasecmp(v, "prevWindow") || !strcasecmp(v, "window_prev") || !strcasecmp(v, "focus_prev")) {
+		*a = COMP_KEYBIND_WINDOW_PREV;
+		return true;
+	}
 	return false;
 }
 
@@ -772,6 +780,12 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 			}
 			return true;
 		}
+		case COMP_KEYBIND_WINDOW_NEXT:
+			server_window_focus_cycle(server, 1);
+			return true;
+		case COMP_KEYBIND_WINDOW_PREV:
+			server_window_focus_cycle(server, -1);
+			return true;
 		}
 	}
 	return false;

@@ -2238,6 +2238,11 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 		wl_list_remove(&view->link);
 		view->listed = false;
 	}
+	if (view->focus_listed)
+	{
+		wl_list_remove(&view->focus_link);
+		view->focus_listed = false;
+	}
 	if (view->foreign_toplevel)
 	{
 		detach_listener_if_linked(&view->foreign_request_activate);
@@ -2787,6 +2792,9 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	log_new_toplevel_state(xdg_toplevel, shell_ver, wm_caps_enabled);
 	wl_list_insert(server->toplevels.prev, &view->link);
 	view->listed = true;
+	/* Enter focus history behind existing windows; focus_toplevel promotes it on first focus. */
+	wl_list_insert(server->focus_order.prev, &view->focus_link);
+	view->focus_listed = true;
 	foreign_toplevel_refresh(view);
 }
 
@@ -2847,6 +2855,11 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
 	}
 	server->focused_toplevel = toplevel;
+	if (toplevel->focus_listed)
+	{
+		wl_list_remove(&toplevel->focus_link);
+		wl_list_insert(&server->focus_order, &toplevel->focus_link);
+	}
 	foreign_toplevel_refresh(toplevel);
 	scroll_sync_to_focused(server);
 
@@ -3922,6 +3935,18 @@ void server_arrange_toplevels(struct comp_server *server)
 	layout_anim_kick_outputs(server);
 }
 
+/**
+ * True when `v` can receive focus right now from a non-pointer path.
+ *
+ * Shared by workspace switching and window cycling so both skip the same stale
+ * or invisible views instead of drifting apart.
+ */
+static bool toplevel_focus_candidate(const struct comp_server *server, const struct comp_toplevel *v)
+{
+	return v && toplevel_surface_mapped(v) && toplevel_surface_initialized(v) && !v->minimized &&
+		   v->workspace == server->current_workspace;
+}
+
 /** Enable only windows belonging to the active workspace. */
 void server_workspace_apply_visibility(struct comp_server *server)
 {
@@ -3963,11 +3988,11 @@ void server_workspace_go(struct comp_server *server, int idx)
 	{
 		clear_keyboard_focus(server);
 	}
+	/* Focus history order, so returning to a workspace restores the window last used there. */
 	struct comp_toplevel *pick = NULL;
-	wl_list_for_each(t, &server->toplevels, link)
+	wl_list_for_each(t, &server->focus_order, focus_link)
 	{
-		if (t->workspace == server->current_workspace && toplevel_surface_mapped(t) &&
-			toplevel_surface_initialized(t) && !t->minimized)
+		if (toplevel_focus_candidate(server, t))
 		{
 			pick = t;
 			break;
@@ -4004,6 +4029,77 @@ void server_workspace_relative(struct comp_server *server, int delta)
 	server_workspace_go(server, idx);
 }
 
+/** Focus-history window cycling (Alt-Tab / Alt-Shift-Tab) with wrap-around. */
+void server_window_focus_cycle(struct comp_server *server, int delta)
+{
+	if (!server || delta == 0)
+	{
+		return;
+	}
+	/*
+	 * Walk focus history rather than server->toplevels: the latter is creation order,
+	 * so cycling it would jump around unpredictably as windows open and close.
+	 */
+	size_t n = 0;
+	struct comp_toplevel *t;
+	wl_list_for_each(t, &server->focus_order, focus_link)
+	{
+		if (toplevel_focus_candidate(server, t))
+		{
+			n++;
+		}
+	}
+	if (n < 2)
+	{
+		return;
+	}
+	struct comp_toplevel **ring = calloc(n, sizeof(*ring));
+	if (!ring)
+	{
+		wlr_log(WLR_ERROR, "window cycle: out of memory for %zu candidates", n);
+		return;
+	}
+	size_t i = 0;
+	size_t current = 0;
+	bool have_current = false;
+	wl_list_for_each(t, &server->focus_order, focus_link)
+	{
+		if (!toplevel_focus_candidate(server, t))
+		{
+			continue;
+		}
+		if (t == server->focused_toplevel)
+		{
+			current = i;
+			have_current = true;
+		}
+		ring[i++] = t;
+	}
+
+	struct comp_toplevel *target;
+	if (!have_current)
+	{
+		/* Nothing focused (or focus sits on a layer surface): enter the ring at an end. */
+		target = delta > 0 ? ring[0] : ring[n - 1];
+	}
+	else
+	{
+		long long step = (long long)current + delta;
+		step %= (long long)n;
+		if (step < 0)
+		{
+			step += (long long)n;
+		}
+		target = ring[step];
+	}
+	free(ring);
+	if (target && target != server->focused_toplevel)
+	{
+		focus_toplevel(server, target);
+		foreign_toplevel_sync_all(server);
+	}
+}
+
 /** Move focused window to another workspace, then repair focus/visibility. */
 void server_workspace_move_focused(struct comp_server *server, int target)
 {
@@ -4023,9 +4119,9 @@ void server_workspace_move_focused(struct comp_server *server, int target)
 	{
 		struct comp_toplevel *pick = NULL;
 		struct comp_toplevel *t;
-		wl_list_for_each(t, &server->toplevels, link)
+		wl_list_for_each(t, &server->focus_order, focus_link)
 		{
-			if (t != f && t->workspace == server->current_workspace && toplevel_surface_mapped(t))
+			if (t != f && toplevel_focus_candidate(server, t))
 			{
 				pick = t;
 				break;
@@ -4764,6 +4860,36 @@ static void ipc_process_line(struct comp_server *server, char *line)
 		if (!server_reload_config(server))
 		{
 			wlr_log(WLR_ERROR, "ipc: config reload failed");
+		}
+		return;
+	}
+	if (!strncmp(line, "window ", 7))
+	{
+		const char *rest = line + 7;
+		while (*rest == ' ' || *rest == '\t')
+		{
+			rest++;
+		}
+		/* `window focus next` and the shorter `window next` both cycle focus history. */
+		if (!strncmp(rest, "focus ", 6))
+		{
+			rest += 6;
+			while (*rest == ' ' || *rest == '\t')
+			{
+				rest++;
+			}
+		}
+		if (!strcmp(rest, "next"))
+		{
+			server_window_focus_cycle(server, 1);
+		}
+		else if (!strcmp(rest, "prev"))
+		{
+			server_window_focus_cycle(server, -1);
+		}
+		else
+		{
+			wlr_log(WLR_INFO, "ipc: unknown window subcommand '%s' (use focus next|prev)", rest);
 		}
 		return;
 	}
@@ -6857,6 +6983,7 @@ bool server_init(struct comp_server *server)
 
 	wl_list_init(&server->outputs);
 	wl_list_init(&server->toplevels);
+	wl_list_init(&server->focus_order);
 
 	if (!output_power_init(server))
 	{
@@ -6938,6 +7065,7 @@ static void print_usage(const char *argv0)
 	printf("  --scroll-move ARG          prev|next|left|right|N\n");
 	printf("  --workspace ARG            1..%d|next|prev\n", COMP_WORKSPACE_COUNT);
 	printf("  --workspace-move N         Move focused window to workspace N\n");
+	printf("  --window-focus next|prev   Cycle window focus in focus-history order\n");
 	printf("  --focus POLICY             ClickToFocus|FocusFollowsMouse|SloppyFocus\n");
 	printf("  --reload-config            Send reload request to running compositor\n");
 	printf("  --allow-builtin-fallback   Start with synthesized config defaults if no file resolves\n");
@@ -7115,6 +7243,8 @@ int main(int argc, char **argv)
 	char workspace_line[64];
 	bool workspace_move_from_argv = false;
 	char workspace_move_line[64];
+	bool window_focus_from_argv = false;
+	char window_focus_line[64];
 	bool no_ipc = false;
 	bool reload_config_from_argv = false;
 	bool allow_builtin_fallback = false;
@@ -7361,6 +7491,29 @@ int main(int argc, char **argv)
 			snprintf(workspace_move_line, sizeof(workspace_move_line), "workspace move %ld\n", n);
 			workspace_move_from_argv = true;
 		}
+		else if (!strcmp(argv[i], "--window-focus"))
+		{
+			if (i + 1 >= argc)
+			{
+				wlr_log(WLR_ERROR, "Missing value after --window-focus");
+				return 1;
+			}
+			const char *v = argv[++i];
+			if (!strcasecmp(v, "next"))
+			{
+				snprintf(window_focus_line, sizeof(window_focus_line), "window focus next\n");
+			}
+			else if (!strcasecmp(v, "prev"))
+			{
+				snprintf(window_focus_line, sizeof(window_focus_line), "window focus prev\n");
+			}
+			else
+			{
+				wlr_log(WLR_ERROR, "Unknown --window-focus %s (use next or prev)", v);
+				return 1;
+			}
+			window_focus_from_argv = true;
+		}
 		else if (!strcmp(argv[i], "--ipc"))
 		{
 			/* IPC is default-on when XDG_RUNTIME_DIR is set; flag kept for scripts. */
@@ -7460,6 +7613,15 @@ int main(int argc, char **argv)
 		}
 		wlr_log(WLR_INFO, "Sent workspace to running morph via IPC");
 	}
+	if (window_focus_from_argv)
+	{
+		if (ipc_client_send_line(window_focus_line) != 0)
+		{
+			wlr_log(WLR_ERROR, "No running morph or IPC failed for --window-focus");
+			return 1;
+		}
+		wlr_log(WLR_INFO, "Sent window focus to running morph via IPC");
+	}
 	if (layout_from_argv)
 	{
 		char line[48];
@@ -7482,7 +7644,7 @@ int main(int argc, char **argv)
 		}
 	}
 	if (tile_move_from_argv || tile_grid_from_argv || scroll_move_from_argv ||
-		workspace_from_argv || workspace_move_from_argv)
+		workspace_from_argv || workspace_move_from_argv || window_focus_from_argv)
 	{
 		return 0;
 	}

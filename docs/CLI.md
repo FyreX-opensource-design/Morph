@@ -85,6 +85,14 @@ These flags are IPC-aware and may talk to a running Morph instance.
 | `--workspace ARG` | `1`..`9`, `next`, `prev` | Sends `workspace ...` over IPC; exits `1` if no compositor is listening |
 | `--workspace-move N` | `1`..`9` | Sends `workspace move N` over IPC; exits `1` if no compositor is listening |
 
+### Window Focus Cycling
+
+| Option | Accepted Values | Behavior |
+|---|---|---|
+| `--window-focus ARG` | `next`, `prev` | Sends `window focus ...` over IPC; exits `1` if no compositor is listening |
+
+Cycling walks focus history (most recently used first) across mapped, non-minimized windows on the current workspace. See [`docs/CONFIG.md`](CONFIG.md) for the `nextWindow` / `prevWindow` keybind actions that share this policy.
+
 ### Focus Policy
 
 | Option | Accepted Values | Behavior |
@@ -100,7 +108,7 @@ These flags are IPC-aware and may talk to a running Morph instance.
 ## Behavior Notes
 
 - `--config` only affects the process being started locally; it does not send a config path to an already running instance.
-- `--reload-config`, `--tile-move`, `--tile-grid`, `--scroll-move`, `--workspace`, and `--workspace-move` require a running Morph instance with IPC enabled.
+- `--reload-config`, `--tile-move`, `--tile-grid`, `--scroll-move`, `--workspace`, `--workspace-move`, and `--window-focus` require a running Morph instance with IPC enabled.
 - `--layout`, `--scroll`, and `--focus` are special: they can start a new compositor instance or talk to an existing one.
 - `--no-ipc` disables socket creation for the current process, so later IPC-based commands cannot target that instance.
 - `--allow-builtin-fallback` exports the same policy into the process environment so startup and reload follow the same fallback contract.
@@ -148,6 +156,12 @@ Reload the running compositor config:
 
 ```bash
 morph --reload-config
+```
+
+Cycle to the next window from a bar or script:
+
+```bash
+morph --window-focus next
 ```
 
 Set FocusFollowsMouse on a running compositor (or at startup if none is listening):

@@ -192,13 +192,38 @@ Unless noted, tiling-related actions are **no-ops** when not in **tile** layout,
 | **`layout_stack`** | `stack` | — | Force **stack** layout. |
 | **`layout_scroll`** | `scroll` | — | Force **scroll** layout (niri-like horizontal strip). |
 
+### Window focus cycling (Alt-Tab)
+
+These cycle keyboard focus between windows in **focus-history** order (most recently used first), independent of layout.
+
+| `action` | Aliases | `command` | Effect |
+|----------|---------|-----------|--------|
+| **`nextWindow`** | `window_next`, `focus_next` | — | Focus the **next** window in focus history (wraps). |
+| **`prevWindow`** | `window_prev`, `focus_prev` | — | Focus the **previous** window in focus history (wraps). |
+
+Candidates are **mapped**, **initialized**, **non-minimized** XDG toplevels on the **current workspace**. Minimized windows, windows on other workspaces, and stale/unfocusable views are skipped. With fewer than **two** candidates, focus is left unchanged.
+
+Because focus history is updated on **every** focus change, repeatedly pressing a `nextWindow` bind **alternates between the two most recently used windows** rather than walking the whole list — the same behavior as macOS `Cmd-Tab` without holding the modifier. Walking further requires the held-modifier switcher overlay, which is not implemented yet.
+
+```ini
+[bind]
+mods = Alt
+key = Tab
+action = nextWindow
+
+[bind]
+mods = Alt+Shift
+key = Tab
+action = prevWindow
+```
+
 ### Workspaces (9 virtual desktops)
 
 There are **nine** workspaces (**`1`**..**`9`** in config and IPC; internally zero-based). New windows open on the **current** workspace. Only windows on the **active** workspace are **visible** and receive pointer hits; tiling and scroll logic apply **per workspace**. In **scroll** layout, the visible column index is stored **per workspace and per physical output** (multi-monitor: each head scrolls independently). **`when=`** predicates can use **[`MORPH_WORKSPACE`](ENVIRONMENT.md#morph-workspace)**.
 
 | `action` | Aliases | `command` | Effect |
 |----------|---------|-----------|--------|
-| **`workspace`** | `workspace_goto` | **Required** `1`..`9` | Switch to that workspace (focus first mapped XDG window there, or clear keyboard focus). |
+| **`workspace`** | `workspace_goto` | **Required** `1`..`9` | Switch to that workspace (focus the **most recently focused** mapped XDG window there, or clear keyboard focus). |
 | **`workspace_next`** | `ws_next` | — | Next workspace (wraps **9** → **1**). |
 | **`workspace_prev`** | `ws_prev` | — | Previous workspace (wraps **1** → **9**). |
 | **`workspace_move`** | `ws_move` | **Required** `1`..`9` | Move the **focused** toplevel to that workspace (refocus on the current workspace if it left). |
