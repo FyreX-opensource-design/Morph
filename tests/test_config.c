@@ -58,6 +58,30 @@ void server_window_focus_cycle(struct comp_server *server, int delta)
     (void)delta;
 }
 
+void server_window_cycle_step(struct comp_server *server, int delta, uint32_t hold_mods)
+{
+    (void)server;
+    (void)delta;
+    (void)hold_mods;
+}
+
+bool server_window_cycle_active(const struct comp_server *server)
+{
+    (void)server;
+    return false;
+}
+
+void server_window_cycle_notify_mods(struct comp_server *server, uint32_t depressed)
+{
+    (void)server;
+    (void)depressed;
+}
+
+void server_window_cycle_cancel(struct comp_server *server)
+{
+    (void)server;
+}
+
 void server_tile_move_focused_n(struct comp_server *server, int steps)
 {
     (void)server;

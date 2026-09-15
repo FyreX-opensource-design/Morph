@@ -103,9 +103,12 @@ Relevant implementation points:
 
 - [x] Add a real WindowList / MRU structure separate from `server->toplevels`, since the existing toplevel list is not a focus-history model. Source: [`src/server.h`](../src/server.h) (`comp_server.focus_order`, `comp_toplevel.focus_link`), [`src/main.c`](../src/main.c) (`server_window_focus_cycle`, `toplevel_focus_candidate`)
 - [x] Ship `Alt-Tab` / `Alt-Shift-Tab` without an overlay first: `nextWindow` / `prevWindow` keybind actions, `window focus next|prev` IPC, and `--window-focus next|prev` CLI all commit focus immediately.
-- [ ] Build a small reusable compositor-owned UI foundation before implementing multiple one-off UI features independently.
-- [ ] Use that shared UI layer for the held-modifier WinList switcher (title / app_id / icon, highlight current candidate, commit on modifier release, cancel on `Esc`), then for root menus, and only after that for SSD titlebars and other compositor-owned chrome. The MRU list above is the data source it should read.
+- [x] Held-modifier cycling session: freeze the candidate ring while Alt is held, preview focus without reordering MRU, commit on modifier release, cancel with `Esc`.
+- [x] Compositor-owned switcher overlay for the held session: title / app_id list with the current candidate highlighted, visual-only (pointer pass-through). Source: [`src/ui.c`](../src/ui.c), [`src/ui.h`](../src/ui.h), `server->ui_tree`
+- [ ] Grow `src/ui.c` into a small reusable compositor-owned UI foundation before implementing further one-off chrome independently (root menus, SSD titlebars).
+- [ ] Use that shared UI layer for root menus after the switcher, and only after that for SSD titlebars and other compositor-owned chrome. The MRU list above is the data source the switcher already reads.
 - [ ] Decide whether scratchpad, fullscreen, and future per-output workspaces participate in the cycle candidate set; currently the filter is mapped + initialized + non-minimized + current workspace.
+- [ ] Show icons in the switcher when a freedesktop icon is available for the window's app_id.
 - [ ] Keep the root-menu DSL and registry work separate from the shared popup/overlay runtime so menus do not become the implicit UI foundation for everything else.
 - [ ] Revisit theme integration later so compositor-owned UI can eventually align with client-side styling where practical, without making GTK/Qt a hard dependency for the first implementation.
 

@@ -205,7 +205,15 @@ These cycle keyboard focus between windows in **focus-history** order (most rece
 
 Candidates are **mapped**, **initialized**, **non-minimized** XDG toplevels on the **current workspace**. Minimized windows, windows on other workspaces, and stale/unfocusable views are skipped. With fewer than **two** candidates, focus is left unchanged.
 
-Because focus history is updated on **every** focus change, repeatedly pressing a `nextWindow` bind **alternates between the two most recently used windows** rather than walking the whole list — the same behavior as macOS `Cmd-Tab` without holding the modifier. Walking further requires the held-modifier switcher overlay, which is not implemented yet.
+#### Held-modifier cycling
+
+If the bind has a modifier (the **`Alt`** in `Alt+Tab`), **keeping it held** starts a cycling **session**: the candidate list is captured once and **frozen**, so each further press walks one step further down focus history instead of bouncing between the two most recent windows. Each step **previews** focus on the highlighted window; focus history is only reordered when the session ends. Releasing the modifier **commits** the selection and promotes it to the front of focus history. Pressing **`Esc`** during a session **cancels** it and returns to the window you started from; that `Esc` is consumed and not delivered to the window.
+
+**`Shift`** is treated as a direction selector rather than part of the held chord, so an `Alt+Tab` bind and an `Alt+Shift+Tab` bind share a **single** session — you can hold `Alt`, overshoot with `Tab`, and step back with `Shift+Tab` without restarting the cycle.
+
+A bind with **no** modifiers (or with `Shift` only) has nothing to hold, so it commits immediately on every press and therefore alternates between the two most recently used windows. The same applies to the IPC and CLI entry points, which are single-shot by nature.
+
+Sessions also end on their own when the workspace changes, and windows that close mid-cycle drop out of the frozen list. While the session is held, Morph draws a compositor-owned **switcher overlay** centered on the output of the highlighted window: each row shows the window **title** and **app_id** (when they differ), and the current candidate is highlighted. The overlay is visual-only (pointer events pass through). Releasing the modifier and pressing **`Esc`** both dismiss it.
 
 ```ini
 [bind]

@@ -781,10 +781,10 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 			return true;
 		}
 		case COMP_KEYBIND_WINDOW_NEXT:
-			server_window_focus_cycle(server, 1);
+			server_window_cycle_step(server, 1, b->mods);
 			return true;
 		case COMP_KEYBIND_WINDOW_PREV:
-			server_window_focus_cycle(server, -1);
+			server_window_cycle_step(server, -1, b->mods);
 			return true;
 		}
 	}

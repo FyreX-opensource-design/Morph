@@ -156,8 +156,14 @@ action = close
 # nextWindow / window_next / focus_next and prevWindow / window_prev / focus_prev
 # cycle keyboard focus in focus-history order, wrapping at the ends.
 # Only mapped, non-minimized windows on the current workspace take part.
-# Focus history updates on every focus change, so repeated presses alternate
-# between the two most recently used windows rather than walking the full list.
+# Holding Alt and tapping Tab walks the full list and shows a switcher overlay;
+# releasing Alt commits, Esc cancels.
+#
+# Holding the modifier keeps a cycling session open: the candidate list freezes,
+# so repeated Tab presses walk the full list instead of alternating between the
+# two most recent windows. Releasing Alt commits the selection; Esc cancels back
+# to where you started. Alt+Tab and Alt+Shift+Tab share one session, so you can
+# overshoot and step back without restarting the cycle.
 
 # Focus the next window.
 [bind]

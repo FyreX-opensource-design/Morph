@@ -119,6 +119,11 @@ struct comp_layer_popup
 };
 
 static void focus_toplevel(struct comp_server *server, struct comp_toplevel *toplevel);
+static void window_cycle_forget(struct comp_server *server, struct comp_toplevel *view);
+static void window_cycle_commit(struct comp_server *server);
+static void window_cycle_reset(struct comp_server *server);
+static void window_cycle_overlay_hide(struct comp_server *server);
+static void window_cycle_overlay_sync(struct comp_server *server);
 static struct wlr_output *primary_wlr_output(struct comp_server *server);
 static void process_cursor_motion(struct comp_server *server, uint32_t time_msec);
 static void cursor_constrain(struct comp_server *server, struct wlr_pointer_constraint_v1 *constraint,
@@ -2243,6 +2248,7 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 		wl_list_remove(&view->focus_link);
 		view->focus_listed = false;
 	}
+	window_cycle_forget(view->server, view);
 	if (view->foreign_toplevel)
 	{
 		detach_listener_if_linked(&view->foreign_request_activate);
@@ -2855,7 +2861,9 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
 	}
 	server->focused_toplevel = toplevel;
-	if (toplevel->focus_listed)
+	/* Alt-Tab previews must not reorder history mid-session, or the frozen ring
+	 * would no longer match what the next step walks. Committed on modifier release. */
+	if (toplevel->focus_listed && !server->cycle.suppress_mru)
 	{
 		wl_list_remove(&toplevel->focus_link);
 		wl_list_insert(&server->focus_order, &toplevel->focus_link);
@@ -3978,6 +3986,8 @@ void server_workspace_go(struct comp_server *server, int idx)
 	{
 		return;
 	}
+	/* Candidates are workspace-scoped, so the frozen ring cannot survive the switch. */
+	window_cycle_commit(server);
 	server->current_workspace = idx;
 	struct comp_toplevel *t;
 	wl_list_for_each(t, &server->toplevels, link)
@@ -4029,17 +4039,16 @@ void server_workspace_relative(struct comp_server *server, int delta)
 	server_workspace_go(server, idx);
 }
 
-/** Focus-history window cycling (Alt-Tab / Alt-Shift-Tab) with wrap-around. */
-void server_window_focus_cycle(struct comp_server *server, int delta)
+/**
+ * Snapshot focus candidates in focus-history order.
+ *
+ * Walks focus history rather than server->toplevels: the latter is creation
+ * order, so cycling it would jump around unpredictably as windows open and
+ * close. Returns the candidate count and stores a malloc'd array in `*out_ring`
+ * (untouched when the count is 0).
+ */
+static size_t window_cycle_collect(struct comp_server *server, struct comp_toplevel ***out_ring)
 {
-	if (!server || delta == 0)
-	{
-		return;
-	}
-	/*
-	 * Walk focus history rather than server->toplevels: the latter is creation order,
-	 * so cycling it would jump around unpredictably as windows open and close.
-	 */
 	size_t n = 0;
 	struct comp_toplevel *t;
 	wl_list_for_each(t, &server->focus_order, focus_link)
@@ -4049,55 +4058,314 @@ void server_window_focus_cycle(struct comp_server *server, int delta)
 			n++;
 		}
 	}
-	if (n < 2)
+	if (n == 0)
 	{
-		return;
+		return 0;
 	}
 	struct comp_toplevel **ring = calloc(n, sizeof(*ring));
 	if (!ring)
 	{
 		wlr_log(WLR_ERROR, "window cycle: out of memory for %zu candidates", n);
-		return;
+		return 0;
 	}
 	size_t i = 0;
-	size_t current = 0;
-	bool have_current = false;
 	wl_list_for_each(t, &server->focus_order, focus_link)
 	{
-		if (!toplevel_focus_candidate(server, t))
+		if (toplevel_focus_candidate(server, t))
 		{
+			ring[i++] = t;
+		}
+	}
+	*out_ring = ring;
+	return n;
+}
+
+/** Index of the focused toplevel within `ring`, or `len` when it is not present. */
+static size_t window_cycle_find_focused(const struct comp_server *server,
+										struct comp_toplevel *const *ring, size_t len)
+{
+	for (size_t i = 0; i < len; i++)
+	{
+		if (ring[i] == server->focused_toplevel)
+		{
+			return i;
+		}
+	}
+	return len;
+}
+
+/** Wrap `index + delta` into [0, len). */
+static size_t window_cycle_wrap(size_t index, int delta, size_t len)
+{
+	long long step = (long long)index + delta;
+	step %= (long long)len;
+	if (step < 0)
+	{
+		step += (long long)len;
+	}
+	return (size_t)step;
+}
+
+/** Focus a cycle candidate without disturbing focus history (preview step). */
+static void window_cycle_preview(struct comp_server *server, struct comp_toplevel *target)
+{
+	if (!target || target == server->focused_toplevel)
+	{
+		return;
+	}
+	server->cycle.suppress_mru = true;
+	focus_toplevel(server, target);
+	server->cycle.suppress_mru = false;
+	foreign_toplevel_sync_all(server);
+}
+
+/** Hide the switcher overlay without ending the session. */
+static void window_cycle_overlay_hide(struct comp_server *server)
+{
+	comp_ui_overlay_hide(&server->cycle.overlay);
+	struct comp_output *o;
+	wl_list_for_each(o, &server->outputs, link)
+	{
+		if (o->wlr_output)
+		{
+			wlr_output_schedule_frame(o->wlr_output);
+		}
+	}
+}
+
+/** Rebuild the switcher list from the frozen ring and center it on the previewed output. */
+static void window_cycle_overlay_sync(struct comp_server *server)
+{
+	if (!server->cycle.active || server->cycle.len == 0)
+	{
+		window_cycle_overlay_hide(server);
+		return;
+	}
+	struct comp_ui_switcher_row *rows = calloc(server->cycle.len, sizeof(*rows));
+	if (!rows)
+	{
+		wlr_log(WLR_ERROR, "switcher: out of memory for %zu rows", server->cycle.len);
+		return;
+	}
+	for (size_t i = 0; i < server->cycle.len; i++)
+	{
+		struct comp_toplevel *t = server->cycle.ring[i];
+		rows[i].title = t && t->xdg_toplevel ? t->xdg_toplevel->title : NULL;
+		rows[i].app_id = t && t->xdg_toplevel ? t->xdg_toplevel->app_id : NULL;
+	}
+	struct comp_toplevel *sel =
+		server->cycle.index < server->cycle.len ? server->cycle.ring[server->cycle.index] : NULL;
+	struct comp_output *out = sel ? toplevel_tile_output(sel) : NULL;
+	if (!out)
+	{
+		out = comp_output_from_wlr(server, primary_wlr_output(server));
+	}
+	struct wlr_box workarea = {0, 0, 800, 600};
+	float scale = 1.0f;
+	if (out)
+	{
+		workarea = out->layer_workarea;
+		if (workarea.width <= 0 || workarea.height <= 0)
+		{
+			wlr_output_layout_get_box(server->output_layout, out->wlr_output, &workarea);
+		}
+		if (out->wlr_output && out->wlr_output->scale > 0)
+		{
+			scale = out->wlr_output->scale;
+		}
+	}
+	if (!comp_ui_switcher_present(&server->cycle.overlay, &workarea, scale, rows, server->cycle.len,
+								  server->cycle.index))
+	{
+		window_cycle_overlay_hide(server);
+		free(rows);
+		return;
+	}
+	free(rows);
+	struct comp_output *o;
+	wl_list_for_each(o, &server->outputs, link)
+	{
+		if (o->wlr_output)
+		{
+			wlr_output_schedule_frame(o->wlr_output);
+		}
+	}
+}
+
+/** Release session state without touching focus. */
+static void window_cycle_reset(struct comp_server *server)
+{
+	window_cycle_overlay_hide(server);
+	free(server->cycle.ring);
+	server->cycle.ring = NULL;
+	server->cycle.len = 0;
+	server->cycle.index = 0;
+	server->cycle.hold_mods = 0;
+	server->cycle.origin = NULL;
+	server->cycle.active = false;
+	server->cycle.suppress_mru = false;
+}
+
+/** Promote the current selection to the front of focus history and end the session. */
+static void window_cycle_commit(struct comp_server *server)
+{
+	if (!server->cycle.active)
+	{
+		return;
+	}
+	struct comp_toplevel *selected =
+		server->cycle.index < server->cycle.len ? server->cycle.ring[server->cycle.index] : NULL;
+	window_cycle_reset(server);
+	if (selected && selected->focus_listed)
+	{
+		wl_list_remove(&selected->focus_link);
+		wl_list_insert(&server->focus_order, &selected->focus_link);
+	}
+}
+
+void server_window_cycle_cancel(struct comp_server *server)
+{
+	if (!server || !server->cycle.active)
+	{
+		return;
+	}
+	struct comp_toplevel *origin = server->cycle.origin;
+	const bool restore = origin && toplevel_focus_candidate(server, origin);
+	window_cycle_reset(server);
+	if (restore)
+	{
+		/* Origin is already at the front of focus history, so a plain focus is enough. */
+		focus_toplevel(server, origin);
+		foreign_toplevel_sync_all(server);
+	}
+}
+
+bool server_window_cycle_active(const struct comp_server *server)
+{
+	return server && server->cycle.active;
+}
+
+void server_window_cycle_notify_mods(struct comp_server *server, uint32_t depressed)
+{
+	if (!server || !server->cycle.active)
+	{
+		return;
+	}
+	if ((depressed & server->cycle.hold_mods) == 0)
+	{
+		window_cycle_commit(server);
+	}
+}
+
+/** Drop a dying toplevel from the active session so the frozen ring stays valid. */
+static void window_cycle_forget(struct comp_server *server, struct comp_toplevel *view)
+{
+	if (!server->cycle.active)
+	{
+		return;
+	}
+	if (server->cycle.origin == view)
+	{
+		server->cycle.origin = NULL;
+	}
+	size_t out = 0;
+	for (size_t i = 0; i < server->cycle.len; i++)
+	{
+		if (server->cycle.ring[i] == view)
+		{
+			if (i < server->cycle.index && server->cycle.index > 0)
+			{
+				server->cycle.index--;
+			}
 			continue;
 		}
-		if (t == server->focused_toplevel)
-		{
-			current = i;
-			have_current = true;
-		}
-		ring[i++] = t;
+		server->cycle.ring[out++] = server->cycle.ring[i];
 	}
+	server->cycle.len = out;
+	if (out == 0)
+	{
+		window_cycle_reset(server);
+		return;
+	}
+	if (server->cycle.index >= out)
+	{
+		server->cycle.index = out - 1;
+	}
+	window_cycle_overlay_sync(server);
+}
 
-	struct comp_toplevel *target;
-	if (!have_current)
+/** Focus-history window cycling (Alt-Tab / Alt-Shift-Tab) with wrap-around. */
+void server_window_focus_cycle(struct comp_server *server, int delta)
+{
+	if (!server || delta == 0)
 	{
-		/* Nothing focused (or focus sits on a layer surface): enter the ring at an end. */
-		target = delta > 0 ? ring[0] : ring[n - 1];
+		return;
 	}
-	else
+	struct comp_toplevel **ring = NULL;
+	const size_t n = window_cycle_collect(server, &ring);
+	if (n < 2)
 	{
-		long long step = (long long)current + delta;
-		step %= (long long)n;
-		if (step < 0)
-		{
-			step += (long long)n;
-		}
-		target = ring[step];
+		free(ring);
+		return;
 	}
+	const size_t current = window_cycle_find_focused(server, ring, n);
+	/* Nothing focused (or focus sits on a layer surface): enter the ring at an end. */
+	struct comp_toplevel *target =
+		current == n ? (delta > 0 ? ring[0] : ring[n - 1]) : ring[window_cycle_wrap(current, delta, n)];
 	free(ring);
 	if (target && target != server->focused_toplevel)
 	{
 		focus_toplevel(server, target);
 		foreign_toplevel_sync_all(server);
 	}
+}
+
+void server_window_cycle_step(struct comp_server *server, int delta, uint32_t hold_mods)
+{
+	if (!server || delta == 0)
+	{
+		return;
+	}
+	/*
+	 * Shift selects direction rather than holding the session open: Alt+Tab and
+	 * Alt+Shift+Tab must share one ring so that shift-tabbing backwards mid-cycle
+	 * does not restart it. Masking Shift out makes both chords agree on Alt.
+	 */
+	hold_mods &= ~(uint32_t)WLR_MODIFIER_SHIFT;
+	if (hold_mods == 0)
+	{
+		/* No modifier to wait for, so there is nothing to hold the ring open. */
+		server_window_focus_cycle(server, delta);
+		return;
+	}
+	if (server->cycle.active && server->cycle.hold_mods != hold_mods)
+	{
+		/* A different chord took over; settle the old session before starting anew. */
+		window_cycle_commit(server);
+	}
+	if (!server->cycle.active)
+	{
+		struct comp_toplevel **ring = NULL;
+		const size_t n = window_cycle_collect(server, &ring);
+		if (n < 2)
+		{
+			free(ring);
+			return;
+		}
+		server->cycle.ring = ring;
+		server->cycle.len = n;
+		server->cycle.hold_mods = hold_mods;
+		server->cycle.origin = server->focused_toplevel;
+		server->cycle.active = true;
+		const size_t current = window_cycle_find_focused(server, ring, n);
+		server->cycle.index = current == n ? (delta > 0 ? 0 : n - 1) : window_cycle_wrap(current, delta, n);
+	}
+	else
+	{
+		server->cycle.index = window_cycle_wrap(server->cycle.index, delta, server->cycle.len);
+	}
+	window_cycle_preview(server, server->cycle.ring[server->cycle.index]);
+	window_cycle_overlay_sync(server);
 }
 
 /** Move focused window to another workspace, then repair focus/visibility. */
@@ -4112,6 +4380,8 @@ void server_workspace_move_focused(struct comp_server *server, int target)
 	{
 		return;
 	}
+	/* Moving a window off the workspace invalidates the frozen ring. */
+	window_cycle_commit(server);
 	const bool was_focused = server->focused_toplevel == f;
 	f->workspace = target;
 	f->layout_anim_tracked = false;
@@ -5161,6 +5431,13 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data)
 
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
 	wlr_keyboard_notify_key(wlr_kbd, event);
+	if (pressed && sym == XKB_KEY_Escape && server_window_cycle_active(kbd->server))
+	{
+		/* Swallow the Esc: it aborts the switcher rather than reaching the window. */
+		server_window_cycle_cancel(kbd->server);
+		keyboard_key_dispatch_depth--;
+		return;
+	}
 	if (pressed && comp_config_try_bindings(kbd->server->config, kbd->server, pressed, mods_filtered, sym))
 	{
 		if (mods_filtered & WLR_MODIFIER_LOGO)
@@ -5186,6 +5463,7 @@ static void keyboard_handle_modifiers(struct wl_listener *listener, void *data)
 	struct wlr_keyboard *wlr_kbd = wlr_keyboard_from_input_device(kbd->dev);
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
 	wlr_seat_keyboard_notify_modifiers(kbd->server->seat, &wlr_kbd->modifiers);
+	server_window_cycle_notify_mods(kbd->server, wlr_kbd->modifiers.depressed);
 	if ((wlr_kbd->modifiers.depressed & WLR_MODIFIER_LOGO) == 0)
 	{
 		kbd->server->suppress_logo_pointer_drag = false;
@@ -6869,6 +7147,7 @@ bool server_init(struct comp_server *server)
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = wlr_scene_tree_create(&server->scene->tree);
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] =
 		wlr_scene_tree_create(&server->scene->tree);
+	server->ui_tree = wlr_scene_tree_create(&server->scene->tree);
 
 	if (!gamma_control_init(server))
 	{
@@ -6984,6 +7263,7 @@ bool server_init(struct comp_server *server)
 	wl_list_init(&server->outputs);
 	wl_list_init(&server->toplevels);
 	wl_list_init(&server->focus_order);
+	comp_ui_overlay_init(&server->cycle.overlay, server->ui_tree);
 
 	if (!output_power_init(server))
 	{
@@ -7020,6 +7300,8 @@ static void server_finish(struct comp_server *server)
 	 * on partially destroyed seat/client objects.
 	 */
 	server_clear_tracked_inputs(server);
+	window_cycle_reset(server);
+	comp_ui_overlay_fini(&server->cycle.overlay);
 	/*
 	 * Prevent wlroots destroy-time assertions by removing our listeners from
 	 * protocol/backend listener lists before the display/global teardown starts.

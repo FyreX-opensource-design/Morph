@@ -24,6 +24,9 @@ wlroots = dependency(
 # Needed for compositor-side touchpad defaults such as tap-to-click.
 libinput = dependency('libinput')
 pixman = dependency('pixman-1')
+cairo = dependency('cairo')
+pangocairo = dependency('pangocairo')
+libdrm = dependency('libdrm')
 wayland_server = dependency('wayland-server')
 xkbcommon = dependency('xkbcommon')
 wayland_protocols = dependency('wayland-protocols', version: '>=1.32')
@@ -109,6 +112,7 @@ executable(
   'src/output_mgmt.c',
   'src/output_power.c',
   'src/virtual_input.c',
+  'src/ui.c',
   xdg_shell_server_h,
   layer_shell_server_h,
   output_power_server_h,
@@ -117,7 +121,7 @@ executable(
   tablet_v2_server_h,
   tablet_v2_private_c,
   pointer_constraints_server_h,
-  dependencies: [wlroots, libinput, pixman, wayland_server, xkbcommon, m_dep],
+  dependencies: [wlroots, libinput, pixman, cairo, pangocairo, libdrm, wayland_server, xkbcommon, m_dep],
   install: true,
   install_dir: morph_bindir,
 )

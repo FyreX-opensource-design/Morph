@@ -91,7 +91,7 @@ These flags are IPC-aware and may talk to a running Morph instance.
 |---|---|---|
 | `--window-focus ARG` | `next`, `prev` | Sends `window focus ...` over IPC; exits `1` if no compositor is listening |
 
-Cycling walks focus history (most recently used first) across mapped, non-minimized windows on the current workspace. See [`docs/CONFIG.md`](CONFIG.md) for the `nextWindow` / `prevWindow` keybind actions that share this policy.
+Cycling walks focus history (most recently used first) across mapped, non-minimized windows on the current workspace. Each invocation commits immediately, so repeated calls alternate between the two most recently used windows; the held-modifier session that walks the full list is only reachable from a keybind, since there is no modifier to hold over IPC. See [`docs/CONFIG.md`](CONFIG.md) for the `nextWindow` / `prevWindow` keybind actions that share the candidate policy.
 
 ### Focus Policy
 
