@@ -33,13 +33,15 @@ Each `[bind]` block describes **one** shortcut. Start a new `[bind]` section for
 
 | Key | Required | Meaning |
 |-----|----------|---------|
-| **`mods`** | Yes | Modifier mask. Tokens separated by `+`, comma, or space (case-insensitive). Recognized tokens: **`shift`**, **`ctrl`** / **`control`**, **`alt`** / **`meta`**, **`super`** / **`mod`** / **`logo`** / **`win`** / **`mod4`**. |
+| **`mods`** | Yes | Modifier mask. Tokens separated by `+`, comma, or space (case-insensitive). Recognized tokens: **`shift`**, **`ctrl`** / **`control`**, **`alt`** / **`meta`**, **`super`** / **`mod`** / **`logo`** / **`win`** / **`mod4`**. The key name **`mod`** is also accepted as an alias for **`mods`**. |
 | **`key`** | Yes | Keysym name passed to **xkb_keysym_from_name** (case-insensitive), for example `Return`, `Escape`, `Q`, `Left`, `F1`. |
 | **`action`** | Yes | What to do when the chord matches (see **Actions** below). |
 | **`command`** | For some actions | Shell command line for **`exec`**, or parameter for **`tile_move`** / **`tile_grid_move`** as documented below. |
 | **`when`** | No | If set, **`/bin/sh -c '…'`** is run **on every key press** before the bind is considered; **exit status 0** means the bind is active. Non-zero skips the bind. The shell sees **[`MORPH_LAYOUT`](ENVIRONMENT.md#morph-layout)** as `stack`, `tile`, or `scroll`, and **[`MORPH_WORKSPACE`](ENVIRONMENT.md#morph-workspace)** as the current workspace number **`1`**..**`9`** (decimal string). |
 
 Bindings are matched using modifier and keysym sampled **before** the compositor updates XKB state from the key event, so the chord matches what the user pressed.
+
+If a `[bind]` block has a typo or other parse/validation error (unknown key, bad keysym/action, incomplete fields, invalid `command=`), Morph **skips that bind**, logs the problem, and continues loading the rest of the config so startup is not bricked by one bad shortcut.
 
 ### Layout-aware `when` example
 

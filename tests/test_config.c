@@ -283,7 +283,13 @@ static int test_invalid_tile_grid_command(void)
         "mods = Super\n"
         "key = T\n"
         "action = tile_grid_move\n"
-        "command = left 0\n";
+        "command = left 0\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super\n"
+        "key = Return\n"
+        "action = exec\n"
+        "command = foot\n";
 
     char path[128];
     if (!write_temp_file(cfg_text, path, sizeof(path)))
@@ -295,12 +301,87 @@ static int test_invalid_tile_grid_command(void)
     struct comp_config *cfg = NULL;
     bool ok = comp_config_load(path, &cfg);
     unlink(path);
-    if (ok)
+    if (!ok || !cfg)
     {
-        fprintf(stderr, "invalid config unexpectedly parsed\n");
+        fprintf(stderr, "invalid tile_grid_move bind should be skipped, not fail config load\n");
+        return 1;
+    }
+    if (cfg->n_binds != 1 || cfg->binds[0].action != COMP_KEYBIND_EXEC ||
+        cfg->binds[0].keysym != XKB_KEY_Return)
+    {
+        fprintf(stderr, "expected only the valid exec bind after skipping bad tile_grid_move\n");
         comp_config_free(cfg);
         return 1;
     }
+    for (size_t i = 0; i < cfg->n_binds; i++)
+    {
+        if (cfg->binds[i].action == COMP_KEYBIND_TILE_GRID_MOVE)
+        {
+            fprintf(stderr, "invalid tile_grid_move bind was not skipped\n");
+            comp_config_free(cfg);
+            return 1;
+        }
+    }
+    comp_config_free(cfg);
+    return 0;
+}
+
+/**
+ * A typo'd [bind] (e.g. unknown key `modx`) must not fail config load; later binds still apply.
+ * `mod` is accepted as an alias for `mods`.
+ */
+static int test_bind_typo_is_skipped(void)
+{
+    fprintf(stderr, "NOTE: the following config parser ERROR messages are expected; this test intentionally feeds a typo'd bind.\n");
+
+    const char *cfg_text =
+        "[bind]\n"
+        "mods = Super\n"
+        "key = Return\n"
+        "action = exec\n"
+        "command = foot\n"
+        "\n"
+        "[bind]\n"
+        "modx = Alt+Shift\n"
+        "key = Tab\n"
+        "action = prevWindow\n"
+        "\n"
+        "[bind]\n"
+        "mod = Alt\n"
+        "key = Tab\n"
+        "action = nextWindow\n";
+
+    char path[128];
+    if (!write_temp_file(cfg_text, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp typo bind config\n");
+        return 1;
+    }
+
+    struct comp_config *cfg = NULL;
+    bool ok = comp_config_load(path, &cfg);
+    unlink(path);
+    if (!ok || !cfg || cfg->n_binds != 2)
+    {
+        fprintf(stderr, "typo'd bind should be skipped; expected 2 valid binds, got ok=%d n=%zu\n",
+                ok ? 1 : 0, cfg ? cfg->n_binds : 0);
+        comp_config_free(cfg);
+        return 1;
+    }
+    if (cfg->binds[0].action != COMP_KEYBIND_EXEC || cfg->binds[0].keysym != XKB_KEY_Return)
+    {
+        fprintf(stderr, "first bind should remain the Super+Return exec\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+    if (cfg->binds[1].action != COMP_KEYBIND_WINDOW_NEXT || cfg->binds[1].keysym != XKB_KEY_Tab ||
+        cfg->binds[1].mods != WLR_MODIFIER_ALT)
+    {
+        fprintf(stderr, "mod= alias should parse as mods= for nextWindow\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+    comp_config_free(cfg);
     return 0;
 }
 
@@ -539,6 +620,10 @@ int main(void)
         return 1;
     }
     if (test_invalid_tile_grid_command() != 0)
+    {
+        return 1;
+    }
+    if (test_bind_typo_is_skipped() != 0)
     {
         return 1;
     }

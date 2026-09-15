@@ -860,48 +860,60 @@ bad:
 	return false;
 }
 
-/** Validate and finalize one [bind] block before appending it to cfg. */
-static bool flush_bind(struct comp_config *cfg, struct comp_keybind *cur, size_t line_no) {
+/**
+ * Validate and finalize one [bind] block before appending it to cfg.
+ * Parse/validation mistakes skip only this bind (log + continue) so a typo
+ * cannot brick compositor startup. Returns false only on allocation failure.
+ */
+static bool flush_bind(struct comp_config *cfg, struct comp_keybind *cur, size_t line_no,
+					   bool bind_invalid) {
+	if (bind_invalid) {
+		wlr_log(WLR_ERROR, "Config line ~%zu: skipping invalid [bind]", line_no);
+		return true;
+	}
 	if (!cur->keysym) {
-		if (cur->mods || cur->command || cur->when_shell) {
-			wlr_log(WLR_ERROR, "Config line ~%zu: incomplete [bind] (missing key=)", line_no);
-			return false;
+		if (cur->mods || cur->command || cur->when_shell || cur->action != COMP_KEYBIND_NONE) {
+			wlr_log(WLR_ERROR, "Config line ~%zu: incomplete [bind] (missing key=); skipping", line_no);
 		}
 		return true;
 	}
 	if (cur->action == COMP_KEYBIND_NONE) {
-		wlr_log(WLR_ERROR, "Config line ~%zu: bind needs action=", line_no);
-		return false;
+		wlr_log(WLR_ERROR, "Config line ~%zu: bind needs action=; skipping", line_no);
+		return true;
 	}
 	if (cur->action == COMP_KEYBIND_EXEC && (!cur->command || !cur->command[0])) {
-		wlr_log(WLR_ERROR, "Config line ~%zu: exec bind needs command=", line_no);
-		return false;
+		wlr_log(WLR_ERROR, "Config line ~%zu: exec bind needs command=; skipping", line_no);
+		return true;
 	}
 	if (cur->action == COMP_KEYBIND_TILE_MOVE && cur->command && cur->command[0]) {
 		char *end = NULL;
 		(void)strtol(cur->command, &end, 10);
 		if (!end || end == cur->command || *end) {
-			wlr_log(WLR_ERROR, "Config line ~%zu: tile_move command must be empty or a signed integer",
+			wlr_log(WLR_ERROR,
+					"Config line ~%zu: tile_move command must be empty or a signed integer; skipping",
 					line_no);
-			return false;
+			return true;
 		}
 	}
 	if (cur->action == COMP_KEYBIND_TILE_GRID_MOVE &&
 		!tile_grid_move_command_ok(cur->command ? cur->command : "", line_no)) {
-		return false;
+		/* tile_grid_move_command_ok already logged the reason. */
+		return true;
 	}
 	if (cur->action == COMP_KEYBIND_WORKSPACE_GOTO || cur->action == COMP_KEYBIND_WORKSPACE_MOVE) {
 		if (!cur->command || !cur->command[0]) {
-			wlr_log(WLR_ERROR, "Config line ~%zu: workspace / workspace_move needs command= 1..%d", line_no,
+			wlr_log(WLR_ERROR,
+					"Config line ~%zu: workspace / workspace_move needs command= 1..%d; skipping", line_no,
 					COMP_WORKSPACE_COUNT);
-			return false;
+			return true;
 		}
 		char *end = NULL;
 		const long w = strtol(cur->command, &end, 10);
 		if (!end || end == cur->command || *end || w < 1 || w > COMP_WORKSPACE_COUNT) {
-			wlr_log(WLR_ERROR, "Config line ~%zu: workspace command must be an integer 1..%d", line_no,
+			wlr_log(WLR_ERROR,
+					"Config line ~%zu: workspace command must be an integer 1..%d; skipping", line_no,
 					COMP_WORKSPACE_COUNT);
-			return false;
+			return true;
 		}
 	}
 	if (!append_bind(cfg, cur)) {
@@ -1235,6 +1247,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 	struct tile_rule_parse cur_tile = {0};
 	struct decoration_rule_parse cur_dec = {0};
 	bool in_bind = false;
+	bool bind_invalid = false;
 	bool in_tile = false;
 	bool in_hooks = false;
 	bool in_layout_anim = false;
@@ -1259,7 +1272,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 		}
 		if (line[0] == '[') {
 			/* Section switch: flush pending block objects before resetting section flags. */
-			if (in_bind && !flush_bind(cfg, &cur, line_no)) {
+			if (in_bind && !flush_bind(cfg, &cur, line_no, bind_invalid)) {
 				ok = false;
 				break;
 			}
@@ -1279,6 +1292,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 			tile_rule_parse_reset(&cur_tile);
 			decoration_rule_parse_reset(&cur_dec);
 			in_bind = false;
+			bind_invalid = false;
 			in_tile = false;
 			in_hooks = false;
 			in_layout_anim = false;
@@ -1331,20 +1345,25 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 		trim_inplace(line);
 		trim_inplace(eq);
 		if (in_bind) {
-			if (!strcasecmp(line, "mods")) {
+			/* Bind typos skip only this [bind]; other sections still load. */
+			if (!strcasecmp(line, "mods") || !strcasecmp(line, "mod")) {
 				if (!parse_mods_string(eq, &cur.mods)) {
-					ok = false;
+					wlr_log(WLR_ERROR, "%s:%zu: invalid mods=; this [bind] will be skipped", path,
+							line_no);
+					bind_invalid = true;
 				}
 			} else if (!strcasecmp(line, "key")) {
 				cur.keysym = xkb_keysym_from_name(eq, XKB_KEYSYM_CASE_INSENSITIVE);
 				if (!cur.keysym) {
-					wlr_log(WLR_ERROR, "%s:%zu: unknown keysym '%s'", path, line_no, eq);
-					ok = false;
+					wlr_log(WLR_ERROR, "%s:%zu: unknown keysym '%s'; this [bind] will be skipped", path,
+							line_no, eq);
+					bind_invalid = true;
 				}
 			} else if (!strcasecmp(line, "action")) {
 				if (!parse_action(eq, &cur.action)) {
-					wlr_log(WLR_ERROR, "%s:%zu: unknown action '%s'", path, line_no, eq);
-					ok = false;
+					wlr_log(WLR_ERROR, "%s:%zu: unknown action '%s'; this [bind] will be skipped", path,
+							line_no, eq);
+					bind_invalid = true;
 				}
 			} else if (!strcasecmp(line, "command")) {
 				free(cur.command);
@@ -1353,8 +1372,9 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 				free(cur.when_shell);
 				cur.when_shell = xstrdup(eq);
 			} else {
-				wlr_log(WLR_ERROR, "%s:%zu: unknown key '%s'", path, line_no, line);
-				ok = false;
+				wlr_log(WLR_ERROR, "%s:%zu: unknown key '%s'; this [bind] will be skipped", path, line_no,
+						line);
+				bind_invalid = true;
 			}
 		} else if (in_tile) {
 			if (!strcasecmp(line, "app_id") || !strcasecmp(line, "app-id")) {
@@ -1506,7 +1526,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 
 	/* Flush the last open block because file end has no section boundary. */
 	if (ok && in_bind) {
-		ok = flush_bind(cfg, &cur, line_no);
+		ok = flush_bind(cfg, &cur, line_no, bind_invalid);
 	}
 	if (ok && in_tile) {
 		ok = flush_tile_rule(cfg, &cur_tile, line_no);
