@@ -76,6 +76,8 @@ Use **`${MORPH_USER_CONFIG_DIR}`** for user hook files and **`${MORPH_SYSTEM_CON
 
 If no startup config path can be resolved and no default config file exists, **`reload config`** cannot resolve a path and fails with a log message.
 
+In the **managed** session flow, a hook value that resolves to a **file path** is sourced as a hook file. If that file is not readable, the packaged hook of the same kind in the system config directory (**`/etc/morph/startup.sh`** and friends) is sourced instead, so a default install still runs its shipped session components before the user creates `~/.config/morph`. The hook is only skipped when neither path is readable, and the log names both paths that were tried. A configured path that does not exist is **never** re-interpreted as a shell command.
+
 ---
 
 ## Section `[layout_anim]` (optional)
