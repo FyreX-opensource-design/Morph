@@ -2,9 +2,12 @@
 
 #include <pixman.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <wayland-server-core.h>
 #include <wlr/util/log.h>
+
+#include "ui.h"
 
 struct wlr_allocator;
 struct wlr_backend;
@@ -43,6 +46,19 @@ struct wlr_viewporter;
 struct wlr_tablet_manager_v2;
 struct wlr_tablet;
 struct wlr_tablet_v2_tablet;
+struct wlr_export_dmabuf_manager_v1;
+struct wlr_ext_data_control_manager_v1;
+struct wlr_gamma_control_manager_v1;
+struct wlr_output_power_manager_v1;
+struct wlr_virtual_pointer_manager_v1;
+struct wlr_virtual_keyboard_manager_v1;
+struct wlr_output_manager_v1;
+struct wlr_keyboard;
+struct wlr_ext_foreign_toplevel_list_v1;
+struct wlr_ext_foreign_toplevel_handle_v1;
+struct wlr_ext_image_copy_capture_manager_v1;
+struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1;
+struct wlr_ext_image_capture_source_v1;
 
 struct comp_config;
 
@@ -99,10 +115,38 @@ struct comp_layer
 	struct wl_listener new_popup;
 };
 
+/**
+ * Held-modifier window-cycle session (Alt-Tab).
+ *
+ * While the bind's modifiers stay held the candidate list is frozen, so repeated
+ * presses walk the whole list instead of toggling between the two most recent
+ * windows. Stepping previews focus; the focus-history reorder is deferred until
+ * the modifiers are released.
+ */
+struct comp_window_cycle
+{
+	/** Candidate snapshot in focus-history order, frozen for the session. */
+	struct comp_toplevel **ring;
+	size_t len;
+	size_t index;
+	/** Modifier bits that must stay held; releasing them commits the session. */
+	uint32_t hold_mods;
+	/** Focus at session start, restored when the session is cancelled with Esc. */
+	struct comp_toplevel *origin;
+	bool active;
+	/** Set while previewing so focus_toplevel() does not reorder focus history. */
+	bool suppress_mru;
+	/** Compositor-owned switcher overlay (title / app_id list). */
+	struct comp_ui_overlay overlay;
+};
+
 /** Runtime state for one xdg_toplevel and its compositor-side metadata. */
 struct comp_toplevel
 {
 	struct wl_list link;
+	/** Link in server->focus_order (most-recently-focused first); valid while focus_listed. */
+	struct wl_list focus_link;
+	bool focus_listed;
 	struct comp_server *server;
 	struct wlr_xdg_toplevel *xdg_toplevel;
 	struct wlr_scene_tree *scene_tree;
@@ -149,6 +193,11 @@ struct comp_toplevel
 	int restore_height;
 	bool has_restore;
 	struct wlr_foreign_toplevel_handle_v1 *foreign_toplevel;
+	/** Staging ext-foreign-toplevel handle used by window/app capture clients. */
+	struct wlr_ext_foreign_toplevel_handle_v1 *ext_foreign_toplevel;
+	/** Lazily created scene-node capture source for ext-image-copy-capture. */
+	struct wlr_ext_image_capture_source_v1 *image_capture_source;
+	struct wl_listener image_capture_source_destroy;
 	/** Last title sent to foreign-toplevel clients; suppresses redundant panel redraws. */
 	char *foreign_title;
 	/** Last app_id sent to foreign-toplevel clients; suppresses redundant panel redraws. */
@@ -215,6 +264,10 @@ struct comp_server
 	struct wlr_xdg_activation_v1 *xdg_activation;
 	struct wlr_screencopy_manager_v1 *screencopy_manager;
 	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
+	struct wlr_ext_foreign_toplevel_list_v1 *ext_foreign_toplevel_list;
+	struct wlr_ext_image_copy_capture_manager_v1 *ext_image_copy_capture_manager;
+	struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1 *ext_foreign_toplevel_image_capture_manager;
+	struct wl_listener image_capture_new_request;
 	struct wlr_pointer_constraints_v1 *pointer_constraints;
 	struct wlr_relative_pointer_manager_v1 *relative_pointer_manager;
 	struct wlr_pointer_constraint_v1 *active_pointer_constraint;
@@ -223,6 +276,8 @@ struct comp_server
 	struct wlr_scene *scene;
 	/** Scene stacking (back to front): background, layout+outputs, bottom, windows, top, overlay. */
 	struct wlr_scene_tree *layer_trees[4];
+	/** Compositor-owned chrome (switcher, future menus), above client overlay surfaces. */
+	struct wlr_scene_tree *ui_tree;
 	struct wlr_scene_output_layout *scene_layout;
 	struct wlr_scene_tree *windows_tree;
 	struct wlr_xdg_shell *xdg_shell;
@@ -232,9 +287,22 @@ struct comp_server
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *cursor_mgr;
 	struct wlr_tablet_manager_v2 *tablet_manager;
+	struct wlr_export_dmabuf_manager_v1 *export_dmabuf_manager;
+	struct wlr_ext_data_control_manager_v1 *ext_data_control_manager;
+	/** Night-light / gamma LUTs for clients such as wlsunset (scene-integrated). */
+	struct wlr_gamma_control_manager_v1 *gamma_control_manager;
+	struct wlr_output_power_manager_v1 *output_power_manager;
+	struct wlr_virtual_pointer_manager_v1 *virtual_pointer_manager;
+	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_manager;
+	struct wlr_output_manager_v1 *output_manager;
 	struct wl_list tablets;
 	struct wl_list tracked_inputs;
 	struct wlr_seat *seat;
+	struct wl_listener output_power_set_mode;
+	struct wl_listener output_manager_apply;
+	struct wl_listener output_manager_test;
+	struct wl_listener new_virtual_pointer;
+	struct wl_listener new_virtual_keyboard;
 	struct wl_listener backend_destroy;
 	struct wl_listener new_output;
 	struct wl_listener new_input;
@@ -265,6 +333,13 @@ struct comp_server
 	struct wl_listener cursor_tablet_tool_button;
 	struct wl_list outputs;
 	struct wl_list toplevels;
+	/**
+	 * Focus history (MRU) over the same toplevels as `toplevels`, newest first.
+	 * `toplevels` stays in creation order for tiling; window cycling reads this list.
+	 */
+	struct wl_list focus_order;
+	/** Active Alt-Tab session; inactive between sessions. */
+	struct comp_window_cycle cycle;
 	enum comp_layout layout;
 	struct comp_toplevel *focused_toplevel;
 	int current_workspace;
@@ -295,6 +370,13 @@ struct comp_server
 	char ipc_socket_path[108];
 	/** CLOCK_MONOTONIC ns; used for layout position easing in tile/scroll. */
 	uint64_t layout_anim_last_ns;
+	/**
+	 * Deferred FocusFollowsMouse / SloppyFocus handoff. Applied on the event-loop idle
+	 * path so keyboard focus never changes re-entrantly inside pointer motion handling.
+	 */
+	struct wl_event_source *motion_focus_idle;
+	struct comp_toplevel *motion_focus_target;
+	bool motion_focus_clear;
 };
 
 /** Request wl_display_run() shutdown exactly once (safe against duplicate callers). */
@@ -319,6 +401,12 @@ static inline void server_request_terminate(struct comp_server *server, const ch
 
 bool server_init(struct comp_server *server);
 
+/** Wire keyboard key/modifier listeners for a physical or virtual keyboard device. */
+void server_keyboard_register(struct comp_server *server, struct wlr_keyboard *wlr_kbd);
+
+/** Refresh wl_seat capability flags from attached input devices. */
+void server_update_seat_capabilities(struct comp_server *server);
+
 /** Apply `[input_map]` rules to cursor-attached devices (call after new input/output and config reload). */
 void server_apply_input_device_maps(struct comp_server *server);
 
@@ -336,6 +424,35 @@ void server_workspace_go(struct comp_server *server, int idx);
 void server_workspace_relative(struct comp_server *server, int delta);
 /** Move focused toplevel to workspace `target` (0-based). */
 void server_workspace_move_focused(struct comp_server *server, int target);
+
+/**
+ * Focus the next (`delta` > 0) or previous (`delta` < 0) window in focus-history order.
+ *
+ * Candidates are mapped, initialized, non-minimized toplevels on the current workspace.
+ * Cycling wraps and leaves focus unchanged when no other candidate exists.
+ */
+void server_window_focus_cycle(struct comp_server *server, int delta);
+
+/**
+ * Keybind entry point for window cycling.
+ *
+ * When `hold_mods` is non-zero the step joins (or starts) a held-modifier
+ * session: the candidate list is frozen and focus history is only reordered once
+ * the modifiers are released, so holding Alt and tapping Tab walks every window.
+ * Shift is ignored for this purpose so that a forward and a backward bind share
+ * one session. When nothing is left to hold, the step commits immediately,
+ * matching `server_window_focus_cycle`.
+ */
+void server_window_cycle_step(struct comp_server *server, int delta, uint32_t hold_mods);
+
+/** True while an Alt-Tab session is waiting for its modifiers to be released. */
+bool server_window_cycle_active(const struct comp_server *server);
+
+/** Commit the pending session once its held modifiers are no longer depressed. */
+void server_window_cycle_notify_mods(struct comp_server *server, uint32_t depressed);
+
+/** Abort the session and restore the focus it started from (Esc). */
+void server_window_cycle_cancel(struct comp_server *server);
 
 /** Move focused tiled window by `steps` in sort order (+ toward end, − toward start). No-op if not tiled/focused. */
 void server_tile_move_focused_n(struct comp_server *server, int steps);

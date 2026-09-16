@@ -56,6 +56,10 @@ enum comp_keybind_action {
 	COMP_KEYBIND_WORKSPACE_PREV,
 	/** command= target workspace 1..COMP_WORKSPACE_COUNT. */
 	COMP_KEYBIND_WORKSPACE_MOVE,
+	/** Focus the next window in focus-history order (Alt-Tab). */
+	COMP_KEYBIND_WINDOW_NEXT,
+	/** Focus the previous window in focus-history order (Alt-Shift-Tab). */
+	COMP_KEYBIND_WINDOW_PREV,
 };
 
 struct comp_keybind {
@@ -88,6 +92,25 @@ struct comp_decoration_rule {
 	bool prefer_server_side;
 };
 
+/**
+ * Keyboard focus policy for XDG toplevels (see `[focus]` in docs/CONFIG.md).
+ * Non-mouse focus paths (map, activation, workspace switch, keybinds) ignore this.
+ */
+enum comp_focus_policy {
+	/** Click a toplevel to focus; empty-root click clears focus. Default. */
+	COMP_FOCUS_CLICK = 0,
+	/** Pointer enter focuses; leave to empty root clears focus. */
+	COMP_FOCUS_FOLLOWS_MOUSE,
+	/** Pointer enter focuses; empty root does not clear until another target is selected. */
+	COMP_FOCUS_SLOPPY,
+};
+
+/** Parse a focus policy name (ClickToFocus / FocusFollowsMouse / SloppyFocus and aliases). */
+bool comp_config_parse_focus_policy(const char *s, enum comp_focus_policy *out);
+
+/** Canonical name for logging / IPC (`ClickToFocus`, …). */
+const char *comp_config_focus_policy_name(enum comp_focus_policy policy);
+
 struct comp_config {
 	struct comp_keybind *binds;
 	size_t n_binds;
@@ -99,6 +122,8 @@ struct comp_config {
 	size_t n_input_map_rules;
 	/** When no `[decoration_rule]` matches, use this for tile/scroll (default true = hide client title bars). */
 	bool decoration_strip_default;
+	/** Pointer-driven keyboard focus policy (default COMP_FOCUS_CLICK). */
+	enum comp_focus_policy focus_policy;
 	/** Optional `sh -c` snippets from `[hooks]` (trusted like exec). */
 	char *hook_startup;
 	char *hook_shutdown;
@@ -118,6 +143,9 @@ bool comp_config_default_path(char *out, size_t out_len);
 bool comp_config_builtin_fallback_enabled(void);
 
 bool comp_config_load(const char *path, struct comp_config **cfg_out);
+
+/** Re-source the system and user `environment` files into the running process. */
+void comp_config_reload_environment(void);
 
 void comp_config_free(struct comp_config *cfg);
 

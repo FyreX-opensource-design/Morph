@@ -237,6 +237,14 @@ static bool parse_action(const char *v, enum comp_keybind_action *a) {
 		*a = COMP_KEYBIND_WORKSPACE_MOVE;
 		return true;
 	}
+	if (!strcasecmp(v, "nextWindow") || !strcasecmp(v, "window_next") || !strcasecmp(v, "focus_next")) {
+		*a = COMP_KEYBIND_WINDOW_NEXT;
+		return true;
+	}
+	if (!strcasecmp(v, "prevWindow") || !strcasecmp(v, "window_prev") || !strcasecmp(v, "focus_prev")) {
+		*a = COMP_KEYBIND_WINDOW_PREV;
+		return true;
+	}
 	return false;
 }
 
@@ -271,6 +279,46 @@ static void apply_layout_anim_defaults(struct comp_config *cfg) {
 
 static void apply_decoration_defaults(struct comp_config *cfg) {
 	cfg->decoration_strip_default = true;
+}
+
+static void apply_focus_defaults(struct comp_config *cfg) {
+	cfg->focus_policy = COMP_FOCUS_CLICK;
+}
+
+/** Parse ClickToFocus / FocusFollowsMouse / SloppyFocus (and short aliases). */
+bool comp_config_parse_focus_policy(const char *s, enum comp_focus_policy *out) {
+	if (!s || !out) {
+		return false;
+	}
+	if (!strcasecmp(s, "ClickToFocus") || !strcasecmp(s, "click_to_focus") ||
+		!strcasecmp(s, "click-to-focus") || !strcasecmp(s, "click")) {
+		*out = COMP_FOCUS_CLICK;
+		return true;
+	}
+	if (!strcasecmp(s, "FocusFollowsMouse") || !strcasecmp(s, "focus_follows_mouse") ||
+		!strcasecmp(s, "focus-follows-mouse") || !strcasecmp(s, "ffm") ||
+		!strcasecmp(s, "mouse")) {
+		*out = COMP_FOCUS_FOLLOWS_MOUSE;
+		return true;
+	}
+	if (!strcasecmp(s, "SloppyFocus") || !strcasecmp(s, "sloppy_focus") ||
+		!strcasecmp(s, "sloppy-focus") || !strcasecmp(s, "sloppy")) {
+		*out = COMP_FOCUS_SLOPPY;
+		return true;
+	}
+	return false;
+}
+
+const char *comp_config_focus_policy_name(enum comp_focus_policy policy) {
+	switch (policy) {
+	case COMP_FOCUS_FOLLOWS_MOUSE:
+		return "FocusFollowsMouse";
+	case COMP_FOCUS_SLOPPY:
+		return "SloppyFocus";
+	case COMP_FOCUS_CLICK:
+	default:
+		return "ClickToFocus";
+	}
 }
 
 static bool parse_bool_yes_no(const char *s, bool *out) {
@@ -503,6 +551,245 @@ static void ensure_user_config_dir_env(void) {
 	setenv("MORPH_USER_CONFIG_DIR", path, 1);
 }
 
+/** Resolve the launcher's system environment file; MORPH_ENV_FILE replaces the path. */
+static bool system_env_file_path(char *out, size_t out_len) {
+	const char *override = getenv("MORPH_ENV_FILE");
+	if (override && override[0]) {
+		return snprintf(out, out_len, "%s", override) < (int)out_len;
+	}
+	const char *dir = getenv("MORPH_SYSTEM_CONFIG_DIR");
+	if (!dir || !dir[0]) {
+		dir = "/etc/morph";
+	}
+	return snprintf(out, out_len, "%s/environment", dir) < (int)out_len;
+}
+
+/** Resolve the user environment file inside the runtime user config directory. */
+static bool user_env_file_path(char *out, size_t out_len) {
+	ensure_user_config_dir_env();
+	const char *dir = getenv("MORPH_USER_CONFIG_DIR");
+	if (!dir || !dir[0]) {
+		return false;
+	}
+	return snprintf(out, out_len, "%s/environment", dir) < (int)out_len;
+}
+
+/** Variables the sourcing shell owns; they describe the child, not the session. */
+static bool env_name_is_shell_local(const char *name) {
+	return !strcmp(name, "_") || !strcmp(name, "PWD") || !strcmp(name, "OLDPWD") ||
+		   !strcmp(name, "SHLVL");
+}
+
+/**
+ * Variables the caller passed on the launcher command line.
+ *
+ * The launcher exports the list so environment files cannot silently take over
+ * the highest-priority layer of the documented resolution order on reload.
+ */
+static bool env_name_is_caller_override(const char *name) {
+	const char *list = getenv("MORPH_CALLER_OVERRIDES");
+	if (!list || !list[0]) {
+		return false;
+	}
+	const size_t name_len = strlen(name);
+	for (const char *p = list; *p;) {
+		while (*p == ' ') {
+			p++;
+		}
+		const char *start = p;
+		while (*p && *p != ' ') {
+			p++;
+		}
+		if ((size_t)(p - start) == name_len && !strncmp(start, name, name_len)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/** Read the whole fd into a NUL-terminated heap buffer; returns NULL on failure. */
+static char *read_all_fd(int fd, size_t *out_len) {
+	char *buf = NULL;
+	size_t len = 0;
+	size_t cap = 0;
+	for (;;) {
+		if (len + 4096 + 1 > cap) {
+			const size_t new_cap = cap ? cap * 2 : 8192;
+			char *grown = realloc(buf, new_cap);
+			if (!grown) {
+				free(buf);
+				return NULL;
+			}
+			buf = grown;
+			cap = new_cap;
+		}
+		const ssize_t n = read(fd, buf + len, cap - len - 1);
+		if (n < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			wlr_log_errno(WLR_ERROR, "read environment dump");
+			free(buf);
+			return NULL;
+		}
+		if (n == 0) {
+			break;
+		}
+		len += (size_t)n;
+	}
+	if (!buf) {
+		buf = calloc(1, 1);
+		if (!buf) {
+			return NULL;
+		}
+	}
+	buf[len] = '\0';
+	*out_len = len;
+	return buf;
+}
+
+/**
+ * Source the system and user environment files into the compositor process.
+ *
+ * The files are shell snippets, so they are evaluated by /bin/sh with `set -a`
+ * and the resulting environment is dumped back through a pipe. Only entries
+ * that differ from the current environment are applied, which keeps unrelated
+ * session state (WAYLAND_DISPLAY, XDG_RUNTIME_DIR, the log file paths) intact.
+ *
+ * A value that was deleted from a file is not reverted: the running process has
+ * no record of what the launcher started with, so only assignments are visible.
+ *
+ * Sourcing is synchronous, so a file that blocks blocks the compositor.
+ */
+void comp_config_reload_environment(void) {
+	char sys_path[PATH_MAX];
+	char user_path[PATH_MAX];
+	char *files[2];
+	size_t n_files = 0;
+	if (system_env_file_path(sys_path, sizeof(sys_path)) && access(sys_path, R_OK) == 0) {
+		files[n_files++] = sys_path;
+	}
+	if (user_env_file_path(user_path, sizeof(user_path)) && access(user_path, R_OK) == 0) {
+		files[n_files++] = user_path;
+	}
+	if (n_files == 0) {
+		wlr_log(WLR_INFO, "reload: no environment file found; keeping current environment");
+		return;
+	}
+
+	int fds[2];
+	if (pipe(fds) != 0) {
+		wlr_log_errno(WLR_ERROR, "pipe for environment reload");
+		return;
+	}
+	pid_t pid = fork();
+	if (pid < 0) {
+		wlr_log_errno(WLR_ERROR, "fork for environment reload");
+		close(fds[0]);
+		close(fds[1]);
+		return;
+	}
+	if (pid == 0) {
+		close(fds[0]);
+		/* The dump travels on fd 3 so anything a file prints on stdout cannot
+		 * be mistaken for an environment entry. */
+		if (dup2(fds[1], 3) < 0) {
+			_exit(127);
+		}
+		if (fds[1] != 3) {
+			close(fds[1]);
+		}
+		/*
+		 * File paths travel as positional arguments so no quoting is needed,
+		 * and the loop consumes them with shift so `set -a` cannot export a
+		 * helper variable of its own into the compositor environment.
+		 */
+		char *argv[8];
+		size_t i = 0;
+		argv[i++] = "sh";
+		argv[i++] = "-c";
+		argv[i++] = "set -a; while [ $# -gt 0 ]; do . \"$1\"; shift; done; exec env -0 >&3";
+		argv[i++] = "sh";
+		for (size_t f = 0; f < n_files; f++) {
+			argv[i++] = files[f];
+		}
+		argv[i] = NULL;
+		execvp("sh", argv);
+		_exit(127);
+	}
+
+	close(fds[1]);
+	size_t len = 0;
+	char *dump = read_all_fd(fds[0], &len);
+	close(fds[0]);
+
+	int status = 0;
+	for (;;) {
+		const pid_t w = waitpid(pid, &status, 0);
+		if (w == pid) {
+			break;
+		}
+		if (w < 0 && errno == EINTR) {
+			continue;
+		}
+		if (w < 0) {
+			wlr_log_errno(WLR_ERROR, "waitpid for environment reload");
+			break;
+		}
+	}
+	if (!dump) {
+		return;
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		/* A failed shell means the dump can be partial, so apply nothing. */
+		wlr_log(WLR_ERROR, "reload: sourcing environment files failed; environment unchanged");
+		free(dump);
+		return;
+	}
+
+	size_t applied = 0;
+	for (size_t i = 0; i < len;) {
+		const char *entry = dump + i;
+		i += strlen(entry) + 1;
+		const char *eq = strchr(entry, '=');
+		if (!eq || eq == entry) {
+			continue;
+		}
+		char name[256];
+		const size_t name_len = (size_t)(eq - entry);
+		if (name_len >= sizeof(name)) {
+			wlr_log(WLR_ERROR, "reload: environment variable name is too long; skipping");
+			continue;
+		}
+		memcpy(name, entry, name_len);
+		name[name_len] = '\0';
+		if (env_name_is_shell_local(name)) {
+			continue;
+		}
+		const char *value = eq + 1;
+		const char *current = getenv(name);
+		if (current && !strcmp(current, value)) {
+			continue;
+		}
+		if (env_name_is_caller_override(name)) {
+			wlr_log(WLR_INFO, "reload: keeping caller-provided %s", name);
+			continue;
+		}
+		if (setenv(name, value, 1) != 0) {
+			wlr_log_errno(WLR_ERROR, "setenv during environment reload");
+			continue;
+		}
+		wlr_log(WLR_INFO, "reload: environment %s=%s", name, value);
+		applied++;
+	}
+	free(dump);
+
+	for (size_t f = 0; f < n_files; f++) {
+		wlr_log(WLR_INFO, "reload: sourced environment file %s", files[f]);
+	}
+	wlr_log(WLR_INFO, "reload: applied %zu environment change(s)", applied);
+}
+
 /** Export the user hook commands so managed scripts can invoke them in-order. */
 static void export_managed_hook_env(const struct comp_config *cfg) {
 	if (!cfg) {
@@ -732,6 +1019,12 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 			}
 			return true;
 		}
+		case COMP_KEYBIND_WINDOW_NEXT:
+			server_window_cycle_step(server, 1, b->mods);
+			return true;
+		case COMP_KEYBIND_WINDOW_PREV:
+			server_window_cycle_step(server, -1, b->mods);
+			return true;
 		}
 	}
 	return false;
@@ -806,48 +1099,60 @@ bad:
 	return false;
 }
 
-/** Validate and finalize one [bind] block before appending it to cfg. */
-static bool flush_bind(struct comp_config *cfg, struct comp_keybind *cur, size_t line_no) {
+/**
+ * Validate and finalize one [bind] block before appending it to cfg.
+ * Parse/validation mistakes skip only this bind (log + continue) so a typo
+ * cannot brick compositor startup. Returns false only on allocation failure.
+ */
+static bool flush_bind(struct comp_config *cfg, struct comp_keybind *cur, size_t line_no,
+					   bool bind_invalid) {
+	if (bind_invalid) {
+		wlr_log(WLR_ERROR, "Config line ~%zu: skipping invalid [bind]", line_no);
+		return true;
+	}
 	if (!cur->keysym) {
-		if (cur->mods || cur->command || cur->when_shell) {
-			wlr_log(WLR_ERROR, "Config line ~%zu: incomplete [bind] (missing key=)", line_no);
-			return false;
+		if (cur->mods || cur->command || cur->when_shell || cur->action != COMP_KEYBIND_NONE) {
+			wlr_log(WLR_ERROR, "Config line ~%zu: incomplete [bind] (missing key=); skipping", line_no);
 		}
 		return true;
 	}
 	if (cur->action == COMP_KEYBIND_NONE) {
-		wlr_log(WLR_ERROR, "Config line ~%zu: bind needs action=", line_no);
-		return false;
+		wlr_log(WLR_ERROR, "Config line ~%zu: bind needs action=; skipping", line_no);
+		return true;
 	}
 	if (cur->action == COMP_KEYBIND_EXEC && (!cur->command || !cur->command[0])) {
-		wlr_log(WLR_ERROR, "Config line ~%zu: exec bind needs command=", line_no);
-		return false;
+		wlr_log(WLR_ERROR, "Config line ~%zu: exec bind needs command=; skipping", line_no);
+		return true;
 	}
 	if (cur->action == COMP_KEYBIND_TILE_MOVE && cur->command && cur->command[0]) {
 		char *end = NULL;
 		(void)strtol(cur->command, &end, 10);
 		if (!end || end == cur->command || *end) {
-			wlr_log(WLR_ERROR, "Config line ~%zu: tile_move command must be empty or a signed integer",
+			wlr_log(WLR_ERROR,
+					"Config line ~%zu: tile_move command must be empty or a signed integer; skipping",
 					line_no);
-			return false;
+			return true;
 		}
 	}
 	if (cur->action == COMP_KEYBIND_TILE_GRID_MOVE &&
 		!tile_grid_move_command_ok(cur->command ? cur->command : "", line_no)) {
-		return false;
+		/* tile_grid_move_command_ok already logged the reason. */
+		return true;
 	}
 	if (cur->action == COMP_KEYBIND_WORKSPACE_GOTO || cur->action == COMP_KEYBIND_WORKSPACE_MOVE) {
 		if (!cur->command || !cur->command[0]) {
-			wlr_log(WLR_ERROR, "Config line ~%zu: workspace / workspace_move needs command= 1..%d", line_no,
+			wlr_log(WLR_ERROR,
+					"Config line ~%zu: workspace / workspace_move needs command= 1..%d; skipping", line_no,
 					COMP_WORKSPACE_COUNT);
-			return false;
+			return true;
 		}
 		char *end = NULL;
 		const long w = strtol(cur->command, &end, 10);
 		if (!end || end == cur->command || *end || w < 1 || w > COMP_WORKSPACE_COUNT) {
-			wlr_log(WLR_ERROR, "Config line ~%zu: workspace command must be an integer 1..%d", line_no,
+			wlr_log(WLR_ERROR,
+					"Config line ~%zu: workspace command must be an integer 1..%d; skipping", line_no,
 					COMP_WORKSPACE_COUNT);
-			return false;
+			return true;
 		}
 	}
 	if (!append_bind(cfg, cur)) {
@@ -1153,6 +1458,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 	}
 	apply_layout_anim_defaults(cfg);
 	apply_decoration_defaults(cfg);
+	apply_focus_defaults(cfg);
 
 	FILE *f = NULL;
 	if (path) {
@@ -1180,11 +1486,13 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 	struct tile_rule_parse cur_tile = {0};
 	struct decoration_rule_parse cur_dec = {0};
 	bool in_bind = false;
+	bool bind_invalid = false;
 	bool in_tile = false;
 	bool in_hooks = false;
 	bool in_layout_anim = false;
 	bool in_decoration = false;
 	bool in_decoration_rule = false;
+	bool in_focus = false;
 	bool in_pointer = false;
 	bool in_input_map = false;
 	struct input_map_parse cur_imap = {0};
@@ -1203,7 +1511,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 		}
 		if (line[0] == '[') {
 			/* Section switch: flush pending block objects before resetting section flags. */
-			if (in_bind && !flush_bind(cfg, &cur, line_no)) {
+			if (in_bind && !flush_bind(cfg, &cur, line_no, bind_invalid)) {
 				ok = false;
 				break;
 			}
@@ -1223,11 +1531,13 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 			tile_rule_parse_reset(&cur_tile);
 			decoration_rule_parse_reset(&cur_dec);
 			in_bind = false;
+			bind_invalid = false;
 			in_tile = false;
 			in_hooks = false;
 			in_layout_anim = false;
 			in_decoration = false;
 			in_decoration_rule = false;
+			in_focus = false;
 			in_pointer = false;
 			in_input_map = false;
 			if (!strcasecmp(line, "[bind]")) {
@@ -1242,6 +1552,8 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 				in_decoration = true;
 			} else if (!strcasecmp(line, "[decoration_rule]")) {
 				in_decoration_rule = true;
+			} else if (!strcasecmp(line, "[focus]")) {
+				in_focus = true;
 			} else if (!strcasecmp(line, "[pointer]")) {
 				/* Compatibility-only section: accepted for old configs, no runtime effect. */
 				in_pointer = true;
@@ -1254,7 +1566,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 			continue;
 		}
 		if (!in_bind && !in_tile && !in_hooks && !in_layout_anim && !in_decoration && !in_decoration_rule &&
-			!in_pointer &&
+			!in_focus && !in_pointer &&
 			!in_input_map) {
 			wlr_log(WLR_ERROR,
 					"%s:%zu: key=value outside a recognized [section]",
@@ -1272,20 +1584,25 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 		trim_inplace(line);
 		trim_inplace(eq);
 		if (in_bind) {
-			if (!strcasecmp(line, "mods")) {
+			/* Bind typos skip only this [bind]; other sections still load. */
+			if (!strcasecmp(line, "mods") || !strcasecmp(line, "mod")) {
 				if (!parse_mods_string(eq, &cur.mods)) {
-					ok = false;
+					wlr_log(WLR_ERROR, "%s:%zu: invalid mods=; this [bind] will be skipped", path,
+							line_no);
+					bind_invalid = true;
 				}
 			} else if (!strcasecmp(line, "key")) {
 				cur.keysym = xkb_keysym_from_name(eq, XKB_KEYSYM_CASE_INSENSITIVE);
 				if (!cur.keysym) {
-					wlr_log(WLR_ERROR, "%s:%zu: unknown keysym '%s'", path, line_no, eq);
-					ok = false;
+					wlr_log(WLR_ERROR, "%s:%zu: unknown keysym '%s'; this [bind] will be skipped", path,
+							line_no, eq);
+					bind_invalid = true;
 				}
 			} else if (!strcasecmp(line, "action")) {
 				if (!parse_action(eq, &cur.action)) {
-					wlr_log(WLR_ERROR, "%s:%zu: unknown action '%s'", path, line_no, eq);
-					ok = false;
+					wlr_log(WLR_ERROR, "%s:%zu: unknown action '%s'; this [bind] will be skipped", path,
+							line_no, eq);
+					bind_invalid = true;
 				}
 			} else if (!strcasecmp(line, "command")) {
 				free(cur.command);
@@ -1294,8 +1611,9 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 				free(cur.when_shell);
 				cur.when_shell = xstrdup(eq);
 			} else {
-				wlr_log(WLR_ERROR, "%s:%zu: unknown key '%s'", path, line_no, line);
-				ok = false;
+				wlr_log(WLR_ERROR, "%s:%zu: unknown key '%s'; this [bind] will be skipped", path, line_no,
+						line);
+				bind_invalid = true;
 			}
 		} else if (in_tile) {
 			if (!strcasecmp(line, "app_id") || !strcasecmp(line, "app-id")) {
@@ -1374,6 +1692,22 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 				wlr_log(WLR_ERROR, "%s:%zu: unknown decoration key '%s'", path, line_no, line);
 				ok = false;
 			}
+		} else if (in_focus) {
+			if (!strcasecmp(line, "policy") || !strcasecmp(line, "mode") ||
+				!strcasecmp(line, "focus_policy")) {
+				enum comp_focus_policy pol;
+				if (!comp_config_parse_focus_policy(eq, &pol)) {
+					wlr_log(WLR_ERROR,
+							"%s:%zu: %s= expects ClickToFocus, FocusFollowsMouse, or SloppyFocus", path,
+							line_no, line);
+					ok = false;
+				} else {
+					cfg->focus_policy = pol;
+				}
+			} else {
+				wlr_log(WLR_ERROR, "%s:%zu: unknown focus key '%s'", path, line_no, line);
+				ok = false;
+			}
 		} else if (in_decoration_rule) {
 			if (!strcasecmp(line, "app_id") || !strcasecmp(line, "app-id")) {
 				free(cur_dec.app_id_pat);
@@ -1431,7 +1765,7 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 
 	/* Flush the last open block because file end has no section boundary. */
 	if (ok && in_bind) {
-		ok = flush_bind(cfg, &cur, line_no);
+		ok = flush_bind(cfg, &cur, line_no, bind_invalid);
 	}
 	if (ok && in_tile) {
 		ok = flush_tile_rule(cfg, &cur_tile, line_no);

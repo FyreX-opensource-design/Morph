@@ -282,6 +282,9 @@ test_system_startup_nested_sets_wayland_display() {
     export MORPH_SESSION_MODE=nested
     export WLR_WL_SOCKET="wayland-test-socket"
     export XDG_CONFIG_HOME="$tmpdir/xdg-config"
+    # Keep the hook lookup off the host's /etc/morph so this test stays hermetic.
+    export MORPH_SYSTEM_CONFIG_DIR="$tmpdir/system-config"
+    mkdir -p "$MORPH_SYSTEM_CONFIG_DIR"
     unset WAYLAND_DISPLAY
     : > "$MORPH_STARTUP_LOG_FILE"
 
@@ -469,6 +472,108 @@ EOF
     trap - EXIT HUP INT TERM
 }
 
+test_morph_resolve_hook_path_expands_tilde() {
+    # shellcheck disable=SC1090
+    . "$repo_root/scripts/shell-helpers.sh"
+
+    # An unquoted ~ in a case pattern is tilde-expanded by the shell, which used
+    # to make literal "~/..." hook values resolve to themselves and never load.
+    resolved=$(morph_resolve_hook_path '~/.config/morph/startup.sh')
+    assert_equals "$HOME/.config/morph/startup.sh" "$resolved" "tilde hook path"
+
+    resolved=$(morph_resolve_hook_path '~')
+    assert_equals "$HOME" "$resolved" "bare tilde hook path"
+
+    resolved=$(morph_resolve_hook_path '/etc/morph/startup.sh')
+    assert_equals "/etc/morph/startup.sh" "$resolved" "absolute hook path"
+
+    saved_user_config_dir=${MORPH_USER_CONFIG_DIR:-}
+    MORPH_USER_CONFIG_DIR="$HOME/.config/morph"
+    resolved=$(morph_resolve_hook_path '${MORPH_USER_CONFIG_DIR}/startup.sh')
+    MORPH_USER_CONFIG_DIR=$saved_user_config_dir
+    assert_equals "$HOME/.config/morph/startup.sh" "$resolved" "variable hook path"
+}
+
+test_system_startup_sources_tilde_user_hook() {
+    tmpdir=$(make_tmpdir)
+    trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+
+    # HOME drives tilde expansion, so point it at the sandbox for this case and
+    # restore it afterwards; later tests still expect the caller's real HOME.
+    saved_home=$HOME
+    trap 'HOME=$saved_home; export HOME; rm -rf "$tmpdir"' EXIT HUP INT TERM
+    mkdir -p "$tmpdir/home/.config/morph" "$tmpdir/system-config"
+    cat > "$tmpdir/home/.config/morph/startup.sh" <<'EOF'
+#!/bin/sh
+log_startup INFO "Tilde user startup hook ran."
+EOF
+    chmod +x "$tmpdir/home/.config/morph/startup.sh"
+
+    export HOME="$tmpdir/home"
+    export COMP_ROOT_DIR="$repo_root"
+    export MORPH_HELPER_LIB="$repo_root/scripts/shell-helpers.sh"
+    export MORPH_STARTUP_LOG_FILE="$tmpdir/startup.log"
+    export MORPH_SYSTEM_CONFIG_DIR="$tmpdir/system-config"
+    export MORPH_USER_STARTUP_HOOK_CMD='~/.config/morph/startup.sh'
+    export XDG_CONFIG_HOME="$tmpdir/home/.config"
+    export MORPH_SESSION_MODE=nested
+    export WLR_WL_SOCKET="wayland-test-socket"
+    unset MORPH_USER_CONFIG_DIR
+    : > "$MORPH_STARTUP_LOG_FILE"
+
+    # shellcheck disable=SC1090
+    . "$repo_root/scripts/system_startup.sh"
+
+    assert_file_contains \
+        "$MORPH_STARTUP_LOG_FILE" \
+        "Sourcing user startup hook file from config: $tmpdir/home/.config/morph/startup.sh"
+    assert_file_contains "$MORPH_STARTUP_LOG_FILE" "Tilde user startup hook ran."
+
+    HOME=$saved_home
+    export HOME
+    rm -rf "$tmpdir"
+    trap - EXIT HUP INT TERM
+}
+
+test_system_startup_falls_back_to_system_hook_when_user_hook_missing() {
+    tmpdir=$(make_tmpdir)
+    trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+
+    mkdir -p "$tmpdir/system-config"
+    cat > "$tmpdir/system-config/startup.sh" <<'EOF'
+#!/bin/sh
+log_startup INFO "Packaged system startup hook ran."
+EOF
+    chmod +x "$tmpdir/system-config/startup.sh"
+
+    export COMP_ROOT_DIR="$repo_root"
+    export MORPH_HELPER_LIB="$repo_root/scripts/shell-helpers.sh"
+    export MORPH_STARTUP_LOG_FILE="$tmpdir/startup.log"
+    export MORPH_SYSTEM_CONFIG_DIR="$tmpdir/system-config"
+    # The shipped morph.conf points here, but a fresh install has no user config
+    # directory yet, so the packaged hook must take over.
+    export MORPH_USER_CONFIG_DIR="$tmpdir/user-config/morph"
+    export MORPH_USER_STARTUP_HOOK_CMD='${MORPH_USER_CONFIG_DIR}/startup.sh'
+    export XDG_CONFIG_HOME="$tmpdir/xdg-config"
+    export MORPH_SESSION_MODE=nested
+    export WLR_WL_SOCKET="wayland-test-socket"
+    : > "$MORPH_STARTUP_LOG_FILE"
+
+    # shellcheck disable=SC1090
+    . "$repo_root/scripts/system_startup.sh"
+
+    assert_file_contains \
+        "$MORPH_STARTUP_LOG_FILE" \
+        "Configured user startup hook file is not readable: $tmpdir/user-config/morph/startup.sh"
+    assert_file_contains \
+        "$MORPH_STARTUP_LOG_FILE" \
+        "Sourcing system startup hook: $tmpdir/system-config/startup.sh"
+    assert_file_contains "$MORPH_STARTUP_LOG_FILE" "Packaged system startup hook ran."
+
+    rm -rf "$tmpdir"
+    trap - EXIT HUP INT TERM
+}
+
 test_morph_config_hook_from_file_reads_hooks_section() {
     tmpdir=$(make_tmpdir)
     trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
@@ -645,6 +750,10 @@ test_system_shutdown_skips_missing_configured_hook_file() {
     export MORPH_SHUTDOWN_LIST="$tmpdir/shutdown_list.nfo"
     export MORPH_SESSION_MODE=native
     export MORPH_USER_CONFIG_DIR="$tmpdir/user-config/morph"
+    # Point the system dir at an empty location so this case stays hermetic and
+    # covers "no user hook and no packaged hook" rather than the fallback path.
+    export MORPH_SYSTEM_CONFIG_DIR="$tmpdir/system-config"
+    mkdir -p "$MORPH_SYSTEM_CONFIG_DIR"
     export MORPH_USER_SHUTDOWN_HOOK_CMD='${MORPH_USER_CONFIG_DIR}/shutdown.sh'
     : > "$MORPH_SHUTDOWN_LOG_FILE"
     : > "$MORPH_SHUTDOWN_LIST"
@@ -663,7 +772,10 @@ test_system_shutdown_skips_missing_configured_hook_file() {
 
     assert_file_contains \
         "$MORPH_SHUTDOWN_LOG_FILE" \
-        "Configured user shutdown hook file is not readable, skipping: $tmpdir/user-config/morph/shutdown.sh"
+        "Configured user shutdown hook file is not readable: $tmpdir/user-config/morph/shutdown.sh"
+    assert_file_contains \
+        "$MORPH_SHUTDOWN_LOG_FILE" \
+        "No readable shutdown hook found"
     if grep -F -- "Running user shutdown hook from config." "$MORPH_SHUTDOWN_LOG_FILE" >/dev/null 2>&1; then
         fail "missing configured shutdown hook file must not be executed as a shell command"
     fi
@@ -944,6 +1056,9 @@ test_system_reload_runs_user_hook_file_with_helpers
 test_system_startup_native_runs_managed_portals
 test_system_startup_runs_user_hook_command
 test_system_startup_runs_variable_based_user_hook_file
+test_morph_resolve_hook_path_expands_tilde
+test_system_startup_sources_tilde_user_hook
+test_system_startup_falls_back_to_system_hook_when_user_hook_missing
 test_morph_config_hook_from_file_reads_hooks_section
 test_morph_source_portals_reports_missing_executables
 test_portals_log_effective_runtime_values

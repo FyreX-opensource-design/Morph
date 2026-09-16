@@ -32,6 +32,9 @@ morph_capture_caller_override() {
     if eval "[ \"\${$var_name+x}\" ]"; then
         eval "MORPH_CALLER_HAS_$var_name=1"
         eval "MORPH_CALLER_VALUE_$var_name=\${$var_name}"
+        # Config reload re-sources the environment files inside the running
+        # compositor, so it needs the same caller-priority list as this shell.
+        MORPH_CALLER_OVERRIDES="${MORPH_CALLER_OVERRIDES:+$MORPH_CALLER_OVERRIDES }$var_name"
     else
         eval "MORPH_CALLER_HAS_$var_name=0"
     fi
@@ -143,6 +146,10 @@ export MORPH_SYSTEM_CONFIG_DIR
 export MORPH_USER_CONFIG_DIR="$MORPH_USER_CONFIG_DIR_DEFAULT"
 export MORPH_BIN
 export MORPH_HELPER_LIB="$MORPH_SYSTEM_HOOK_DIR/shell-helpers.sh"
+export MORPH_CALLER_OVERRIDES="${MORPH_CALLER_OVERRIDES:-}"
+# Pin the resolved system environment file so a later config reload sources the
+# same file this wrapper used.
+export MORPH_ENV_FILE="$SYSTEM_ENV_FILE"
 
 # Environment files are sourced by this shell, so plain assignments there would
 # otherwise stay shell-local. Export the resolved runtime linker path explicitly.

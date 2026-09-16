@@ -16,8 +16,9 @@
 
 - `zwlr_layer_shell_v1` (tested with Waybar/swaybg)
 - `zwlr_screencopy_manager_v1` (tested with grim)
+- `ext_image_copy_capture_manager_v1` + output/window capture sources (wlroots 0.20+)
 - `ext_workspace_manager_v1` (tested with Waybar ext/workspaces)
-- `zwlr_foreign_toplevel_manager_v1`
+- `zwlr_foreign_toplevel_manager_v1` / `ext_foreign_toplevel_list_v1`
 - `zxdg_decoration_manager_v1`
 - `zwp_pointer_constraints_v1`
 - `zwp_relative_pointer_manager_v1`
@@ -85,7 +86,7 @@ See [`INSTALL.md`](INSTALL.md) for:
 
 ## Runtime Notes
 
-- wlroots `0.19.x` API is targeted
+- wlroots `0.20.2+` API is targeted
 - X11 support depends on `xwayland-satellite` plus `xorg-xwayland`
 - Disable X11 satellite with [`MORPH_X11=0`](docs/ENVIRONMENT.md#morph-x11)
 - Java/X11 apps may need [`_JAVA_AWT_WM_NONREPARENTING=1`](docs/ENVIRONMENT.md#java-awt-wm-nonreparenting)

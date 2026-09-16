@@ -15,7 +15,7 @@ Morph currently builds against the following primary dependencies:
 | cmake | cmake | cmake | 3.20 |
 | meson | meson | meson | 1.11 |
 | pkgconf | pkg-config | pkgconf-pkg-config | 2.5 |
-| wlroots0.19 | libwlroots-0.19-dev | wlroots-devel | 0.19 |
+| wlroots0.20 | libwlroots-0.20-dev | wlroots-devel | 0.20.2 |
 | lib32-wayland | libwayland-server0³ | libwayland-server³ | 1.25 |
 | xwayland-satellite | not available¹ | xwayland-satellite | 0.8 |
 | wayland-protocols | wayland-protocols | wayland-protocols-devel | 1.49 |
@@ -121,7 +121,7 @@ sudo meson install -C build
 
 Runtime library lookup note (local wlroots builds):
 
-- some distributions do not provide `wlroots-0.19` runtime libraries in system
+- some distributions do not provide `wlroots-0.20` runtime libraries in system
   paths; in that case Morph may depend on local libraries under `~/.local/lib`
 - if `LD_LIBRARY_PATH` is empty, `morph-session` auto-adds existing local
   library paths as a fallback and logs a warning

@@ -359,12 +359,15 @@ morph_resolve_hook_path() {
             ;;
     esac
 
+    # The patterns must stay quoted: an unquoted ~ in a case pattern is itself
+    # tilde-expanded to $HOME, so a literal "~/..." hook value would never match
+    # and would silently fall through to the branch that expands nothing.
     case "$hook_cmd" in
-        ~)
+        "~")
             expanded_hook_cmd="$HOME"
             ;;
-        ~/*)
-            expanded_hook_cmd="$HOME/${hook_cmd#~/}"
+        "~/"*)
+            expanded_hook_cmd="$HOME/${hook_cmd#"~/"}"
             ;;
         *)
             expanded_hook_cmd="$hook_cmd"
@@ -378,6 +381,26 @@ morph_resolve_hook_path() {
     fi
 
     printf '%s\n' "$expanded_hook_cmd"
+}
+
+# Source the packaged hook from the system config dir when no user hook is
+# readable. The shipped morph.conf points at ${MORPH_USER_CONFIG_DIR}/<kind>.sh,
+# so without this a fresh install silently runs no hooks at all until the user
+# creates ~/.config/morph. Mirrors the user -> system resolution of morph.conf.
+morph_source_system_hook() {
+    sys_hook_kind="$1"
+    sys_tried_path="$2"
+    sys_hook_path="$(morph_managed_config_dir)/$sys_hook_kind.sh"
+
+    if [ "$sys_hook_path" = "$sys_tried_path" ] || [ ! -r "$sys_hook_path" ]; then
+        log_morph INFO "No readable $sys_hook_kind hook found (tried $sys_tried_path and $sys_hook_path)."
+        return 0
+    fi
+
+    log_morph INFO "Sourcing system $sys_hook_kind hook: $sys_hook_path"
+    # shellcheck disable=SC1090
+    . "$sys_hook_path"
+    return $?
 }
 
 morph_run_optional_user_hook() {
@@ -399,8 +422,11 @@ morph_run_optional_user_hook() {
             return $?
         fi
         if [ -n "$hook_cmd_path" ]; then
-            log_morph INFO "Configured user $hook_kind hook file is not readable, skipping: $hook_cmd_path"
-            return 0
+            # A configured path that does not exist must never be downgraded to
+            # `sh -c <path>`; fall back to the packaged hook instead.
+            log_morph INFO "Configured user $hook_kind hook file is not readable: $hook_cmd_path"
+            morph_source_system_hook "$hook_kind" "$hook_cmd_path"
+            return $?
         fi
 
         # Config-provided commands have highest priority because they are the
@@ -423,8 +449,9 @@ morph_run_optional_user_hook() {
         return $?
     fi
 
-    log_morph INFO "No user $hook_kind hook configured or found."
-    return 0
+    log_morph INFO "No user $hook_kind hook configured or found: $hook_path"
+    morph_source_system_hook "$hook_kind" "$hook_path"
+    return $?
 }
 
 # Source the managed portal definition and then an optional user override.

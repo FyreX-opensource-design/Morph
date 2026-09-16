@@ -62,6 +62,18 @@ speed = 10.0
 epsilon = 0.25
 
 # ============================================================================
+# Focus policy
+# ============================================================================
+# [focus] selects pointer-driven keyboard focus for XDG toplevels.
+# Default when omitted: ClickToFocus (click to focus; empty-root click clears).
+# Alternatives: FocusFollowsMouse / mouse (enter focuses; leave to root/wallpaper clears),
+# SloppyFocus (enter focuses; root/wallpaper does not clear).
+# See docs/CONFIG.md for layer-shell, grab, and activation interaction rules.
+#
+# [focus]
+# policy = ClickToFocus
+
+# ============================================================================
 # Decoration
 # ============================================================================
 # [decoration] controls the default xdg-decoration policy for tile and scroll layouts.
@@ -137,6 +149,33 @@ action = quit
 mods = Super+Shift
 key = Q
 action = close
+
+# ----------------------------------------------------------------------------
+# Cycling (window focus)
+# ----------------------------------------------------------------------------
+# nextWindow / window_next / focus_next and prevWindow / window_prev / focus_prev
+# cycle keyboard focus in focus-history order, wrapping at the ends.
+# Only mapped, non-minimized windows on the current workspace take part.
+# Holding Alt and tapping Tab walks the full list and shows a switcher overlay;
+# releasing Alt commits, Esc cancels.
+#
+# Holding the modifier keeps a cycling session open: the candidate list freezes,
+# so repeated Tab presses walk the full list instead of alternating between the
+# two most recent windows. Releasing Alt commits the selection; Esc cancels back
+# to where you started. Alt+Tab and Alt+Shift+Tab share one session, so you can
+# overshoot and step back without restarting the cycle.
+
+# Focus the next window.
+[bind]
+mods = Alt
+key = Tab
+action = nextWindow
+
+# Focus the previous window.
+[bind]
+mods = Alt+Shift
+key = Tab
+action = prevWindow
 
 # ============================================================================
 # Layouts COMMON

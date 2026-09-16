@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -50,6 +51,36 @@ void server_workspace_move_focused(struct comp_server *server, int target)
 {
     (void)server;
     (void)target;
+}
+
+void server_window_focus_cycle(struct comp_server *server, int delta)
+{
+    (void)server;
+    (void)delta;
+}
+
+void server_window_cycle_step(struct comp_server *server, int delta, uint32_t hold_mods)
+{
+    (void)server;
+    (void)delta;
+    (void)hold_mods;
+}
+
+bool server_window_cycle_active(const struct comp_server *server)
+{
+    (void)server;
+    return false;
+}
+
+void server_window_cycle_notify_mods(struct comp_server *server, uint32_t depressed)
+{
+    (void)server;
+    (void)depressed;
+}
+
+void server_window_cycle_cancel(struct comp_server *server)
+{
+    (void)server;
 }
 
 void server_tile_move_focused_n(struct comp_server *server, int steps)
@@ -160,7 +191,10 @@ static int test_valid_config_parse(void)
         "\n"
         "[decoration_rule]\n"
         "app_id = ^foot$\n"
-        "strip = no\n";
+        "strip = no\n"
+        "\n"
+        "[focus]\n"
+        "policy = FocusFollowsMouse\n";
 
     char path[128];
     if (!write_temp_file(cfg_text, path, sizeof(path)))
@@ -189,6 +223,14 @@ static int test_valid_config_parse(void)
     if (cfg->layout_anim_enabled || cfg->layout_anim_lambda != 20.0 || cfg->layout_anim_epsilon != 0.5)
     {
         fprintf(stderr, "layout_anim settings mismatch\n");
+        comp_config_free(cfg);
+        unlink(path);
+        return 1;
+    }
+
+    if (cfg->focus_policy != COMP_FOCUS_FOLLOWS_MOUSE)
+    {
+        fprintf(stderr, "focus policy should parse FocusFollowsMouse\n");
         comp_config_free(cfg);
         unlink(path);
         return 1;
@@ -242,7 +284,13 @@ static int test_invalid_tile_grid_command(void)
         "mods = Super\n"
         "key = T\n"
         "action = tile_grid_move\n"
-        "command = left 0\n";
+        "command = left 0\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super\n"
+        "key = Return\n"
+        "action = exec\n"
+        "command = foot\n";
 
     char path[128];
     if (!write_temp_file(cfg_text, path, sizeof(path)))
@@ -254,12 +302,87 @@ static int test_invalid_tile_grid_command(void)
     struct comp_config *cfg = NULL;
     bool ok = comp_config_load(path, &cfg);
     unlink(path);
-    if (ok)
+    if (!ok || !cfg)
     {
-        fprintf(stderr, "invalid config unexpectedly parsed\n");
+        fprintf(stderr, "invalid tile_grid_move bind should be skipped, not fail config load\n");
+        return 1;
+    }
+    if (cfg->n_binds != 1 || cfg->binds[0].action != COMP_KEYBIND_EXEC ||
+        cfg->binds[0].keysym != XKB_KEY_Return)
+    {
+        fprintf(stderr, "expected only the valid exec bind after skipping bad tile_grid_move\n");
         comp_config_free(cfg);
         return 1;
     }
+    for (size_t i = 0; i < cfg->n_binds; i++)
+    {
+        if (cfg->binds[i].action == COMP_KEYBIND_TILE_GRID_MOVE)
+        {
+            fprintf(stderr, "invalid tile_grid_move bind was not skipped\n");
+            comp_config_free(cfg);
+            return 1;
+        }
+    }
+    comp_config_free(cfg);
+    return 0;
+}
+
+/**
+ * A typo'd [bind] (e.g. unknown key `modx`) must not fail config load; later binds still apply.
+ * `mod` is accepted as an alias for `mods`.
+ */
+static int test_bind_typo_is_skipped(void)
+{
+    fprintf(stderr, "NOTE: the following config parser ERROR messages are expected; this test intentionally feeds a typo'd bind.\n");
+
+    const char *cfg_text =
+        "[bind]\n"
+        "mods = Super\n"
+        "key = Return\n"
+        "action = exec\n"
+        "command = foot\n"
+        "\n"
+        "[bind]\n"
+        "modx = Alt+Shift\n"
+        "key = Tab\n"
+        "action = prevWindow\n"
+        "\n"
+        "[bind]\n"
+        "mod = Alt\n"
+        "key = Tab\n"
+        "action = nextWindow\n";
+
+    char path[128];
+    if (!write_temp_file(cfg_text, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp typo bind config\n");
+        return 1;
+    }
+
+    struct comp_config *cfg = NULL;
+    bool ok = comp_config_load(path, &cfg);
+    unlink(path);
+    if (!ok || !cfg || cfg->n_binds != 2)
+    {
+        fprintf(stderr, "typo'd bind should be skipped; expected 2 valid binds, got ok=%d n=%zu\n",
+                ok ? 1 : 0, cfg ? cfg->n_binds : 0);
+        comp_config_free(cfg);
+        return 1;
+    }
+    if (cfg->binds[0].action != COMP_KEYBIND_EXEC || cfg->binds[0].keysym != XKB_KEY_Return)
+    {
+        fprintf(stderr, "first bind should remain the Super+Return exec\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+    if (cfg->binds[1].action != COMP_KEYBIND_WINDOW_NEXT || cfg->binds[1].keysym != XKB_KEY_Tab ||
+        cfg->binds[1].mods != WLR_MODIFIER_ALT)
+    {
+        fprintf(stderr, "mod= alias should parse as mods= for nextWindow\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+    comp_config_free(cfg);
     return 0;
 }
 
@@ -332,6 +455,265 @@ static int test_unresolved_config_path_can_use_builtin_fallback(void)
     return 0;
 }
 
+/** Write one environment file into an existing directory. */
+static bool write_env_file(const char *dir, const char *content, char *out_path, size_t out_len)
+{
+    if (snprintf(out_path, out_len, "%s/environment", dir) >= (int)out_len)
+    {
+        return false;
+    }
+    FILE *f = fopen(out_path, "w");
+    if (!f)
+    {
+        return false;
+    }
+    const bool ok = fputs(content, f) >= 0;
+    return fclose(f) == 0 && ok;
+}
+
+/**
+ * Config reload re-sources the system and user environment files.
+ *
+ * Covers shell evaluation of the file contents, user-over-system precedence,
+ * caller values keeping the top of the resolution order, and unrelated session
+ * variables surviving the merge.
+ */
+static int test_environment_reload_applies_files(void)
+{
+    char user_dir[] = "/tmp/morph-env-test-XXXXXX";
+    if (!mkdtemp(user_dir))
+    {
+        fprintf(stderr, "failed to create temporary user config dir\n");
+        return 1;
+    }
+    char system_dir[] = "/tmp/morph-env-test-XXXXXX";
+    if (!mkdtemp(system_dir))
+    {
+        fprintf(stderr, "failed to create temporary system config dir\n");
+        rmdir(user_dir);
+        return 1;
+    }
+
+    const char *system_text =
+        "MORPH_TEST_SYSTEM_ONLY=from-system\n"
+        "MORPH_TEST_SHARED=from-system\n"
+        "MORPH_TEST_CALLER=from-file\n";
+    const char *user_text =
+        "MORPH_TEST_SHARED=from-user\n"
+        "export MORPH_TEST_EXPANDED=\"${MORPH_TEST_SEED}-expanded\"\n";
+    const struct
+    {
+        const char *name;
+        const char *want;
+    } expected[] = {
+        {"MORPH_TEST_SYSTEM_ONLY", "from-system"},
+        {"MORPH_TEST_SHARED", "from-user"},
+        {"MORPH_TEST_EXPANDED", "seed-expanded"},
+        {"MORPH_TEST_CALLER", "from-caller"},
+        {"MORPH_TEST_KEEP", "keep"},
+    };
+
+    char system_file[PATH_MAX] = "";
+    char user_file[PATH_MAX] = "";
+    int rc = 1;
+    if (write_env_file(system_dir, system_text, system_file, sizeof(system_file)) &&
+        write_env_file(user_dir, user_text, user_file, sizeof(user_file)))
+    {
+        setenv("MORPH_ENV_FILE", system_file, 1);
+        setenv("MORPH_USER_CONFIG_DIR", user_dir, 1);
+        setenv("MORPH_TEST_SEED", "seed", 1);
+        setenv("MORPH_TEST_KEEP", "keep", 1);
+        setenv("MORPH_TEST_CALLER", "from-caller", 1);
+        setenv("MORPH_CALLER_OVERRIDES", "MORPH_TEST_CALLER", 1);
+        unsetenv("MORPH_TEST_SYSTEM_ONLY");
+        unsetenv("MORPH_TEST_SHARED");
+        unsetenv("MORPH_TEST_EXPANDED");
+
+        comp_config_reload_environment();
+
+        rc = 0;
+        for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
+        {
+            const char *got = getenv(expected[i].name);
+            if (!got || strcmp(got, expected[i].want) != 0)
+            {
+                fprintf(stderr, "environment reload: %s is '%s', expected '%s'\n",
+                        expected[i].name, got ? got : "<unset>", expected[i].want);
+                rc = 1;
+            }
+        }
+    }
+    else
+    {
+        fprintf(stderr, "failed to write temporary environment files\n");
+    }
+
+    unlink(system_file);
+    unlink(user_file);
+    rmdir(system_dir);
+    rmdir(user_dir);
+    unsetenv("MORPH_ENV_FILE");
+    unsetenv("MORPH_USER_CONFIG_DIR");
+    unsetenv("MORPH_CALLER_OVERRIDES");
+    unsetenv("MORPH_TEST_SEED");
+    unsetenv("MORPH_TEST_KEEP");
+    unsetenv("MORPH_TEST_CALLER");
+    unsetenv("MORPH_TEST_SYSTEM_ONLY");
+    unsetenv("MORPH_TEST_SHARED");
+    unsetenv("MORPH_TEST_EXPANDED");
+    return rc;
+}
+
+/**
+ * Focus policy parsing: defaults, aliases, and rejection of unknown values.
+ */
+static int test_focus_policy_parse(void)
+{
+    const char *cfg_sloppy =
+        "[bind]\n"
+        "mods = Super\n"
+        "key = Escape\n"
+        "action = quit\n"
+        "\n"
+        "[focus]\n"
+        "mode = sloppy\n";
+
+    char path[128];
+    if (!write_temp_file(cfg_sloppy, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp focus config\n");
+        return 1;
+    }
+
+    struct comp_config *cfg = NULL;
+    if (!comp_config_load(path, &cfg) || !cfg || cfg->focus_policy != COMP_FOCUS_SLOPPY)
+    {
+        fprintf(stderr, "sloppy focus alias should parse as SloppyFocus\n");
+        comp_config_free(cfg);
+        unlink(path);
+        return 1;
+    }
+    comp_config_free(cfg);
+    unlink(path);
+
+    const char *cfg_default =
+        "[bind]\n"
+        "mods = Super\n"
+        "key = Escape\n"
+        "action = quit\n";
+    if (!write_temp_file(cfg_default, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp default-focus config\n");
+        return 1;
+    }
+    cfg = NULL;
+    if (!comp_config_load(path, &cfg) || !cfg || cfg->focus_policy != COMP_FOCUS_CLICK)
+    {
+        fprintf(stderr, "omitted [focus] should default to ClickToFocus\n");
+        comp_config_free(cfg);
+        unlink(path);
+        return 1;
+    }
+    comp_config_free(cfg);
+    unlink(path);
+
+    enum comp_focus_policy pol = COMP_FOCUS_CLICK;
+    if (!comp_config_parse_focus_policy("mouse", &pol) || pol != COMP_FOCUS_FOLLOWS_MOUSE)
+    {
+        fprintf(stderr, "mouse alias should parse as FocusFollowsMouse\n");
+        return 1;
+    }
+    if (!comp_config_parse_focus_policy("sloppy", &pol) || pol != COMP_FOCUS_SLOPPY)
+    {
+        fprintf(stderr, "sloppy alias should parse as SloppyFocus\n");
+        return 1;
+    }
+
+    fprintf(stderr, "NOTE: the following config parser ERROR messages are expected; this test intentionally feeds invalid focus policy.\n");
+    const char *cfg_bad =
+        "[focus]\n"
+        "policy = NotARealPolicy\n";
+    if (!write_temp_file(cfg_bad, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp invalid focus config\n");
+        return 1;
+    }
+    cfg = NULL;
+    bool ok = comp_config_load(path, &cfg);
+    unlink(path);
+    if (ok)
+    {
+        fprintf(stderr, "invalid focus policy unexpectedly parsed\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * Window-cycle action parsing: canonical names, aliases, and case insensitivity.
+ */
+static int test_window_cycle_actions_parse(void)
+{
+    const char *cfg_text =
+        "[bind]\n"
+        "mods = Alt\n"
+        "key = Tab\n"
+        "action = nextWindow\n"
+        "\n"
+        "[bind]\n"
+        "mods = Alt+Shift\n"
+        "key = Tab\n"
+        "action = prevWindow\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super\n"
+        "key = j\n"
+        "action = window_next\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super\n"
+        "key = k\n"
+        "action = FOCUS_PREV\n";
+
+    char path[128];
+    if (!write_temp_file(cfg_text, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp window-cycle config\n");
+        return 1;
+    }
+
+    struct comp_config *cfg = NULL;
+    bool ok = comp_config_load(path, &cfg);
+    unlink(path);
+    if (!ok || !cfg || cfg->n_binds != 4)
+    {
+        fprintf(stderr, "expected four window-cycle binds\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+
+    const enum comp_keybind_action want[] = {
+        COMP_KEYBIND_WINDOW_NEXT,
+        COMP_KEYBIND_WINDOW_PREV,
+        COMP_KEYBIND_WINDOW_NEXT,
+        COMP_KEYBIND_WINDOW_PREV,
+    };
+    for (size_t i = 0; i < sizeof(want) / sizeof(want[0]); i++)
+    {
+        if (cfg->binds[i].action != want[i])
+        {
+            fprintf(stderr, "bind %zu parsed as action %d, expected %d\n", i,
+                    (int)cfg->binds[i].action, (int)want[i]);
+            comp_config_free(cfg);
+            return 1;
+        }
+    }
+
+    comp_config_free(cfg);
+    return 0;
+}
+
 /** Execute all config parser regression tests; return non-zero on first failure. */
 int main(void)
 {
@@ -339,7 +721,23 @@ int main(void)
     {
         return 1;
     }
+    if (test_focus_policy_parse() != 0)
+    {
+        return 1;
+    }
+    if (test_environment_reload_applies_files() != 0)
+    {
+        return 1;
+    }
+    if (test_window_cycle_actions_parse() != 0)
+    {
+        return 1;
+    }
     if (test_invalid_tile_grid_command() != 0)
+    {
+        return 1;
+    }
+    if (test_bind_typo_is_skipped() != 0)
     {
         return 1;
     }
