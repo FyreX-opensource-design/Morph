@@ -144,6 +144,9 @@ bool comp_config_builtin_fallback_enabled(void);
 
 bool comp_config_load(const char *path, struct comp_config **cfg_out);
 
+/** Re-source the system and user `environment` files into the running process. */
+void comp_config_reload_environment(void);
+
 void comp_config_free(struct comp_config *cfg);
 
 /** Run hook under `sh -c` (async; does not wait). */

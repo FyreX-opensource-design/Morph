@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -454,6 +455,115 @@ static int test_unresolved_config_path_can_use_builtin_fallback(void)
     return 0;
 }
 
+/** Write one environment file into an existing directory. */
+static bool write_env_file(const char *dir, const char *content, char *out_path, size_t out_len)
+{
+    if (snprintf(out_path, out_len, "%s/environment", dir) >= (int)out_len)
+    {
+        return false;
+    }
+    FILE *f = fopen(out_path, "w");
+    if (!f)
+    {
+        return false;
+    }
+    const bool ok = fputs(content, f) >= 0;
+    return fclose(f) == 0 && ok;
+}
+
+/**
+ * Config reload re-sources the system and user environment files.
+ *
+ * Covers shell evaluation of the file contents, user-over-system precedence,
+ * caller values keeping the top of the resolution order, and unrelated session
+ * variables surviving the merge.
+ */
+static int test_environment_reload_applies_files(void)
+{
+    char user_dir[] = "/tmp/morph-env-test-XXXXXX";
+    if (!mkdtemp(user_dir))
+    {
+        fprintf(stderr, "failed to create temporary user config dir\n");
+        return 1;
+    }
+    char system_dir[] = "/tmp/morph-env-test-XXXXXX";
+    if (!mkdtemp(system_dir))
+    {
+        fprintf(stderr, "failed to create temporary system config dir\n");
+        rmdir(user_dir);
+        return 1;
+    }
+
+    const char *system_text =
+        "MORPH_TEST_SYSTEM_ONLY=from-system\n"
+        "MORPH_TEST_SHARED=from-system\n"
+        "MORPH_TEST_CALLER=from-file\n";
+    const char *user_text =
+        "MORPH_TEST_SHARED=from-user\n"
+        "export MORPH_TEST_EXPANDED=\"${MORPH_TEST_SEED}-expanded\"\n";
+    const struct
+    {
+        const char *name;
+        const char *want;
+    } expected[] = {
+        {"MORPH_TEST_SYSTEM_ONLY", "from-system"},
+        {"MORPH_TEST_SHARED", "from-user"},
+        {"MORPH_TEST_EXPANDED", "seed-expanded"},
+        {"MORPH_TEST_CALLER", "from-caller"},
+        {"MORPH_TEST_KEEP", "keep"},
+    };
+
+    char system_file[PATH_MAX] = "";
+    char user_file[PATH_MAX] = "";
+    int rc = 1;
+    if (write_env_file(system_dir, system_text, system_file, sizeof(system_file)) &&
+        write_env_file(user_dir, user_text, user_file, sizeof(user_file)))
+    {
+        setenv("MORPH_ENV_FILE", system_file, 1);
+        setenv("MORPH_USER_CONFIG_DIR", user_dir, 1);
+        setenv("MORPH_TEST_SEED", "seed", 1);
+        setenv("MORPH_TEST_KEEP", "keep", 1);
+        setenv("MORPH_TEST_CALLER", "from-caller", 1);
+        setenv("MORPH_CALLER_OVERRIDES", "MORPH_TEST_CALLER", 1);
+        unsetenv("MORPH_TEST_SYSTEM_ONLY");
+        unsetenv("MORPH_TEST_SHARED");
+        unsetenv("MORPH_TEST_EXPANDED");
+
+        comp_config_reload_environment();
+
+        rc = 0;
+        for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
+        {
+            const char *got = getenv(expected[i].name);
+            if (!got || strcmp(got, expected[i].want) != 0)
+            {
+                fprintf(stderr, "environment reload: %s is '%s', expected '%s'\n",
+                        expected[i].name, got ? got : "<unset>", expected[i].want);
+                rc = 1;
+            }
+        }
+    }
+    else
+    {
+        fprintf(stderr, "failed to write temporary environment files\n");
+    }
+
+    unlink(system_file);
+    unlink(user_file);
+    rmdir(system_dir);
+    rmdir(user_dir);
+    unsetenv("MORPH_ENV_FILE");
+    unsetenv("MORPH_USER_CONFIG_DIR");
+    unsetenv("MORPH_CALLER_OVERRIDES");
+    unsetenv("MORPH_TEST_SEED");
+    unsetenv("MORPH_TEST_KEEP");
+    unsetenv("MORPH_TEST_CALLER");
+    unsetenv("MORPH_TEST_SYSTEM_ONLY");
+    unsetenv("MORPH_TEST_SHARED");
+    unsetenv("MORPH_TEST_EXPANDED");
+    return rc;
+}
+
 /**
  * Focus policy parsing: defaults, aliases, and rejection of unknown values.
  */
@@ -612,6 +722,10 @@ int main(void)
         return 1;
     }
     if (test_focus_policy_parse() != 0)
+    {
+        return 1;
+    }
+    if (test_environment_reload_applies_files() != 0)
     {
         return 1;
     }

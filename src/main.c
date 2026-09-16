@@ -369,8 +369,10 @@ static bool xdg_commit_debug_logs_enabled;
 static bool pointer_focus_debug_logs_enabled;
 /** Layer-shell hitbox trace used when panel hover regions fight toplevel hit-testing. */
 static bool layer_hit_debug_logs_enabled;
+/** Tested default resize pace for the legacy X11 bridge (17 Hz). */
+#define BRIDGE_RESIZE_INTERVAL_MSEC_DEFAULT 59
 /** Pace legacy X11 bridge resizes so GTK2 can process ConfigureNotify without a backlog. */
-static uint32_t bridge_resize_interval_msec = 59;
+static uint32_t bridge_resize_interval_msec = BRIDGE_RESIZE_INTERVAL_MSEC_DEFAULT;
 /** Extra pointer-focus band for bottom/top panels whose hover visuals extend past their surface. */
 static const int layer_pointer_guard_px = 40;
 /** Optional append-only log target set by `--log-file`; NULL means stderr-only. */
@@ -389,6 +391,7 @@ static void configure_bridge_resize_rate_from_env(void)
 	const char *value = getenv("MORPH_BRIDGE_RESIZE_HZ");
 	if (!value || !value[0])
 	{
+		bridge_resize_interval_msec = BRIDGE_RESIZE_INTERVAL_MSEC_DEFAULT;
 		return;
 	}
 
@@ -399,6 +402,7 @@ static void configure_bridge_resize_rate_from_env(void)
 	{
 		wlr_log(WLR_ERROR,
 			"Ignoring invalid MORPH_BRIDGE_RESIZE_HZ='%s' (expected 1..240)", value);
+		bridge_resize_interval_msec = BRIDGE_RESIZE_INTERVAL_MSEC_DEFAULT;
 		return;
 	}
 
@@ -406,6 +410,34 @@ static void configure_bridge_resize_rate_from_env(void)
 	bridge_resize_interval_msec = (uint32_t)((1000 + hz / 2) / hz);
 	wlr_log(WLR_INFO, "Legacy bridge resize rate: %ld Hz (%u ms)",
 		hz, bridge_resize_interval_msec);
+}
+
+/**
+ * Latch the environment-driven debug and tuning flags.
+ *
+ * Runs at startup and again after a config reload re-sources the environment
+ * files, so every flag read here follows the current process environment.
+ */
+static void apply_env_runtime_flags(void)
+{
+	{
+		const char *e = getenv("MORPH_DEBUG_XDG");
+		xdg_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
+	}
+	{
+		const char *e = getenv("MORPH_DEBUG_XDG_COMMITS");
+		xdg_commit_debug_logs_enabled = xdg_debug_logs_enabled &&
+			e && e[0] && strcmp(e, "0") != 0;
+	}
+	{
+		const char *e = getenv("MORPH_DEBUG_POINTER_FOCUS");
+		pointer_focus_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
+	}
+	{
+		const char *e = getenv("MORPH_DEBUG_LAYER_HIT");
+		layer_hit_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
+	}
+	configure_bridge_resize_rate_from_env();
 }
 
 /** Map wlroots importance to an ordered rank for deterministic threshold checks. */
@@ -5192,6 +5224,10 @@ static void ipc_process_line(struct comp_server *server, char *line)
 /** Reload config from remembered/default path and apply runtime updates atomically. */
 static bool server_reload_config(struct comp_server *server)
 {
+	/* Environment first: config resolution and hook spawns below read getenv(). */
+	comp_config_reload_environment();
+	apply_env_runtime_flags();
+
 	const char *path = server->config_path;
 	char fallback[PATH_MAX];
 	if (!path || !path[0])
@@ -7477,24 +7513,7 @@ int main(int argc, char **argv)
 
 	wlr_log_init(startup_log_level, morph_log_callback);
 	morph_active_log_level = startup_log_level;
-	{
-		const char *e = getenv("MORPH_DEBUG_XDG");
-		xdg_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
-	}
-	{
-		const char *e = getenv("MORPH_DEBUG_XDG_COMMITS");
-		xdg_commit_debug_logs_enabled = xdg_debug_logs_enabled &&
-			e && e[0] && strcmp(e, "0") != 0;
-	}
-	{
-		const char *e = getenv("MORPH_DEBUG_POINTER_FOCUS");
-		pointer_focus_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
-	}
-	{
-		const char *e = getenv("MORPH_DEBUG_LAYER_HIT");
-		layer_hit_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
-	}
-	configure_bridge_resize_rate_from_env();
+	apply_env_runtime_flags();
 	/*
 	 * Some parent processes leave SIGCHLD ignored; the kernel then auto-reaps
 	 * children and waitpid() in when= / shutdown hooks fails with ECHILD.

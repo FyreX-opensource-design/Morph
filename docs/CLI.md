@@ -103,7 +103,7 @@ Cycling walks focus history (most recently used first) across mapped, non-minimi
 
 | Option | Meaning | Behavior |
 |---|---|---|
-| `--reload-config` | Trigger config reload on a running compositor | Sends `reload config` over IPC; exits `1` if no compositor is listening |
+| `--reload-config` | Trigger config reload on a running compositor | Sends `reload config` over IPC; exits `1` if no compositor is listening. The compositor re-sources the `environment` files before reloading `morph.conf` (see [`Reload Behavior`](ENVIRONMENT.md#reload-behavior)) |
 
 ## Behavior Notes
 

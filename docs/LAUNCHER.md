@@ -185,6 +185,7 @@ Reload uses the compositor IPC entry point `reload config` / `reload`.
 
 Behavior in the managed flow:
 
+- Before it reloads `morph.conf`, the compositor re-sources the system and user `environment` files so environment edits do not need a session restart. Variables that the launcher consumes before starting the compositor still do; see [`Reload Behavior`](ENVIRONMENT.md#reload-behavior) in `docs/ENVIRONMENT.md`.
 - With [`MORPH_MANAGED_HOOKS=1`](ENVIRONMENT.md#morph-managed-hooks), the compositor dispatches [`scripts/system_reload.sh`](../scripts/system_reload.sh) instead of running the configured reload hook directly.
 - [`scripts/system_reload.sh`](../scripts/system_reload.sh) exposes the same helper library as startup/shutdown and then runs the configured user reload hook or its XDG fallback.
 - Path-like reload hook values such as `~/.config/morph/reload.sh` or `${MORPH_USER_CONFIG_DIR}/reload.sh` are sourced as hook files so reload helpers remain available in-process.

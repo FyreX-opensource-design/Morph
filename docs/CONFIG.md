@@ -302,7 +302,7 @@ These are the current compositor control commands for local use. The Wayland-fac
 - **`tile move …`** (same semantics as sort-order actions above)
 - **`scroll …`** or **`scroll move …`** — **`prev`** / **`left`**, **`next`** / **`right`**, or a **signed integer** (viewport steps in scroll layout; no-op if not in scroll layout)
 - **`tile grid …`** (same forms as **`tile_grid_move` `command=`**)
-- **`reload config`** or **`reload`** — re-read the config file (same path as at startup, or the default path), replace keybinds and tile rules, refresh tile layout if applicable, then run the new file’s **`reload`** hook from **`[hooks]`**. In the managed launcher flow this passes through `system_reload.sh` first.
+- **`reload config`** or **`reload`** — re-source the system and user **`environment`** files, re-read the config file (same path as at startup, or the default path), replace keybinds and tile rules, refresh tile layout if applicable, then run the new file’s **`reload`** hook from **`[hooks]`**. In the managed launcher flow this passes through `system_reload.sh` first. Some environment variables only take effect on a session restart; see **`docs/ENVIRONMENT.md`** for the per-variable list.
 - **`workspace N`** — switch to workspace **`1`**..**`9`**
 - **`workspace next`** / **`workspace prev`** — cycle workspaces (wraps)
 - **`workspace move N`** — move the focused toplevel to workspace **`N`**

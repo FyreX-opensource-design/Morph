@@ -23,6 +23,41 @@ Default system environment files differ by wrapper:
 - [`testing/morph-session_dbg`](../testing/morph-session_dbg) uses the repository-local [`testing/config/environment`](../testing/config/environment)
 - [`morph-session`](../scripts/morph-session) uses `/etc/morph/environment` by default; repo source: [`config/environment`](../config/environment)
 
+<a id="reload-behavior"></a>
+## Reload Behavior
+
+A config reload (IPC `reload config` / `reload`, or `morph --reload-config`) re-sources
+the system and user environment files into the running compositor before it reloads
+`morph.conf`. The files are evaluated by `/bin/sh`, so shell syntax such as `export`
+and `${VAR}` expansion works the same as during launcher startup.
+
+Only assignments that differ from the current process environment are applied, and the
+caller layer keeps priority: values passed on the launcher command line are listed in
+[`MORPH_CALLER_OVERRIDES`](#morph-caller-overrides) and are never replaced by a file.
+Session state such as `WAYLAND_DISPLAY` or `XDG_RUNTIME_DIR` is left untouched. Each
+applied variable is written to the Morph log.
+
+Re-sourcing updates the process environment, which is not the same as re-applying every
+setting. What a reload actually changes:
+
+| Variable | Effect of a reload |
+|----------|--------------------|
+| [`MORPH_DEBUG_XDG`](#morph-debug-xdg), [`MORPH_DEBUG_XDG_COMMITS`](#morph-debug-xdg-commits), [`MORPH_DEBUG_POINTER_FOCUS`](#morph-debug-pointer-focus), [`MORPH_DEBUG_LAYER_HIT`](#morph-debug-layer-hit), [`MORPH_LOG_KEYS`](#morph-log-keys) | Applied immediately |
+| [`MORPH_BRIDGE_RESIZE_HZ`](#morph-bridge-resize-hz) | Applied immediately; clearing the value restores the 17 Hz default |
+| [`MORPH_USER_CONFIG_DIR`](#morph-user-config-dir), [`MORPH_SYSTEM_HOOK_DIR`](LAUNCHER.md), `TERMINAL`, and anything else read by hooks or `exec` keybinds | Applied to processes spawned after the reload; already running clients keep the old environment |
+| [`XKB_DEFAULT_LAYOUT`](#xkb-variables) and the other XKB variables | Applied to keyboards connected after the reload; existing keyboards keep their compiled keymap |
+| [`MORPH_DBG`](#morph-dbg), [`MORPH_LOG_DIR`](#morph-log-dir), [`MORPH_X11`](#morph-x11), [`MORPH_X11_DISPLAY`](#morph-x11-display), [`LD_LIBRARY_PATH`](#ld-library-path) | Needs a session restart: the launcher consumes these before it starts the compositor |
+| [`MORPH_CONFIG`](#morph-config) | Needs a session restart; a reload re-reads the config path resolved at startup |
+
+Deleting or commenting out a line does not revert the variable. The running process has
+no record of the value the launcher started with, so only assignments are visible to a
+reload. Set the variable to its previous value explicitly, or restart the session.
+
+Keep environment files to assignments. Reload sources them synchronously, so a file that
+waits for input or blocks on a slow command blocks the compositor with it. Put session
+components and other long-running work in the `reload` hook instead; see
+[`Reload Resolution`](LAUNCHER.md#reload-resolution) in `docs/LAUNCHER.md`.
+
 <a id="launcher-variables"></a>
 ## Launcher Variables
 
@@ -111,6 +146,21 @@ Note:
 
 Optional path to an environment override file.
 If set and readable, it is sourced before launcher defaults are applied.
+
+Both wrappers export the resolved path, so a later [config reload](#reload-behavior)
+re-sources the same system environment file the launcher used.
+
+<a id="morph-caller-overrides"></a>
+### MORPH_CALLER_OVERRIDES
+
+Internal wrapper list of the variables the caller passed on the launcher command line,
+separated by spaces.
+
+- exported by [`morph-session`](../scripts/morph-session) and [`testing/morph-session_dbg`](../testing/morph-session_dbg)
+- a [config reload](#reload-behavior) skips these names so environment files cannot take
+  over the highest-priority layer of the [resolution order](#resolution-order)
+
+Normally users do not need to set it manually.
 
 <a id="morph-user-config-dir"></a>
 ### MORPH_USER_CONFIG_DIR
