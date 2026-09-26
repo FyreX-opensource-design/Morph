@@ -674,7 +674,17 @@ static int test_window_cycle_actions_parse(void)
         "[bind]\n"
         "mods = Super\n"
         "key = k\n"
-        "action = FOCUS_PREV\n";
+        "action = FOCUS_PREV\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super\n"
+        "key = BackSpace\n"
+        "action = nextWindow\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super+Alt\n"
+        "key = BackSpace\n"
+        "action = prevWindow\n";
 
     char path[128];
     if (!write_temp_file(cfg_text, path, sizeof(path)))
@@ -686,14 +696,16 @@ static int test_window_cycle_actions_parse(void)
     struct comp_config *cfg = NULL;
     bool ok = comp_config_load(path, &cfg);
     unlink(path);
-    if (!ok || !cfg || cfg->n_binds != 4)
+    if (!ok || !cfg || cfg->n_binds != 6)
     {
-        fprintf(stderr, "expected four window-cycle binds\n");
+        fprintf(stderr, "expected six window-cycle binds\n");
         comp_config_free(cfg);
         return 1;
     }
 
     const enum comp_keybind_action want[] = {
+        COMP_KEYBIND_WINDOW_NEXT,
+        COMP_KEYBIND_WINDOW_PREV,
         COMP_KEYBIND_WINDOW_NEXT,
         COMP_KEYBIND_WINDOW_PREV,
         COMP_KEYBIND_WINDOW_NEXT,
@@ -708,6 +720,18 @@ static int test_window_cycle_actions_parse(void)
             comp_config_free(cfg);
             return 1;
         }
+    }
+
+    if (comp_config_window_cycle_hold_mods(cfg, &cfg->binds[0]) != WLR_MODIFIER_ALT ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[1]) != WLR_MODIFIER_ALT ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[2]) != WLR_MODIFIER_LOGO ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[3]) != WLR_MODIFIER_LOGO ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[4]) != WLR_MODIFIER_LOGO ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[5]) != WLR_MODIFIER_LOGO)
+    {
+        fprintf(stderr, "window-cycle bindings did not derive their shared hold modifiers\n");
+        comp_config_free(cfg);
+        return 1;
     }
 
     comp_config_free(cfg);

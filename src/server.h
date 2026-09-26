@@ -92,6 +92,8 @@ struct comp_output
 	struct comp_server *server;
 	struct wlr_output *wlr_output;
 	struct wlr_scene_output *scene_output;
+	/** Force one scene commit after compositor-owned UI visibility changes. */
+	bool force_scene_frame;
 	/** Layout coords: full output box minus layer-shell exclusive zones (updated in layer_shell_arrange). */
 	struct wlr_box layer_workarea;
 	/** Scroll column index per workspace (scroll layout); independent per physical output. */
@@ -439,8 +441,10 @@ void server_window_focus_cycle(struct comp_server *server, int delta);
  * When `hold_mods` is non-zero the step joins (or starts) a held-modifier
  * session: the candidate list is frozen and focus history is only reordered once
  * the modifiers are released, so holding Alt and tapping Tab walks every window.
- * Shift is ignored for this purpose so that a forward and a backward bind share
- * one session. When nothing is left to hold, the step commits immediately,
+ * The caller passes the shared modifier bits of the forward and backward
+ * bindings. Any extra modifier may select direction without restarting the
+ * session. If no shared bits remain, the step commits immediately because
+ * there is no modifier whose release could end a held session,
  * matching `server_window_focus_cycle`.
  */
 void server_window_cycle_step(struct comp_server *server, int delta, uint32_t hold_mods);

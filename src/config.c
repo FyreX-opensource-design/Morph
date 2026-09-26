@@ -900,6 +900,59 @@ static bool keysym_matches_bind(xkb_keysym_t want, xkb_keysym_t got) {
 	return xkb_keysym_to_lower(want) == xkb_keysym_to_lower(got);
 }
 
+/** Count the modifier bits set in a wlroots modifier mask. */
+static unsigned modifier_bit_count(uint32_t mods)
+{
+	unsigned count = 0;
+	while (mods != 0)
+	{
+		count += mods & 1u;
+		mods >>= 1;
+	}
+	return count;
+}
+
+uint32_t comp_config_window_cycle_hold_mods(const struct comp_config *cfg,
+                                             const struct comp_keybind *bind)
+{
+	if (!bind || (bind->action != COMP_KEYBIND_WINDOW_NEXT &&
+			  bind->action != COMP_KEYBIND_WINDOW_PREV))
+	{
+		return bind ? bind->mods : 0;
+	}
+	if (!cfg || !cfg->binds)
+	{
+		return bind->mods;
+	}
+
+	const enum comp_keybind_action opposite = bind->action == COMP_KEYBIND_WINDOW_NEXT
+		? COMP_KEYBIND_WINDOW_PREV
+		: COMP_KEYBIND_WINDOW_NEXT;
+	uint32_t best = bind->mods;
+	unsigned best_count = 0;
+	for (size_t i = 0; i < cfg->n_binds; i++)
+	{
+		const struct comp_keybind *candidate = &cfg->binds[i];
+		/* Only the matching opposite-direction bind defines this session's hold mask. */
+		if (candidate == bind || candidate->action != opposite ||
+			!keysym_matches_bind(candidate->keysym, bind->keysym) ||
+			!comp_keybind_when_ok(candidate))
+		{
+			continue;
+		}
+		/* Common bits keep the session held; non-common bits remain direction selectors. */
+		const uint32_t common = bind->mods & candidate->mods;
+		const unsigned count = modifier_bit_count(common);
+		/* Prefer the most specific common mask if several candidates match. */
+		if (count > best_count)
+		{
+			best = common;
+			best_count = count;
+		}
+	}
+	return best;
+}
+
 bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *server,
 							  bool key_pressed, uint32_t mods_filtered, xkb_keysym_t sym) {
 	if (!key_pressed || !cfg || !cfg->binds || !sym) {
@@ -1020,10 +1073,10 @@ bool comp_config_try_bindings(struct comp_config *cfg, struct comp_server *serve
 			return true;
 		}
 		case COMP_KEYBIND_WINDOW_NEXT:
-			server_window_cycle_step(server, 1, b->mods);
+			server_window_cycle_step(server, 1, comp_config_window_cycle_hold_mods(cfg, b));
 			return true;
 		case COMP_KEYBIND_WINDOW_PREV:
-			server_window_cycle_step(server, -1, b->mods);
+			server_window_cycle_step(server, -1, comp_config_window_cycle_hold_mods(cfg, b));
 			return true;
 		}
 	}

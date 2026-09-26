@@ -345,6 +345,11 @@ static void toplevel_set_minimized(struct comp_toplevel *view, bool minimized)
 	{
 		server_arrange_toplevels(view->server);
 	}
+	if (minimized)
+	{
+		/* A frozen cycle must never retain a view that is no longer focusable. */
+		window_cycle_forget(view->server, view);
+	}
 	foreign_toplevel_refresh(view);
 }
 
@@ -1195,24 +1200,62 @@ static void output_frame(struct wl_listener *listener, void *data)
 	struct wlr_output *clock_out = primary_wlr_output(server);
 	const bool run_layout_anim = clock_out && output->wlr_output == clock_out;
 	const bool layout_anim = run_layout_anim && layout_anim_tick(server, &now);
+	const bool force_scene_frame = output->force_scene_frame;
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	const bool log_frames = kdbg && kdbg[0] && strcmp(kdbg, "0") != 0;
 
-	if (!wlr_scene_output_needs_frame(output->scene_output) && !layout_anim)
+	if (log_frames && force_scene_frame)
+	{
+		wlr_log(WLR_INFO, "output-frame: forced scene commit output=%s needs=%d",
+			output->wlr_output->name, wlr_scene_output_needs_frame(output->scene_output));
+	}
+
+	/* A scene-node visibility change can be queued after damage was evaluated. */
+	if (!wlr_scene_output_needs_frame(output->scene_output) && !layout_anim && !force_scene_frame)
 	{
 		return;
 	}
 
-	if (!wlr_scene_output_commit(output->scene_output, NULL))
+	bool committed;
+	if (force_scene_frame)
 	{
-		if (layout_anim)
+		/* wlr_scene_output_commit() skips the backend commit when it sees no
+		 * pending damage. Use a full damage region so a hidden UI tree is
+		 * actually presented to the output. */
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		if (!wlr_scene_output_build_state(output->scene_output, &state, NULL))
 		{
-			struct comp_output *o;
-			wl_list_for_each(o, &server->outputs, link)
-			{
-				wlr_output_schedule_frame(o->wlr_output);
-			}
+			wlr_output_state_finish(&state);
+			wlr_output_schedule_frame(output->wlr_output);
+			return;
+		}
+		pixman_region32_t damage;
+		pixman_region32_init_rect(&damage, 0, 0, output->wlr_output->width,
+			output->wlr_output->height);
+		wlr_output_state_set_damage(&state, &damage);
+		committed = wlr_output_commit_state(output->wlr_output, &state);
+		pixman_region32_fini(&damage);
+		wlr_output_state_finish(&state);
+	}
+	else
+	{
+		committed = wlr_scene_output_commit(output->scene_output, NULL);
+	}
+	if (!committed)
+	{
+		if (layout_anim || force_scene_frame)
+		{
+			wlr_output_schedule_frame(output->wlr_output);
 		}
 		return;
 	}
+	if (log_frames && force_scene_frame)
+	{
+		wlr_log(WLR_INFO, "output-frame: forced scene commit completed output=%s",
+			output->wlr_output->name);
+	}
+	output->force_scene_frame = false;
 	wlr_scene_output_send_frame_done(output->scene_output, &now);
 
 	if (layout_anim)
@@ -1421,6 +1464,18 @@ static bool layer_popup_unconstrain(struct comp_layer_popup *popup)
 		wlr_output_layout_get_box(popup->layer->server->output_layout,
 								  popup->layer->layer_surface->output, &box);
 	}
+	/* xdg_popup_unconstrain_from_box() expects coordinates relative to the
+	 * popup parent. layer_workarea is in global layout coordinates, so convert
+	 * it from the layer surface's scene position before applying the constraint.
+	 * This lets a bottom-panel popup use the space above the panel. */
+	int layer_x = 0;
+	int layer_y = 0;
+	if (popup->layer->scene_layer && popup->layer->scene_layer->tree)
+	{
+		wlr_scene_node_coords(&popup->layer->scene_layer->tree->node, &layer_x, &layer_y);
+	}
+	box.x -= layer_x;
+	box.y -= layer_y;
 	wlr_xdg_popup_unconstrain_from_box(popup->wlr_popup, &box);
 	return true;
 }
@@ -2879,6 +2934,7 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 		}
 		return;
 	}
+	server->focused_toplevel = toplevel;
 	if (prev && toplevel_surface_initialized(prev))
 	{
 		log_xdg_state("focus:deactivate-prev", prev);
@@ -2892,7 +2948,6 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 	{
 		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
 	}
-	server->focused_toplevel = toplevel;
 	/* Alt-Tab previews must not reorder history mid-session, or the frozen ring
 	 * would no longer match what the next step walks. Committed on modifier release. */
 	if (toplevel->focus_listed && !server->cycle.suppress_mru)
@@ -4154,12 +4209,28 @@ static void window_cycle_preview(struct comp_server *server, struct comp_topleve
 /** Hide the switcher overlay without ending the session. */
 static void window_cycle_overlay_hide(struct comp_server *server)
 {
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	const bool log_overlay = kdbg && kdbg[0] && strcmp(kdbg, "0") != 0;
+	if (log_overlay && server->cycle.overlay.tree)
+	{
+		wlr_log(WLR_INFO, "switcher: hide before enabled=%d buffer=%d",
+			server->cycle.overlay.tree->node.enabled,
+			server->cycle.overlay.buffer && server->cycle.overlay.buffer->buffer != NULL);
+	}
 	comp_ui_overlay_hide(&server->cycle.overlay);
+	if (log_overlay && server->cycle.overlay.tree)
+	{
+		wlr_log(WLR_INFO, "switcher: hide after enabled=%d buffer=%d",
+			server->cycle.overlay.tree->node.enabled,
+			server->cycle.overlay.buffer && server->cycle.overlay.buffer->buffer != NULL);
+	}
 	struct comp_output *o;
 	wl_list_for_each(o, &server->outputs, link)
 	{
 		if (o->wlr_output)
 		{
+			/* Keep the hide visible even if wlroots has already cleared scene damage. */
+			o->force_scene_frame = true;
 			wlr_output_schedule_frame(o->wlr_output);
 		}
 	}
@@ -4279,6 +4350,12 @@ bool server_window_cycle_active(const struct comp_server *server)
 
 void server_window_cycle_notify_mods(struct comp_server *server, uint32_t depressed)
 {
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	if (kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && server && server->cycle.active)
+	{
+		wlr_log(WLR_INFO, "window-cycle: modifiers depressed=0x%x hold=0x%x",
+			depressed, server->cycle.hold_mods);
+	}
 	if (!server || !server->cycle.active)
 	{
 		return;
@@ -4289,10 +4366,25 @@ void server_window_cycle_notify_mods(struct comp_server *server, uint32_t depres
 	}
 }
 
-/** Drop a dying toplevel from the active session so the frozen ring stays valid. */
+/** Drop an unavailable toplevel from the active session so the frozen ring stays valid. */
 static void window_cycle_forget(struct comp_server *server, struct comp_toplevel *view)
 {
 	if (!server->cycle.active)
+	{
+		return;
+	}
+	size_t removed = server->cycle.len;
+	size_t out = 0;
+	for (size_t i = 0; i < server->cycle.len; i++)
+	{
+		if (server->cycle.ring[i] == view)
+		{
+			removed = i;
+			continue;
+		}
+		server->cycle.ring[out++] = server->cycle.ring[i];
+	}
+	if (removed == server->cycle.len)
 	{
 		return;
 	}
@@ -4300,18 +4392,10 @@ static void window_cycle_forget(struct comp_server *server, struct comp_toplevel
 	{
 		server->cycle.origin = NULL;
 	}
-	size_t out = 0;
-	for (size_t i = 0; i < server->cycle.len; i++)
+	/* Keep the same selected object when an earlier ring entry disappears. */
+	if (removed < server->cycle.index)
 	{
-		if (server->cycle.ring[i] == view)
-		{
-			if (i < server->cycle.index && server->cycle.index > 0)
-			{
-				server->cycle.index--;
-			}
-			continue;
-		}
-		server->cycle.ring[out++] = server->cycle.ring[i];
+		server->cycle.index--;
 	}
 	server->cycle.len = out;
 	if (out == 0)
@@ -4331,6 +4415,16 @@ void server_window_focus_cycle(struct comp_server *server, int delta)
 {
 	if (!server || delta == 0)
 	{
+		return;
+	}
+	if (server->cycle.active && server->cycle.len > 0)
+	{
+		/* IPC focus changes during Alt-Tab must move the frozen selection as well. */
+		const size_t current = window_cycle_find_focused(server, server->cycle.ring, server->cycle.len);
+		const size_t base = current < server->cycle.len ? current : server->cycle.index;
+		server->cycle.index = window_cycle_wrap(base, delta, server->cycle.len);
+		window_cycle_preview(server, server->cycle.ring[server->cycle.index]);
+		window_cycle_overlay_sync(server);
 		return;
 	}
 	struct comp_toplevel **ring = NULL;
@@ -4358,15 +4452,9 @@ void server_window_cycle_step(struct comp_server *server, int delta, uint32_t ho
 	{
 		return;
 	}
-	/*
-	 * Shift selects direction rather than holding the session open: Alt+Tab and
-	 * Alt+Shift+Tab must share one ring so that shift-tabbing backwards mid-cycle
-	 * does not restart it. Masking Shift out makes both chords agree on Alt.
-	 */
-	hold_mods &= ~(uint32_t)WLR_MODIFIER_SHIFT;
 	if (hold_mods == 0)
 	{
-		/* No modifier to wait for, so there is nothing to hold the ring open. */
+		/* No shared modifier remains, so there is nothing to hold the ring open. */
 		server_window_focus_cycle(server, delta);
 		return;
 	}
@@ -5451,22 +5539,27 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data)
 	}
 
 	const bool pressed = event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
-	if (pressed)
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	const bool log_keys = kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && sym != XKB_KEY_NoSymbol;
+	char key_name[128] = {0};
+	if (log_keys && xkb_keysym_get_name(sym, key_name, sizeof(key_name)) < 0)
 	{
-		const char *kdbg = getenv("MORPH_LOG_KEYS");
-		if (kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && sym != XKB_KEY_NoSymbol)
-		{
-			char name[128];
-			if (xkb_keysym_get_name(sym, name, sizeof(name)) < 0)
-			{
-				snprintf(name, sizeof(name), "(bad)");
-			}
-			wlr_log(WLR_INFO, "keyboard: keysym=%s mods=0x%x", name, mods_filtered);
-		}
+		snprintf(key_name, sizeof(key_name), "(bad)");
+	}
+	if (log_keys)
+	{
+		wlr_log(WLR_INFO, "keyboard: %s keysym=%s mods_before=0x%x",
+			pressed ? "press" : "release", key_name, mods_filtered);
 	}
 
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
 	wlr_keyboard_notify_key(wlr_kbd, event);
+	if (log_keys)
+	{
+		wlr_log(WLR_INFO, "keyboard: %s keysym=%s mods_after=0x%x",
+			pressed ? "press" : "release", key_name,
+			wlr_kbd->modifiers.depressed & COMP_BIND_MOD_FILTER);
+	}
 	if (pressed && sym == XKB_KEY_Escape && server_window_cycle_active(kbd->server))
 	{
 		/* Swallow the Esc: it aborts the switcher rather than reaching the window. */

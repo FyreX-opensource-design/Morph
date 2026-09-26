@@ -158,6 +158,16 @@ void comp_config_run_shutdown(const struct comp_config *cfg);
 bool comp_keybind_when_ok(const struct comp_keybind *bind);
 
 /**
+ * Derive the modifier bits that keep a nextWindow/prevWindow session open.
+ * Matching opposite-direction bindings share their common modifiers; any
+ * additional modifier can select the direction without restarting the session.
+ * If no matching opposite-direction bind exists, the bind's own modifiers are
+ * retained so existing one-direction configurations keep their behavior.
+ */
+uint32_t comp_config_window_cycle_hold_mods(const struct comp_config *cfg,
+                                             const struct comp_keybind *bind);
+
+/**
  * Run keybinds for a physical key. `mods_filtered` and `sym` must be sampled
  * from the keyboard *before* wlr_keyboard_notify_key() updates XKB state.
  */

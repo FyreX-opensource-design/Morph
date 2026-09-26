@@ -16,59 +16,156 @@ Morph currently builds against the following primary dependencies:
 | meson | meson | meson | 1.11 |
 | pkgconf | pkg-config | pkgconf-pkg-config | 2.5 |
 | wlroots0.20 | libwlroots-0.20-dev | wlroots-devel | 0.20.2 |
-| lib32-wayland | libwayland-server0³ | libwayland-server³ | 1.25 |
-| xwayland-satellite | not available¹ | xwayland-satellite | 0.8 |
-| wayland-protocols | wayland-protocols | wayland-protocols-devel | 1.49 |
-| wlr-protocols | not available² | wlr-protocols-devel | |
+| lib32-wayland | libwayland-server0 ⁰ ² | libwayland-server ² | 1.24 |
+| xwayland-satellite | not available ¹ | xwayland-satellite | 0.8 |
+| wayland-protocols | wayland-protocols ⁰ | wayland-protocols-devel | 1.49 |
+| wlr-protocols | not available ⁰ | wlr-protocols-devel | 1.47 |
 | xdg-desktop-portal-wlr | xdg-desktop-portal-wlr | xdg-desktop-portal-wlr | 0.84 |
 | xdg-desktop-portal-gtk | xdg-desktop-portal-gtk | xdg-desktop-portal-gtk | 1.15 |
-| wayland| wayland-scanner³ | wayland-scanner³ | 1.25 |
-| libxkbcommon | libxkbcommon-dev | libxkbcommon | 1.13 |
-| pixman | pixman-1-dev | pixman-1-dev | 0.44 |
+| wayland| wayland-scanner ⁰ ² | wayland-scanner ² | 1.24 |
+| libxkbcommon | libxkbcommon-dev ⁰ | libxkbcommon | 1.8 |
+| pixman | pixman-1-dev ⁰ | pixman-1-dev | 0.46 |
+| libdrm |libdrm-dev ⁰ | libdrm-dev | 2.4.129 |
 
 - POSIX shell `sh`
 
-¹ `xwayland-satellite` has no official package in Debian repositories. To use it on Debian, install Rust and Cargo, then compile it manually using Cargo.
+#### Debian Stable
+Since Morph has switched to wlroots 0.20.2 most of the needed package versions are not available in Debian 12 Bookworm (Stable). The necessary steps are outlined below.
 
-Install build tools and XCB libraries via apt:
+⁰ These packages are build with meson. So the process is always the same for:
+- wayland (wayland-scanner, libwayland-server0)
+- wayland-protocols (https://gitlab.freedesktop.org/wayland/wayland-protocols.git, 1.47)
+- wlr-protocols (https://gitlab.freedesktop.org/wlroots/wlr-protocols.git, -/-)
+- libxkbcommon (https://github.com/xkbcommon/libxkbcommon.git, xkbcommon-1.8.0)
+- pixman-1 (https://gitlab.freedesktop.org/pixman/pixman.git, pixman-0.46.0)
+- libdrm (https://gitlab.freedesktop.org/mesa/drm.git, libdrm-2.4.129)
+
+##### Clone the package source and checkout the needed version
+```bash
+git clone https://gitlab.freedesktop.org/wayland/wayland.git
+cd wayland
+git checkout 1.24.0
+```
+
+**Option A:** Install locally into ~/.local (Recommended)
+```bash
+meson setup build --prefix=$HOME/.local -Ddocumentation=false
+ninja -C build install
+```
+
+Meson call deviations:
+- libdrm:
+```bash
+meson setup build --prefix=$HOME/.local -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled -Dnouveau=disabled
+```
+
+- libxkbcommon:
+```bash
+meson setup build --prefix=$HOME/.local -Denable-docs=false -Denable-tools=false -Denable-x11=true
+```
+
+- pixman-1:
+```bash
+meson setup build --prefix=$HOME/.local -Dgtk=disabled -Dtests=disabled
+```
+
+###### Checking environment variables
+To ensure that Meson finds the new wayland-server.pc in ~/.local (and not an old system version) when compiling wlroots, the paths must be set correctly:
+```bash
+export PKG_CONFIG_PATH="$HOME/.local/lib/x86_64-linux-gnu/pkgconfig:$HOME/.local/share/pkgconfig:$PKG_CONFIG_PATH"
+pkg-config --modversion wayland-server
+# Output should be: 1.24.0
+```
+
+If pkg-config still reports the old version, quickly check whether the .pc file ended up in $HOME/.local/lib/pkgconfig or $HOME/.local/lib/x86_64-linux-gnu/pkgconfig and adjust PKG_CONFIG_PATH accordingly:
+```bash
+find ~/.local -name "*wayland-server*.*"
+```
+
+**Option B:** Install system-wide (Alternative)
+```bash
+meson setup build -Ddocumentation=false
+ninja -C build
+sudo ninja -C build install
+```
+
+**Note:** If you install packages locally into ~/.local, make sure that in Morph's environment file LD_LIBRARY_PATH is uncommented and includes the correct library path ~/.local/lib/x86_64-linux-gnu (or ~/.local/lib).
+
+##### ¹ `xwayland-satellite`
+This application has no official package in Debian repositories. To use it, install Rust and Cargo, then compile it manually using Cargo.
+
+###### Install build tools and XCB libraries via apt:
 ```bash
 sudo apt install -y cargo rustc libxcb1-dev libxcb-composite0-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libclang-dev
 ```
 
-Ensure xwayland is installed on your system:
+###### Ensure xwayland is installed on your system:
 ```bash
 sudo apt install xwayland
 ```
 
-Clone repository and build:
+###### Clone xwayland-satellite repository and build:
 ```bash
 git clone https://github.com/Supreeeme/xwayland-satellite.git
 cd xwayland-satellite
 cargo build --release
 ```
 
-Make available system-wide:
+**Option A:** Install locally into ~/.local (Recommended)
+```bash
+cargo install --path . --root $HOME/.local
+```
+
+**Option B:** Install system-wide (Alternative)
 ```bash
 sudo cp target/release/xwayland-satellite /usr/local/bin/
 ```
 
-² `wlr-protocols` has no official package in Debian repositories. To use it on Debian, it has to be build from source.
-
-clone the repository:
+###### Verify that the executable is present and accessible:
 ```bash
-git clone https://gitlab.freedesktop.org/wlroots/wlr-protocols.git
-cd wlr-protocols
+which xwayland-satellite
+# Output should be: $HOME/.local/xwayland-satellite or /usr/local/bin/xwayland-satellite
 ```
 
-Build and install them system-wide:
+##### wlroots
+Now (hopefully) all needed build dependencies for wlroots 0.20.2 are available.
+
+###### Clone the wlroots repository and checkout version 0.20.2:
 ```bash
-make
-sudo make install
+git clone https://gitlab.freedesktop.org/wlroots/wlroots.git
+cd wlroots
+git fetch --tags origin
+git checkout 0.20.2
 ```
 
-³ `wayland-scanner` and `libwayland-server` is in Debian and Fedora included in `libwayland-dev`.
+###### Set PKG_CONFIG_PATH so Meson finds the locally installed libraries:
+```bash
+export PKG_CONFIG_PATH="$HOME/.local/lib/x86_64-linux-gnu/pkgconfig:$HOME/.local/lib/pkgconfig:$HOME/.local/share/pkgconfig:$PKG_CONFIG_PATH"
+```
 
-Version note:
+**Option A:** Install locally into ~/.local (Recommended)
+```bash
+meson setup build --prefix=$HOME/.local
+ninja -C build install
+```
+
+**Option B:** Install system-wide (Alternative)
+```bash
+meson setup build
+ninja -C build
+sudo ninja -C build install
+```
+
+###### Verify the installation:
+```bash
+pkg-config --modversion wlroots-0.20
+# Output should be: 0.20.2
+```
+
+##### ² Other Package notes:
+`wayland-scanner` and `libwayland-server` is in Debian and Fedora included in `libwayland-dev`.
+
+##### Version note
 
 - `meson.build` currently enforces `wayland-protocols >= 1.32` directly
 - the other `>=` values are practical orientation points from the currently
