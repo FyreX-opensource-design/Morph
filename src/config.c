@@ -896,6 +896,13 @@ static bool keysym_matches_bind(xkb_keysym_t want, xkb_keysym_t got) {
 	if (want == XKB_KEY_NoSymbol || got == XKB_KEY_NoSymbol) {
 		return false;
 	}
+	/* XKB resolves Shift+Tab to ISO_Left_Tab on many keymaps. Modifier matching
+	 * remains exact, so treating the keysyms as aliases cannot trigger a shifted
+	 * binding unless Shift is actually depressed. */
+	if ((want == XKB_KEY_Tab && got == XKB_KEY_ISO_Left_Tab) ||
+		(want == XKB_KEY_ISO_Left_Tab && got == XKB_KEY_Tab)) {
+		return true;
+	}
 	/* CapsLock / layout quirks can differ in letter case between config and XKB. */
 	return xkb_keysym_to_lower(want) == xkb_keysym_to_lower(got);
 }

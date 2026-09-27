@@ -1,8 +1,8 @@
-# Morph Test Report for Branch `window-focus` (as of 2026-09-26)
+# Morph Test Report for Branch `window-focus` (as of 2026-09-27)
 
 This report is a practical manual checklist for the current `window-focus` work: MRU window cycling, configurable focus policies, held `Alt+Tab` with a compositor-owned switcher overlay, CLI/IPC triggers, and the startup-hook path fixes (`~` expansion and `/etc/morph` fallback). Tick items while testing and add notes next to them if useful.
 
-Last checked against commit `6977e82` plus the current worktree changes described in this report.
+Last checked against commit `e99f0e9` plus the current worktree changes described in this report.
 
 Relevant commits on this branch:
 
@@ -13,6 +13,7 @@ Relevant commits on this branch:
 - `562e523` focus policies and window-focus cycling (`ClickToFocus`, `FocusFollowsMouse`, `SloppyFocus`)
 - `a4a8091` stabilized panel focus and pointer hit testing
 - `a1b9d65` added XDG activation focus routing
+- `e99f0e9` stabilized Alt-Tab, focus handling, and panel integration
 
 **Note:** Overlay and keybind checks need a real nested or native Morph session with at least two mapped windows. IPC/CLI cycling can be driven from a second host terminal. Hook-path checks need the managed wrapper (`scripts/morph-session` or `testing/morph-session_dbg`).
 
@@ -22,6 +23,7 @@ Relevant commits on this branch:
 - `[x]` Tested successfully
 - `[!]` Tested with notes or known limitation
 - `[n/a]` Not applicable
+- `NEW` Additional edge-case test for the focus-cycling session
 
 Expected:
 
@@ -533,18 +535,28 @@ Expected:
 
 ## 12. Reduced Cross-Distro Matrix
 
-Run this reduced matrix on Debian, Fedora, and Arch-based systems. The focus is Alt-Tab, focus policies, and related edge cases; package versions are build prerequisites only.
+This section validates the installed runtime path on three additional distributions.
+
+The matrix focuses on Alt-Tab, focus policies, and directly related edge cases. Package names and library versions are checked only as prerequisites for the runtime build.
 
 | Test | Debian | Fedora | Arch |
 |---|---|---|---|
-| Automated build and tests | [ ] | [ ] | [ ] |
-| One short nested smoke test | [ ] | [ ] | [ ] |
-| Runtime installation | [ ] | [ ] | [ ] |
-| Native Morph login | [ ] | [ ] | [ ] |
-| Focus policies and cycling matrix | [ ] | [ ] | [ ] |
-| Clean runtime shutdown | [ ] | [ ] | [ ] |
+| Automated build and test run succeeds | [ ] | [ ] | [x] |
+| One short nested smoke test succeeds | [ ] | [ ] | [x] |
+| Runtime build and installation succeed | [ ] | [ ] | [x] |
+| Morph session is available in the display manager | [ ] | [ ] | [x] |
+| Native Morph session starts after logging in again | [ ] | [ ] | [x] |
+| Focus policies | [ ] | [ ] | [x] |
+| Immediate cycle and IPC/CLI | [ ] | [ ] | [x] |
+| Held Alt-Tab switcher and Esc | [ ] | [ ] | [x] |
+| Workspaces, minimize, and close | [ ] | [ ] | [x] |
+| Layouts and panel workarea | [ ] | [ ] | [x] |
 
-### 12.1 Build, tests, and nested smoke
+### 12.1 Automated Build and Test Run
+
+[ ] **Build and run the automated tests**
+
+First change to the project directory:
 
 ```bash
 meson setup build --reconfigure
@@ -552,31 +564,176 @@ meson compile -C build
 meson test -C build --print-errorlogs
 ```
 
-Start one nested session with `scripts/morph-session`, open one terminal, and exit with `quit`. Do not repeat the full focus matrix nested.
+Expected: `morph` and `morph-test-config` compile, and the `config` and `shell-runtime` tests pass. This does not replace a native session test; it only confirms that the distribution can build the current source and run the automated contracts.
 
-### 12.2 Install runtime and verify helpers
+### 12.2 One Short Nested Smoke Test
+
+[ ] **Start nested Morph once and exit cleanly**
+
+Run this short test before logging out of the current desktop session. Change to the project directory and run:
+
+```bash
+MORPH_ROOT="$PWD" \
+MORPH_BIN="$MORPH_ROOT/build/morph" \
+MORPH_SYSTEM_HOOK_DIR="$MORPH_ROOT/scripts" \
+MORPH_SYSTEM_CONFIG_DIR="$MORPH_ROOT/config" \
+MORPH_SYSTEM_CONFIG_FILE="$MORPH_ROOT/config/morph.conf" \
+MORPH_LOG_DIR="/tmp/morph-distro-nested" \
+sh "$MORPH_ROOT/scripts/morph-session"
+```
+
+Only verify startup, one terminal window, and `quit`; do not repeat the focus-cycling matrix in the nested session. Then inspect the startup log:
+
+```bash
+cat /tmp/morph-distro-nested/morph-nested-startup.log
+```
+
+Expected:
+
+- The wrapper selects `nested-x11` or `nested-wayland`.
+- Morph starts and accepts at least one terminal window.
+- Morph exits cleanly after `quit`.
+
+### 12.3 Install the Runtime
+
+[ ] **Install the runtime on the distribution**
+
+Run this before logging out of the current desktop session:
 
 ```bash
 ./scripts/morph-install.sh --runtime
 command -v morph
 command -v morph-session
-morph --help
+ls -l /usr/share/wayland-sessions/morph.desktop
+ls -l /usr/bin/morph /usr/bin/morph-session /etc/morph/morph.conf
+```
+
+Expected:
+
+- `morph` and `morph-session` are available through `PATH`.
+- The display manager finds `morph.desktop`.
+- `morph --help` uses the installed binary.
+- `/etc/morph/` contains the runtime configuration and managed hook files.
+- On Arch-based systems, merged `/usr` and `PATH` ordering may cause `command -v` to report `/usr/sbin/morph` while `whereis` reports `/usr/bin/morph`. This is valid when `readlink -f /usr/sbin/morph` and `readlink -f /usr/bin/morph` resolve to the same binary.
+
+### 12.4 Compare Installed Helpers with the Checkout
+
+[ ] **The installed helper file matches the tested checkout**
+
+```bash
 diff -q scripts/shell-helpers.sh /etc/morph/shell-helpers.sh
 ```
 
-On Arch-based systems, `command -v` may report `/usr/sbin/morph` while `whereis` reports `/usr/bin/morph`. This is valid when `readlink -f /usr/sbin/morph` and `readlink -f /usr/bin/morph` resolve to the same binary.
+Expected: there is no difference after `scripts/morph-install.sh --runtime`. Otherwise, an older installed helper could still contain the already fixed tilde-expansion or fallback bug.
 
-### 12.3 Native Morph session
+### 12.5 `.bashrc` Preparation
 
-Log out, select **Morph** in the display manager, log in, and open three terminals titled WIN-A, WIN-B, and WIN-C. Click them in A, B, C order for deterministic focus history.
+Add the following aliases and functions to the test user's interactive `~/.bashrc`. `MORPH_ROOT` must point to the local Morph checkout. After installation, the test commands deliberately use the installed `morph` from `PATH`, not the checkout binary.
 
-Repeat the focus-policy checks from section 3.1; immediate next/prev; held Alt+Tab and reverse cycling; Esc cancel; workspace isolation; minimize, unmap, and close during cycling; and a short Stack/Tile/Scroll pass.
+```bash
+alias morph-ipc-next="morph --window-focus next"
+alias morph-ipc-prev="morph --window-focus prev"
 
-Expected: overlay marker, actual focus, and MRU selection remain consistent; hidden or closed windows never remain selectable; panel workarea remains correct.
+morph-runtime-log() {
+    local log_base="${XDG_STATE_HOME:-$HOME/.local/state}/morph"
+    tail -n 0 -F "$log_base/morph-startup.log" | \
+        rg --line-buffered "Selected session mode|Native Wayland|keyboard:|window-cycle:|switcher:|focus:|Compositor exited"
+}
 
-### 12.4 Runtime logs and shutdown
+morph-test-windows() {
+    alacritty --title WIN-A &
+    alacritty --title WIN-B &
+    alacritty --title WIN-C &
+}
+```
 
-Confirm native mode, startup/reload hook completion, policy restoration after reload, and `Compositor exited cleanly` in `${XDG_STATE_HOME:-$HOME/.local/state}/morph`.
+Run `morph-test-windows` only after logging in to Morph. Open additional terminals inside the Morph session for logging and IPC commands.
+
+### 12.6 Log Out and Back In to Morph
+
+[ ] **Start a native Morph session through the display manager**
+
+1. Log out of the current desktop session.
+2. Select **Morph** as the session in the display manager.
+3. Log in again.
+4. Open a terminal inside Morph and check:
+
+```bash
+printf "session=%s\n" "${XDG_CURRENT_DESKTOP:-unset}"
+printf "wayland=%s\n" "${WAYLAND_DISPLAY:-unset}"
+command -v morph
+command -v morph-session
+```
+
+Expected:
+
+- Morph runs as a native Wayland session with `WAYLAND_DISPLAY` set.
+- `morph-session` and `morph` come from the installed runtime path.
+- The startup log is `${XDG_STATE_HOME:-$HOME/.local/state}/morph/morph-startup.log`.
+- The log reports `Selected session mode: native-tty` or the corresponding native session identifier, not a nested mode.
+
+Then open three test windows:
+
+```bash
+morph-test-windows
+```
+
+Click the windows once in A, B, C order so focus history is deterministic for the following expectations.
+
+### 12.7 Reduced Focus-Cycling Matrix
+
+[ ] **Test focus policies**
+
+Use `morph --focus ClickToFocus`, `morph --focus FocusFollowsMouse`, and `morph --focus SloppyFocus` to repeat the tests from [section 3.1](#31-focus-policies): pointer motion, clicking a window, empty root, and behavior over the panel. Then restore the configured policy with `morph --reload-config`.
+
+[ ] **Test immediate cycle and IPC**
+
+Run `morph-ipc-next`, `morph-ipc-prev`, and `morph --window-focus next|prev`. Verify focus history, wrap-around, no overlay for single-shot cycling, and equivalent behavior for the IPC aliases.
+
+[ ] **Test the held Alt-Tab switcher**
+
+With at least three windows, test Alt+Tab, Shift+Alt+Tab, repeated Tab presses, direction changes, and releasing Alt. The overlay, orange marker, actual focus, and MRU commit must remain consistent.
+
+[ ] **Test Esc cancellation**
+
+Cancel an active Alt-Tab session with Esc. The overlay must disappear, the original focus must return, and Esc must not be forwarded to the window.
+
+[ ] **Test workspaces, minimize, and close**
+
+Move one window to another workspace ([Workspace Isolation](#6-workspace-isolation)), minimize a window during a cycle session, and close another window. Hidden or closed windows must not remain selectable in the ring ([section 7](#7-minimize-close-and-empty-list)).
+
+[ ] **Test Stack, Tile, and Scroll**
+
+Run a short cycle in all three layouts. The overlay, focus, window positions, and panel-reserved workarea must remain correct.
+
+### 12.8 Runtime Logs and Clean Shutdown
+
+[ ] **Verify the native session and lifecycle**
+
+In another terminal:
+
+```bash
+morph-runtime-log
+```
+
+Or check directly:
+
+```bash
+LOG_BASE="${XDG_STATE_HOME:-$HOME/.local/state}/morph"
+rg -n "Selected session mode|Native Wayland|Startup hook completed|Starting managed reload hook|Managed reload hook completed|Compositor exited cleanly" \
+  "$LOG_BASE"/morph-startup.log "$LOG_BASE"/morph*.log
+```
+
+Expected:
+
+- The runtime wrapper and startup hook were loaded from the installation.
+- `morph --reload-config` returns successfully and the session remains active.
+- Reload restores the focus policy from the configuration file.
+- Morph exits cleanly through `quit`.
+
+If a distribution fails this native matrix, repeat only the affected full section of the main report. The cross-distribution matrix does not require another nested run.
+
+References: sections 3 through 11 of this report, `INSTALL.md`, `testing/test-howto_start-variants.nfo`, `sessions/morph.desktop`, `scripts/morph-install.sh`, `docs/CONFIG.md`, `docs/LAUNCHER.md`
 
 ## Open Follow-Ups
 
@@ -587,6 +744,6 @@ Confirm native mode, startup/reload hook completion, policy restoration after re
 
 ## Short Conclusion
 
-- Result: Debian Stable development-laptop checks in sections 0 through 10 are complete.
-- Blocking issues: none for starting the reduced distro tests.
-- Follow-up tests needed: Nathan must run section 11; Debian, Fedora, and Arch-based systems must complete section 12.
+- Result: Debian Stable development-laptop checks in sections 0 through 10 and the reduced Arch matrix in section 12 are complete.
+- Blocking issues: none currently known.
+- Follow-up tests needed: Nathan must run section 11; Debian and Fedora must complete section 12.

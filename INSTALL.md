@@ -387,6 +387,12 @@ There are dedicated Morph helper scripts that make building, installing, and uni
 
 # preview uninstall commands without changes
 ./scripts/morph-uninstall.sh --both --dry
+
+# force-remove runtime artifacts, including modified files
+./scripts/morph-uninstall.sh --runtime --force
+
+# force-remove debug artifacts, including links from another checkout
+./scripts/morph-uninstall.sh --debug --force
 ```
 
 Build script modes:
@@ -411,6 +417,8 @@ Uninstall script modes:
   and removes only matching repository-backed user links plus the system-visible
   debug session links
 - `--both` runs runtime uninstall first, then debug uninstall
+- `--force` removes selected artifacts even when they were modified or point at
+  another build. If `~/.config/morph` contains only symlinks (debug installation), it is deleted. If it contains any real file or directory, the complete directory is preserved as `~/.config/morph_bak` (or the next free numbered backup name).
 - `--dry` prints uninstall commands only
 
 Installed artifacts:

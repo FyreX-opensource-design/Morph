@@ -53,7 +53,7 @@ XKB_DEFAULT_LAYOUT=us
 XKB_DEFAULT_MODEL=pc105
 #XKB_DEFAULT_VARIANT=
 # grp:alt_shift_toggle is typically Left Alt + Left Shift
-XKB_DEFAULT_OPTIONS=grp:alt_shift_toggle
+#XKB_DEFAULT_OPTIONS=grp:alt_shift_toggle
 
 # X11 bridge controls (xwayland-satellite in compositor)
 # Empty MORPH_X11 means session-aware default in launcher.

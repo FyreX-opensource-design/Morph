@@ -358,10 +358,20 @@ static void toplevel_arrange_tile(struct comp_toplevel *v, int layout_x, int lay
 {
 	(void)layout_x;
 	(void)layout_y;
-	if (v->xdg_toplevel)
+	if (!v->xdg_toplevel)
 	{
-		toplevel_set_size(v, w, h);
+		return;
 	}
+	if (v->xdg_toplevel->current.maximized || v->xdg_toplevel->scheduled.maximized)
+	{
+		/* A maximized state lets clients retain the output-wide width even when a
+		 * narrower tile size is sent. Clear it in the same configure as the tile
+		 * dimensions so clients never observe a half-unmaximized transition. */
+		toplevel_set_maximized_size(v, false, w, h);
+		v->has_restore = false;
+		return;
+	}
+	toplevel_set_size(v, w, h);
 }
 
 /** True after `wlr_backend_start` so shutdown hook runs only for a real session. */
@@ -4962,6 +4972,7 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 	{
 		return;
 	}
+	const enum comp_layout previous_layout = server->layout;
 	server->layout = layout;
 	if (layout == COMP_LAYOUT_TILE || layout == COMP_LAYOUT_SCROLL)
 	{
@@ -4983,6 +4994,28 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 		wl_list_for_each(v, &server->toplevels, link)
 		{
 			v->layout_anim_tracked = false;
+			if ((previous_layout == COMP_LAYOUT_TILE || previous_layout == COMP_LAYOUT_SCROLL) &&
+				toplevel_surface_mapped(v) && v->xdg_toplevel)
+			{
+				int scene_x = v->scene_tree->node.x;
+				int scene_y = v->scene_tree->node.y;
+				int width = v->xdg_toplevel->base->geometry.width;
+				int height = v->xdg_toplevel->base->geometry.height;
+				if ((width <= 0 || height <= 0) && v->xdg_toplevel->base->surface)
+				{
+					width = v->xdg_toplevel->base->surface->current.width;
+					height = v->xdg_toplevel->base->surface->current.height;
+				}
+				if (width > 0 && height > 0)
+				{
+					/* Scroll keeps non-selected windows one or more output widths offscreen.
+					 * Normalize every mapped view, including minimized ones, while entering
+					 * stack so a later panel activation restores it inside the workarea. */
+					toplevel_clamp_floating_box_to_workarea(v,
+						&scene_x, &scene_y, &width, &height);
+					wlr_scene_node_set_position(&v->scene_tree->node, scene_x, scene_y);
+				}
+			}
 		}
 		server->layout_anim_last_ns = 0;
 		if (server->focused_toplevel)
@@ -4990,6 +5023,8 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 			wlr_scene_node_raise_to_top(&server->focused_toplevel->scene_tree->node);
 		}
 	}
+	server_workspace_apply_visibility(server);
+	foreign_toplevel_sync_all(server);
 	server_sync_xdg_decorations(server);
 	comp_config_sync_shell_env(server);
 }
