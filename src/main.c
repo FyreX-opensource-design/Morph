@@ -294,14 +294,15 @@ static void toplevel_set_maximized_size(struct comp_toplevel *view, bool maximiz
 	{
 		return;
 	}
-	const struct wlr_xdg_toplevel_state current = view->xdg_toplevel->current;
+	const struct wlr_xdg_toplevel_configure scheduled = view->xdg_toplevel->scheduled;
 	struct wlr_xdg_toplevel_configure configure = {
 		.maximized = maximized,
-		.fullscreen = current.fullscreen,
-		.resizing = current.resizing,
-		.activated = current.activated,
-		.suspended = current.suspended,
-		.tiled = current.tiled,
+		.fullscreen = scheduled.fullscreen,
+		.resizing = scheduled.resizing,
+		.activated = scheduled.activated,
+		.suspended = scheduled.suspended,
+		.tiled = scheduled.tiled,
+		.constrained = scheduled.constrained,
 		.width = width,
 		.height = height,
 	};
@@ -628,6 +629,32 @@ static void log_xdg_state(const char *tag, struct comp_toplevel *view)
 			toplevel->current.max_width, toplevel->current.max_height,
 			toplevel->pending.min_width, toplevel->pending.min_height,
 			toplevel->pending.max_width, toplevel->pending.max_height);
+}
+
+/** Trace foreign-toplevel restore ordering and the compositor/seat focus invariants. */
+static void log_foreign_focus_state(const char *tag, struct comp_toplevel *view,
+									int requested_minimized)
+{
+	if (!xdg_debug_logs_enabled || !view || !view->server || !view->xdg_toplevel ||
+		!view->xdg_toplevel->base)
+	{
+		return;
+	}
+	struct wlr_surface *surface = toplevel_wlr_surface(view);
+	struct wlr_surface *seat_surface = view->server->seat
+		? view->server->seat->keyboard_state.focused_surface
+		: NULL;
+	wlr_log(WLR_INFO,
+		"xdgdbg:%s app_id='%s' requested_minimized=%d minimized=%d visible=%d "
+		"compositor_focused=%d seat_focused=%d activated=current:%d,pending:%d,scheduled:%d "
+		"pending_configure=%u",
+		tag,
+		view->xdg_toplevel->app_id ? view->xdg_toplevel->app_id : "",
+		requested_minimized, view->minimized,
+		view->scene_tree ? view->scene_tree->node.enabled : 0,
+		view->server->focused_toplevel == view, surface && seat_surface == surface,
+		view->xdg_toplevel->current.activated, view->xdg_toplevel->pending.activated,
+		view->xdg_toplevel->scheduled.activated, view->pending_configure_serial);
 }
 
 /** Optional verbose trace for compositor-owned interactive resize state. */
@@ -2008,6 +2035,76 @@ static void toplevel_handle_set_app_id(struct wl_listener *listener, void *data)
 	foreign_toplevel_refresh(view);
 }
 
+/** Cancel a queued post-ACK keyboard re-enter before the view can change or disappear. */
+static void foreign_keyboard_reenter_idle_cancel(struct comp_toplevel *view)
+{
+	if (view && view->keyboard_reenter_idle)
+	{
+		wl_event_source_remove(view->keyboard_reenter_idle);
+		view->keyboard_reenter_idle = NULL;
+	}
+}
+
+/** Re-enter keyboard focus after the restored client has acknowledged its activation configure. */
+static void foreign_keyboard_reenter_idle(void *data)
+{
+	struct comp_toplevel *view = data;
+	view->keyboard_reenter_idle = NULL;
+	if (!view->server || view->server->focused_toplevel != view || view->minimized ||
+		!view->xdg_toplevel)
+	{
+		log_foreign_focus_state("foreign-activate:reenter-idle-skipped", view, -1);
+		return;
+	}
+	struct wlr_surface *surface = toplevel_wlr_surface(view);
+	struct wlr_seat *seat = view->server->seat;
+	if (!surface || !seat)
+	{
+		return;
+	}
+	/* Sending enter to the same seat surface is coalesced by wlroots. A real
+	 * leave/enter makes Electron consume the input it received after restore. */
+	wlr_seat_keyboard_notify_clear_focus(seat);
+	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(seat);
+	if (kbd)
+	{
+		wlr_seat_keyboard_notify_enter(seat, surface, kbd->keycodes, kbd->num_keycodes,
+			&kbd->modifiers);
+	}
+	else
+	{
+		wlr_seat_keyboard_notify_enter(seat, surface, NULL, 0, NULL);
+	}
+	log_foreign_focus_state("foreign-activate:reenter-after-configure-ack", view, -1);
+}
+
+/** Apply panel/task-switcher minimize requests before any following activation request. */
+static void foreign_toplevel_handle_request_minimize(struct wl_listener *listener, void *data)
+{
+	struct comp_toplevel *view = wl_container_of(listener, view, foreign_request_minimize);
+	struct wlr_foreign_toplevel_handle_v1_minimized_event *ev = data;
+	if (!view || !view->xdg_toplevel || !toplevel_surface_mapped(view) || !ev)
+	{
+		return;
+	}
+	/* Panels normally send unset_minimized followed by activate. Keeping those
+	 * operations separate gives clients a visibility transition before focus. */
+	log_foreign_focus_state("foreign-minimize:before", view, ev->minimized);
+	if (ev->minimized)
+	{
+		foreign_keyboard_reenter_idle_cancel(view);
+		view->foreign_restore_pending = false;
+		view->keyboard_reenter_on_configure = false;
+	}
+	else if (view->minimized)
+	{
+		/* Preserve this across duplicate unset requests until activate arrives. */
+		view->foreign_restore_pending = true;
+	}
+	toplevel_set_minimized(view, ev->minimized);
+	log_foreign_focus_state("foreign-minimize:after", view, ev->minimized);
+}
+
 /** Handle foreign-toplevel activate requests (bars/task switchers) with seat/workspace validation. */
 static void foreign_toplevel_handle_request_activate(struct wl_listener *listener, void *data)
 {
@@ -2021,6 +2118,7 @@ static void foreign_toplevel_handle_request_activate(struct wl_listener *listene
 	{
 		return;
 	}
+	log_foreign_focus_state("foreign-activate:before", view, -1);
 	if (view->workspace != view->server->current_workspace)
 	{
 		server_workspace_go(view->server, view->workspace);
@@ -2030,7 +2128,15 @@ static void foreign_toplevel_handle_request_activate(struct wl_listener *listene
 		toplevel_set_minimized(view, false);
 	}
 	focus_toplevel(view->server, view);
+	if (view->foreign_restore_pending && view->server->focused_toplevel == view)
+	{
+		/* Electron can ignore keyboard enter while its activated configure is still
+		 * pending. Repeat the seat transition only after that configure is acknowledged. */
+		view->keyboard_reenter_on_configure = view->pending_configure_serial != 0;
+		view->foreign_restore_pending = false;
+	}
 	foreign_toplevel_sync_all(view->server);
+	log_foreign_focus_state("foreign-activate:after", view, -1);
 }
 
 /**
@@ -2308,6 +2414,7 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, destroy);
+	foreign_keyboard_reenter_idle_cancel(view);
 	if (view->xdg_decoration)
 	{
 		detach_listener_if_linked(&view->xdg_decoration_destroy);
@@ -2348,6 +2455,7 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 	window_cycle_forget(view->server, view);
 	if (view->foreign_toplevel)
 	{
+		detach_listener_if_linked(&view->foreign_request_minimize);
 		detach_listener_if_linked(&view->foreign_request_activate);
 		detach_listener_if_linked(&view->foreign_request_close);
 		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
@@ -2397,6 +2505,24 @@ static void toplevel_commit(struct wl_listener *listener, void *data)
 	if (configure_acked)
 	{
 		view->pending_configure_serial = 0;
+		if (view->keyboard_reenter_on_configure)
+		{
+			view->keyboard_reenter_on_configure = false;
+			if (view->server->focused_toplevel == view && !view->minimized)
+			{
+				struct wl_event_loop *loop = wl_display_get_event_loop(view->server->wl_display);
+				if (loop && !view->keyboard_reenter_idle)
+				{
+					view->keyboard_reenter_idle = wl_event_loop_add_idle(
+						loop, foreign_keyboard_reenter_idle, view);
+					if (!view->keyboard_reenter_idle)
+					{
+						wlr_log(WLR_ERROR, "Failed to schedule post-restore keyboard re-enter");
+					}
+					log_foreign_focus_state("foreign-activate:reenter-scheduled", view, -1);
+				}
+			}
+		}
 	}
 	/* wlroots asserts if we schedule configure before initialized. */
 	if (xdg->initial_commit && xdg->initialized)
@@ -2833,6 +2959,8 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	view->foreign_toplevel = server->foreign_toplevel_manager ? wlr_foreign_toplevel_handle_v1_create(server->foreign_toplevel_manager) : NULL;
 	if (view->foreign_toplevel)
 	{
+		view->foreign_request_minimize.notify = foreign_toplevel_handle_request_minimize;
+		wl_signal_add(&view->foreign_toplevel->events.request_minimize, &view->foreign_request_minimize);
 		view->foreign_request_activate.notify = foreign_toplevel_handle_request_activate;
 		wl_signal_add(&view->foreign_toplevel->events.request_activate, &view->foreign_request_activate);
 		view->foreign_request_close.notify = foreign_toplevel_handle_request_close;
@@ -5583,8 +5711,16 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data)
 	}
 	if (log_keys)
 	{
-		wlr_log(WLR_INFO, "keyboard: %s keysym=%s mods_before=0x%x",
-			pressed ? "press" : "release", key_name, mods_filtered);
+		struct comp_toplevel *focused = kbd->server->focused_toplevel;
+		struct wlr_surface *focused_surface = focused ? toplevel_wlr_surface(focused) : NULL;
+		struct wlr_surface *seat_surface = kbd->server->seat->keyboard_state.focused_surface;
+		const char *focus_app_id = focused && focused->xdg_toplevel && focused->xdg_toplevel->app_id
+			? focused->xdg_toplevel->app_id
+			: "";
+		wlr_log(WLR_INFO,
+			"keyboard: %s keysym=%s mods_before=0x%x focus_app_id='%s' seat_matches=%d",
+			pressed ? "press" : "release", key_name, mods_filtered, focus_app_id,
+			focused_surface && seat_surface == focused_surface);
 	}
 
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);

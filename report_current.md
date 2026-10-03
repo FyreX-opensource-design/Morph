@@ -1,8 +1,8 @@
-# Morph Test Report for Branch `window-focus` (as of 2026-09-27)
+# Morph Test Report for Branch `window-focus` (as of 2026-10-03)
 
 This report is a practical manual checklist for the current `window-focus` work: MRU window cycling, configurable focus policies, held `Alt+Tab` with a compositor-owned switcher overlay, CLI/IPC triggers, and the startup-hook path fixes (`~` expansion and `/etc/morph` fallback). Tick items while testing and add notes next to them if useful.
 
-Last checked against commit `e99f0e9` plus the current worktree changes described in this report.
+Last checked against commit `1868074` plus the current worktree changes described in this report.
 
 Relevant commits on this branch:
 
@@ -14,6 +14,8 @@ Relevant commits on this branch:
 - `a4a8091` stabilized panel focus and pointer hit testing
 - `a1b9d65` added XDG activation focus routing
 - `e99f0e9` stabilized Alt-Tab, focus handling, and panel integration
+- `eb7c381` stabilized Shift-Tab handling, layout transitions, and forced uninstall cleanup
+- `1868074` updated the sfwbar test configuration for sfwbar 1.0pre
 
 **Note:** Overlay and keybind checks need a real nested or native Morph session with at least two mapped windows. IPC/CLI cycling can be driven from a second host terminal. Hook-path checks need the managed wrapper (`scripts/morph-session` or `testing/morph-session_dbg`).
 
@@ -23,6 +25,7 @@ Relevant commits on this branch:
 - `[x]` Tested successfully
 - `[!]` Tested with notes or known limitation
 - `[n/a]` Not applicable
+- `[?]` Needs clarification or an external follow-up
 - `NEW` Additional edge-case test for the focus-cycling session
 
 Expected:
@@ -417,6 +420,12 @@ sleep 5; ./build_dbg/morph --window-focus next
 
 The frozen-ring selection, orange overlay marker, and actual focus must advance together; the held session stays active until Super is released.
 
+[x] **VS Code keyboard focus after sfwbar restore**
+
+Minimize VS Code, select it from sfwbar, and type directly in the editor without using Alt+Tab first. The restored window must become visible and accept keyboard input immediately. Geany and Alacritty remain useful control clients for the same sequence.
+
+The trace confirms that VS Code uses its native Wayland backend. Morph handles sfwbar's separate foreign-toplevel `unset_minimized` request and preserves the already scheduled activation state when a combined maximize/size configure follows. After the activation configure ACK, Morph performs one keyboard leave/enter. The native retest showed `current:1,pending:1,scheduled:1`, and text entered in VS Code immediately without an Alt-Tab round trip.
+
 ## 8. Layouts
 
 Repeat a short held Alt+Tab (two taps, release) in each layout.
@@ -541,20 +550,20 @@ The matrix focuses on Alt-Tab, focus policies, and directly related edge cases. 
 
 | Test | Debian | Fedora | Arch |
 |---|---|---|---|
-| Automated build and test run succeeds | [ ] | [ ] | [x] |
-| One short nested smoke test succeeds | [ ] | [ ] | [x] |
-| Runtime build and installation succeed | [ ] | [ ] | [x] |
-| Morph session is available in the display manager | [ ] | [ ] | [x] |
-| Native Morph session starts after logging in again | [ ] | [ ] | [x] |
-| Focus policies | [ ] | [ ] | [x] |
-| Immediate cycle and IPC/CLI | [ ] | [ ] | [x] |
-| Held Alt-Tab switcher and Esc | [ ] | [ ] | [x] |
-| Workspaces, minimize, and close | [ ] | [ ] | [x] |
-| Layouts and panel workarea | [ ] | [ ] | [x] |
+| Automated build and test run succeeds | [x] | [x] | [x] |
+| One short nested smoke test succeeds | [x] | [x] | [x] |
+| Runtime build and installation succeed | [x] | [x] | [x] |
+| Morph session is available in the display manager | [x] | [x] | [x] |
+| Native Morph session starts after logging in again | [x] | [x] | [x] |
+| Focus policies | [x] | [x] | [x] |
+| Immediate cycle and IPC/CLI | [x] | [x] | [x] |
+| Held Alt-Tab switcher and Esc | [x] | [x] | [x] |
+| Workspaces, minimize, and close | [x] | [x] | [x] |
+| Layouts and panel workarea | [x] | [x] | [x] |
 
 ### 12.1 Automated Build and Test Run
 
-[ ] **Build and run the automated tests**
+[x] **Build and run the automated tests**
 
 First change to the project directory:
 
@@ -568,7 +577,7 @@ Expected: `morph` and `morph-test-config` compile, and the `config` and `shell-r
 
 ### 12.2 One Short Nested Smoke Test
 
-[ ] **Start nested Morph once and exit cleanly**
+[x] **Start nested Morph once and exit cleanly**
 
 Run this short test before logging out of the current desktop session. Change to the project directory and run:
 
@@ -596,7 +605,7 @@ Expected:
 
 ### 12.3 Install the Runtime
 
-[ ] **Install the runtime on the distribution**
+[x] **Install the runtime on the distribution**
 
 Run this before logging out of the current desktop session:
 
@@ -618,7 +627,7 @@ Expected:
 
 ### 12.4 Compare Installed Helpers with the Checkout
 
-[ ] **The installed helper file matches the tested checkout**
+[x] **The installed helper file matches the tested checkout**
 
 ```bash
 diff -q scripts/shell-helpers.sh /etc/morph/shell-helpers.sh
@@ -651,7 +660,7 @@ Run `morph-test-windows` only after logging in to Morph. Open additional termina
 
 ### 12.6 Log Out and Back In to Morph
 
-[ ] **Start a native Morph session through the display manager**
+[x] **Start a native Morph session through the display manager**
 
 1. Log out of the current desktop session.
 2. Select **Morph** as the session in the display manager.
@@ -682,33 +691,33 @@ Click the windows once in A, B, C order so focus history is deterministic for th
 
 ### 12.7 Reduced Focus-Cycling Matrix
 
-[ ] **Test focus policies**
+[x] **Test focus policies**
 
 Use `morph --focus ClickToFocus`, `morph --focus FocusFollowsMouse`, and `morph --focus SloppyFocus` to repeat the tests from [section 3.1](#31-focus-policies): pointer motion, clicking a window, empty root, and behavior over the panel. Then restore the configured policy with `morph --reload-config`.
 
-[ ] **Test immediate cycle and IPC**
+[x] **Test immediate cycle and IPC**
 
 Run `morph-ipc-next`, `morph-ipc-prev`, and `morph --window-focus next|prev`. Verify focus history, wrap-around, no overlay for single-shot cycling, and equivalent behavior for the IPC aliases.
 
-[ ] **Test the held Alt-Tab switcher**
+[x] **Test the held Alt-Tab switcher**
 
 With at least three windows, test Alt+Tab, Shift+Alt+Tab, repeated Tab presses, direction changes, and releasing Alt. The overlay, orange marker, actual focus, and MRU commit must remain consistent.
 
-[ ] **Test Esc cancellation**
+[x] **Test Esc cancellation**
 
 Cancel an active Alt-Tab session with Esc. The overlay must disappear, the original focus must return, and Esc must not be forwarded to the window.
 
-[ ] **Test workspaces, minimize, and close**
+[x] **Test workspaces, minimize, and close**
 
 Move one window to another workspace ([Workspace Isolation](#6-workspace-isolation)), minimize a window during a cycle session, and close another window. Hidden or closed windows must not remain selectable in the ring ([section 7](#7-minimize-close-and-empty-list)).
 
-[ ] **Test Stack, Tile, and Scroll**
+[x] **Test Stack, Tile, and Scroll**
 
 Run a short cycle in all three layouts. The overlay, focus, window positions, and panel-reserved workarea must remain correct.
 
 ### 12.8 Runtime Logs and Clean Shutdown
 
-[ ] **Verify the native session and lifecycle**
+[x] **Verify the native session and lifecycle**
 
 In another terminal:
 
@@ -739,11 +748,11 @@ References: sections 3 through 11 of this report, `INSTALL.md`, `testing/test-ho
 
 - [ ] Switcher icons when a freedesktop icon exists for `app_id`
 - [ ] Decide whether scratchpad, fullscreen, and per-output workspaces join the cycle candidate set
-- [ ] Held-modifier overlay is compositor-input only; there is still no automated input harness for Alt+Tab itself
-- [ ] Portal packages missing on the portrait device (`xdg-desktop-portal`, `-wlr`, `-gtk`) — environment gap, not this branch
+- [?] Held-modifier overlay is compositor-input only; there is still no automated input harness for Alt+Tab itself
+- [?] Portal packages missing on the portrait device (`xdg-desktop-portal`, `-wlr`, `-gtk`) — environment gap, not this branch
 
 ## Short Conclusion
 
-- Result: Debian Stable development-laptop checks in sections 0 through 10 and the reduced Arch matrix in section 12 are complete.
-- Blocking issues: none currently known.
-- Follow-up tests needed: Nathan must run section 11; Debian and Fedora must complete section 12.
+- Result: The reduced native matrix passed on Debian Sid, Fedora 44, and Arch; the earlier development-laptop checks in sections 0 through 10 also passed.
+- Blocking issues: none for the focus-cycling or sfwbar restore behavior.
+- Follow-up tests needed: Nathan must run the native portrait-device checks in section 11.

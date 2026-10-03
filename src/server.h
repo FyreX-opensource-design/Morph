@@ -210,6 +210,13 @@ struct comp_toplevel
 	bool foreign_maximized;
 	bool foreign_fullscreen;
 	bool foreign_minimized;
+	/** An unset-minimized request awaiting the panel's following activate request. */
+	bool foreign_restore_pending;
+	/** Re-send keyboard enter after the restored client acknowledges activation. */
+	bool keyboard_reenter_on_configure;
+	/** One-shot idle source that re-enters keyboard focus after the activation configure ACK. */
+	struct wl_event_source *keyboard_reenter_idle;
+	struct wl_listener foreign_request_minimize;
 	struct wl_listener foreign_request_activate;
 	struct wl_listener foreign_request_close;
 	struct wlr_xdg_toplevel_decoration_v1 *xdg_decoration;
