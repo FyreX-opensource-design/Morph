@@ -294,14 +294,15 @@ static void toplevel_set_maximized_size(struct comp_toplevel *view, bool maximiz
 	{
 		return;
 	}
-	const struct wlr_xdg_toplevel_state current = view->xdg_toplevel->current;
+	const struct wlr_xdg_toplevel_configure scheduled = view->xdg_toplevel->scheduled;
 	struct wlr_xdg_toplevel_configure configure = {
 		.maximized = maximized,
-		.fullscreen = current.fullscreen,
-		.resizing = current.resizing,
-		.activated = current.activated,
-		.suspended = current.suspended,
-		.tiled = current.tiled,
+		.fullscreen = scheduled.fullscreen,
+		.resizing = scheduled.resizing,
+		.activated = scheduled.activated,
+		.suspended = scheduled.suspended,
+		.tiled = scheduled.tiled,
+		.constrained = scheduled.constrained,
 		.width = width,
 		.height = height,
 	};
@@ -345,6 +346,11 @@ static void toplevel_set_minimized(struct comp_toplevel *view, bool minimized)
 	{
 		server_arrange_toplevels(view->server);
 	}
+	if (minimized)
+	{
+		/* A frozen cycle must never retain a view that is no longer focusable. */
+		window_cycle_forget(view->server, view);
+	}
 	foreign_toplevel_refresh(view);
 }
 
@@ -353,10 +359,20 @@ static void toplevel_arrange_tile(struct comp_toplevel *v, int layout_x, int lay
 {
 	(void)layout_x;
 	(void)layout_y;
-	if (v->xdg_toplevel)
+	if (!v->xdg_toplevel)
 	{
-		toplevel_set_size(v, w, h);
+		return;
 	}
+	if (v->xdg_toplevel->current.maximized || v->xdg_toplevel->scheduled.maximized)
+	{
+		/* A maximized state lets clients retain the output-wide width even when a
+		 * narrower tile size is sent. Clear it in the same configure as the tile
+		 * dimensions so clients never observe a half-unmaximized transition. */
+		toplevel_set_maximized_size(v, false, w, h);
+		v->has_restore = false;
+		return;
+	}
+	toplevel_set_size(v, w, h);
 }
 
 /** True after `wlr_backend_start` so shutdown hook runs only for a real session. */
@@ -613,6 +629,32 @@ static void log_xdg_state(const char *tag, struct comp_toplevel *view)
 			toplevel->current.max_width, toplevel->current.max_height,
 			toplevel->pending.min_width, toplevel->pending.min_height,
 			toplevel->pending.max_width, toplevel->pending.max_height);
+}
+
+/** Trace foreign-toplevel restore ordering and the compositor/seat focus invariants. */
+static void log_foreign_focus_state(const char *tag, struct comp_toplevel *view,
+									int requested_minimized)
+{
+	if (!xdg_debug_logs_enabled || !view || !view->server || !view->xdg_toplevel ||
+		!view->xdg_toplevel->base)
+	{
+		return;
+	}
+	struct wlr_surface *surface = toplevel_wlr_surface(view);
+	struct wlr_surface *seat_surface = view->server->seat
+		? view->server->seat->keyboard_state.focused_surface
+		: NULL;
+	wlr_log(WLR_INFO,
+		"xdgdbg:%s app_id='%s' requested_minimized=%d minimized=%d visible=%d "
+		"compositor_focused=%d seat_focused=%d activated=current:%d,pending:%d,scheduled:%d "
+		"pending_configure=%u",
+		tag,
+		view->xdg_toplevel->app_id ? view->xdg_toplevel->app_id : "",
+		requested_minimized, view->minimized,
+		view->scene_tree ? view->scene_tree->node.enabled : 0,
+		view->server->focused_toplevel == view, surface && seat_surface == surface,
+		view->xdg_toplevel->current.activated, view->xdg_toplevel->pending.activated,
+		view->xdg_toplevel->scheduled.activated, view->pending_configure_serial);
 }
 
 /** Optional verbose trace for compositor-owned interactive resize state. */
@@ -1195,24 +1237,62 @@ static void output_frame(struct wl_listener *listener, void *data)
 	struct wlr_output *clock_out = primary_wlr_output(server);
 	const bool run_layout_anim = clock_out && output->wlr_output == clock_out;
 	const bool layout_anim = run_layout_anim && layout_anim_tick(server, &now);
+	const bool force_scene_frame = output->force_scene_frame;
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	const bool log_frames = kdbg && kdbg[0] && strcmp(kdbg, "0") != 0;
 
-	if (!wlr_scene_output_needs_frame(output->scene_output) && !layout_anim)
+	if (log_frames && force_scene_frame)
+	{
+		wlr_log(WLR_INFO, "output-frame: forced scene commit output=%s needs=%d",
+			output->wlr_output->name, wlr_scene_output_needs_frame(output->scene_output));
+	}
+
+	/* A scene-node visibility change can be queued after damage was evaluated. */
+	if (!wlr_scene_output_needs_frame(output->scene_output) && !layout_anim && !force_scene_frame)
 	{
 		return;
 	}
 
-	if (!wlr_scene_output_commit(output->scene_output, NULL))
+	bool committed;
+	if (force_scene_frame)
 	{
-		if (layout_anim)
+		/* wlr_scene_output_commit() skips the backend commit when it sees no
+		 * pending damage. Use a full damage region so a hidden UI tree is
+		 * actually presented to the output. */
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		if (!wlr_scene_output_build_state(output->scene_output, &state, NULL))
 		{
-			struct comp_output *o;
-			wl_list_for_each(o, &server->outputs, link)
-			{
-				wlr_output_schedule_frame(o->wlr_output);
-			}
+			wlr_output_state_finish(&state);
+			wlr_output_schedule_frame(output->wlr_output);
+			return;
+		}
+		pixman_region32_t damage;
+		pixman_region32_init_rect(&damage, 0, 0, output->wlr_output->width,
+			output->wlr_output->height);
+		wlr_output_state_set_damage(&state, &damage);
+		committed = wlr_output_commit_state(output->wlr_output, &state);
+		pixman_region32_fini(&damage);
+		wlr_output_state_finish(&state);
+	}
+	else
+	{
+		committed = wlr_scene_output_commit(output->scene_output, NULL);
+	}
+	if (!committed)
+	{
+		if (layout_anim || force_scene_frame)
+		{
+			wlr_output_schedule_frame(output->wlr_output);
 		}
 		return;
 	}
+	if (log_frames && force_scene_frame)
+	{
+		wlr_log(WLR_INFO, "output-frame: forced scene commit completed output=%s",
+			output->wlr_output->name);
+	}
+	output->force_scene_frame = false;
 	wlr_scene_output_send_frame_done(output->scene_output, &now);
 
 	if (layout_anim)
@@ -1421,6 +1501,18 @@ static bool layer_popup_unconstrain(struct comp_layer_popup *popup)
 		wlr_output_layout_get_box(popup->layer->server->output_layout,
 								  popup->layer->layer_surface->output, &box);
 	}
+	/* xdg_popup_unconstrain_from_box() expects coordinates relative to the
+	 * popup parent. layer_workarea is in global layout coordinates, so convert
+	 * it from the layer surface's scene position before applying the constraint.
+	 * This lets a bottom-panel popup use the space above the panel. */
+	int layer_x = 0;
+	int layer_y = 0;
+	if (popup->layer->scene_layer && popup->layer->scene_layer->tree)
+	{
+		wlr_scene_node_coords(&popup->layer->scene_layer->tree->node, &layer_x, &layer_y);
+	}
+	box.x -= layer_x;
+	box.y -= layer_y;
 	wlr_xdg_popup_unconstrain_from_box(popup->wlr_popup, &box);
 	return true;
 }
@@ -1943,6 +2035,76 @@ static void toplevel_handle_set_app_id(struct wl_listener *listener, void *data)
 	foreign_toplevel_refresh(view);
 }
 
+/** Cancel a queued post-ACK keyboard re-enter before the view can change or disappear. */
+static void foreign_keyboard_reenter_idle_cancel(struct comp_toplevel *view)
+{
+	if (view && view->keyboard_reenter_idle)
+	{
+		wl_event_source_remove(view->keyboard_reenter_idle);
+		view->keyboard_reenter_idle = NULL;
+	}
+}
+
+/** Re-enter keyboard focus after the restored client has acknowledged its activation configure. */
+static void foreign_keyboard_reenter_idle(void *data)
+{
+	struct comp_toplevel *view = data;
+	view->keyboard_reenter_idle = NULL;
+	if (!view->server || view->server->focused_toplevel != view || view->minimized ||
+		!view->xdg_toplevel)
+	{
+		log_foreign_focus_state("foreign-activate:reenter-idle-skipped", view, -1);
+		return;
+	}
+	struct wlr_surface *surface = toplevel_wlr_surface(view);
+	struct wlr_seat *seat = view->server->seat;
+	if (!surface || !seat)
+	{
+		return;
+	}
+	/* Sending enter to the same seat surface is coalesced by wlroots. A real
+	 * leave/enter makes Electron consume the input it received after restore. */
+	wlr_seat_keyboard_notify_clear_focus(seat);
+	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(seat);
+	if (kbd)
+	{
+		wlr_seat_keyboard_notify_enter(seat, surface, kbd->keycodes, kbd->num_keycodes,
+			&kbd->modifiers);
+	}
+	else
+	{
+		wlr_seat_keyboard_notify_enter(seat, surface, NULL, 0, NULL);
+	}
+	log_foreign_focus_state("foreign-activate:reenter-after-configure-ack", view, -1);
+}
+
+/** Apply panel/task-switcher minimize requests before any following activation request. */
+static void foreign_toplevel_handle_request_minimize(struct wl_listener *listener, void *data)
+{
+	struct comp_toplevel *view = wl_container_of(listener, view, foreign_request_minimize);
+	struct wlr_foreign_toplevel_handle_v1_minimized_event *ev = data;
+	if (!view || !view->xdg_toplevel || !toplevel_surface_mapped(view) || !ev)
+	{
+		return;
+	}
+	/* Panels normally send unset_minimized followed by activate. Keeping those
+	 * operations separate gives clients a visibility transition before focus. */
+	log_foreign_focus_state("foreign-minimize:before", view, ev->minimized);
+	if (ev->minimized)
+	{
+		foreign_keyboard_reenter_idle_cancel(view);
+		view->foreign_restore_pending = false;
+		view->keyboard_reenter_on_configure = false;
+	}
+	else if (view->minimized)
+	{
+		/* Preserve this across duplicate unset requests until activate arrives. */
+		view->foreign_restore_pending = true;
+	}
+	toplevel_set_minimized(view, ev->minimized);
+	log_foreign_focus_state("foreign-minimize:after", view, ev->minimized);
+}
+
 /** Handle foreign-toplevel activate requests (bars/task switchers) with seat/workspace validation. */
 static void foreign_toplevel_handle_request_activate(struct wl_listener *listener, void *data)
 {
@@ -1956,6 +2118,7 @@ static void foreign_toplevel_handle_request_activate(struct wl_listener *listene
 	{
 		return;
 	}
+	log_foreign_focus_state("foreign-activate:before", view, -1);
 	if (view->workspace != view->server->current_workspace)
 	{
 		server_workspace_go(view->server, view->workspace);
@@ -1965,7 +2128,15 @@ static void foreign_toplevel_handle_request_activate(struct wl_listener *listene
 		toplevel_set_minimized(view, false);
 	}
 	focus_toplevel(view->server, view);
+	if (view->foreign_restore_pending && view->server->focused_toplevel == view)
+	{
+		/* Electron can ignore keyboard enter while its activated configure is still
+		 * pending. Repeat the seat transition only after that configure is acknowledged. */
+		view->keyboard_reenter_on_configure = view->pending_configure_serial != 0;
+		view->foreign_restore_pending = false;
+	}
 	foreign_toplevel_sync_all(view->server);
+	log_foreign_focus_state("foreign-activate:after", view, -1);
 }
 
 /**
@@ -2243,6 +2414,7 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, destroy);
+	foreign_keyboard_reenter_idle_cancel(view);
 	if (view->xdg_decoration)
 	{
 		detach_listener_if_linked(&view->xdg_decoration_destroy);
@@ -2283,6 +2455,7 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 	window_cycle_forget(view->server, view);
 	if (view->foreign_toplevel)
 	{
+		detach_listener_if_linked(&view->foreign_request_minimize);
 		detach_listener_if_linked(&view->foreign_request_activate);
 		detach_listener_if_linked(&view->foreign_request_close);
 		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
@@ -2332,6 +2505,24 @@ static void toplevel_commit(struct wl_listener *listener, void *data)
 	if (configure_acked)
 	{
 		view->pending_configure_serial = 0;
+		if (view->keyboard_reenter_on_configure)
+		{
+			view->keyboard_reenter_on_configure = false;
+			if (view->server->focused_toplevel == view && !view->minimized)
+			{
+				struct wl_event_loop *loop = wl_display_get_event_loop(view->server->wl_display);
+				if (loop && !view->keyboard_reenter_idle)
+				{
+					view->keyboard_reenter_idle = wl_event_loop_add_idle(
+						loop, foreign_keyboard_reenter_idle, view);
+					if (!view->keyboard_reenter_idle)
+					{
+						wlr_log(WLR_ERROR, "Failed to schedule post-restore keyboard re-enter");
+					}
+					log_foreign_focus_state("foreign-activate:reenter-scheduled", view, -1);
+				}
+			}
+		}
 	}
 	/* wlroots asserts if we schedule configure before initialized. */
 	if (xdg->initial_commit && xdg->initialized)
@@ -2768,6 +2959,8 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	view->foreign_toplevel = server->foreign_toplevel_manager ? wlr_foreign_toplevel_handle_v1_create(server->foreign_toplevel_manager) : NULL;
 	if (view->foreign_toplevel)
 	{
+		view->foreign_request_minimize.notify = foreign_toplevel_handle_request_minimize;
+		wl_signal_add(&view->foreign_toplevel->events.request_minimize, &view->foreign_request_minimize);
 		view->foreign_request_activate.notify = foreign_toplevel_handle_request_activate;
 		wl_signal_add(&view->foreign_toplevel->events.request_activate, &view->foreign_request_activate);
 		view->foreign_request_close.notify = foreign_toplevel_handle_request_close;
@@ -2879,6 +3072,7 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 		}
 		return;
 	}
+	server->focused_toplevel = toplevel;
 	if (prev && toplevel_surface_initialized(prev))
 	{
 		log_xdg_state("focus:deactivate-prev", prev);
@@ -2892,7 +3086,6 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 	{
 		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
 	}
-	server->focused_toplevel = toplevel;
 	/* Alt-Tab previews must not reorder history mid-session, or the frozen ring
 	 * would no longer match what the next step walks. Committed on modifier release. */
 	if (toplevel->focus_listed && !server->cycle.suppress_mru)
@@ -4154,12 +4347,28 @@ static void window_cycle_preview(struct comp_server *server, struct comp_topleve
 /** Hide the switcher overlay without ending the session. */
 static void window_cycle_overlay_hide(struct comp_server *server)
 {
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	const bool log_overlay = kdbg && kdbg[0] && strcmp(kdbg, "0") != 0;
+	if (log_overlay && server->cycle.overlay.tree)
+	{
+		wlr_log(WLR_INFO, "switcher: hide before enabled=%d buffer=%d",
+			server->cycle.overlay.tree->node.enabled,
+			server->cycle.overlay.buffer && server->cycle.overlay.buffer->buffer != NULL);
+	}
 	comp_ui_overlay_hide(&server->cycle.overlay);
+	if (log_overlay && server->cycle.overlay.tree)
+	{
+		wlr_log(WLR_INFO, "switcher: hide after enabled=%d buffer=%d",
+			server->cycle.overlay.tree->node.enabled,
+			server->cycle.overlay.buffer && server->cycle.overlay.buffer->buffer != NULL);
+	}
 	struct comp_output *o;
 	wl_list_for_each(o, &server->outputs, link)
 	{
 		if (o->wlr_output)
 		{
+			/* Keep the hide visible even if wlroots has already cleared scene damage. */
+			o->force_scene_frame = true;
 			wlr_output_schedule_frame(o->wlr_output);
 		}
 	}
@@ -4279,6 +4488,12 @@ bool server_window_cycle_active(const struct comp_server *server)
 
 void server_window_cycle_notify_mods(struct comp_server *server, uint32_t depressed)
 {
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	if (kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && server && server->cycle.active)
+	{
+		wlr_log(WLR_INFO, "window-cycle: modifiers depressed=0x%x hold=0x%x",
+			depressed, server->cycle.hold_mods);
+	}
 	if (!server || !server->cycle.active)
 	{
 		return;
@@ -4289,10 +4504,25 @@ void server_window_cycle_notify_mods(struct comp_server *server, uint32_t depres
 	}
 }
 
-/** Drop a dying toplevel from the active session so the frozen ring stays valid. */
+/** Drop an unavailable toplevel from the active session so the frozen ring stays valid. */
 static void window_cycle_forget(struct comp_server *server, struct comp_toplevel *view)
 {
 	if (!server->cycle.active)
+	{
+		return;
+	}
+	size_t removed = server->cycle.len;
+	size_t out = 0;
+	for (size_t i = 0; i < server->cycle.len; i++)
+	{
+		if (server->cycle.ring[i] == view)
+		{
+			removed = i;
+			continue;
+		}
+		server->cycle.ring[out++] = server->cycle.ring[i];
+	}
+	if (removed == server->cycle.len)
 	{
 		return;
 	}
@@ -4300,18 +4530,10 @@ static void window_cycle_forget(struct comp_server *server, struct comp_toplevel
 	{
 		server->cycle.origin = NULL;
 	}
-	size_t out = 0;
-	for (size_t i = 0; i < server->cycle.len; i++)
+	/* Keep the same selected object when an earlier ring entry disappears. */
+	if (removed < server->cycle.index)
 	{
-		if (server->cycle.ring[i] == view)
-		{
-			if (i < server->cycle.index && server->cycle.index > 0)
-			{
-				server->cycle.index--;
-			}
-			continue;
-		}
-		server->cycle.ring[out++] = server->cycle.ring[i];
+		server->cycle.index--;
 	}
 	server->cycle.len = out;
 	if (out == 0)
@@ -4331,6 +4553,16 @@ void server_window_focus_cycle(struct comp_server *server, int delta)
 {
 	if (!server || delta == 0)
 	{
+		return;
+	}
+	if (server->cycle.active && server->cycle.len > 0)
+	{
+		/* IPC focus changes during Alt-Tab must move the frozen selection as well. */
+		const size_t current = window_cycle_find_focused(server, server->cycle.ring, server->cycle.len);
+		const size_t base = current < server->cycle.len ? current : server->cycle.index;
+		server->cycle.index = window_cycle_wrap(base, delta, server->cycle.len);
+		window_cycle_preview(server, server->cycle.ring[server->cycle.index]);
+		window_cycle_overlay_sync(server);
 		return;
 	}
 	struct comp_toplevel **ring = NULL;
@@ -4358,15 +4590,9 @@ void server_window_cycle_step(struct comp_server *server, int delta, uint32_t ho
 	{
 		return;
 	}
-	/*
-	 * Shift selects direction rather than holding the session open: Alt+Tab and
-	 * Alt+Shift+Tab must share one ring so that shift-tabbing backwards mid-cycle
-	 * does not restart it. Masking Shift out makes both chords agree on Alt.
-	 */
-	hold_mods &= ~(uint32_t)WLR_MODIFIER_SHIFT;
 	if (hold_mods == 0)
 	{
-		/* No modifier to wait for, so there is nothing to hold the ring open. */
+		/* No shared modifier remains, so there is nothing to hold the ring open. */
 		server_window_focus_cycle(server, delta);
 		return;
 	}
@@ -4874,6 +5100,7 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 	{
 		return;
 	}
+	const enum comp_layout previous_layout = server->layout;
 	server->layout = layout;
 	if (layout == COMP_LAYOUT_TILE || layout == COMP_LAYOUT_SCROLL)
 	{
@@ -4895,6 +5122,28 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 		wl_list_for_each(v, &server->toplevels, link)
 		{
 			v->layout_anim_tracked = false;
+			if ((previous_layout == COMP_LAYOUT_TILE || previous_layout == COMP_LAYOUT_SCROLL) &&
+				toplevel_surface_mapped(v) && v->xdg_toplevel)
+			{
+				int scene_x = v->scene_tree->node.x;
+				int scene_y = v->scene_tree->node.y;
+				int width = v->xdg_toplevel->base->geometry.width;
+				int height = v->xdg_toplevel->base->geometry.height;
+				if ((width <= 0 || height <= 0) && v->xdg_toplevel->base->surface)
+				{
+					width = v->xdg_toplevel->base->surface->current.width;
+					height = v->xdg_toplevel->base->surface->current.height;
+				}
+				if (width > 0 && height > 0)
+				{
+					/* Scroll keeps non-selected windows one or more output widths offscreen.
+					 * Normalize every mapped view, including minimized ones, while entering
+					 * stack so a later panel activation restores it inside the workarea. */
+					toplevel_clamp_floating_box_to_workarea(v,
+						&scene_x, &scene_y, &width, &height);
+					wlr_scene_node_set_position(&v->scene_tree->node, scene_x, scene_y);
+				}
+			}
 		}
 		server->layout_anim_last_ns = 0;
 		if (server->focused_toplevel)
@@ -4902,6 +5151,8 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 			wlr_scene_node_raise_to_top(&server->focused_toplevel->scene_tree->node);
 		}
 	}
+	server_workspace_apply_visibility(server);
+	foreign_toplevel_sync_all(server);
 	server_sync_xdg_decorations(server);
 	comp_config_sync_shell_env(server);
 }
@@ -5451,22 +5702,35 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data)
 	}
 
 	const bool pressed = event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
-	if (pressed)
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	const bool log_keys = kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && sym != XKB_KEY_NoSymbol;
+	char key_name[128] = {0};
+	if (log_keys && xkb_keysym_get_name(sym, key_name, sizeof(key_name)) < 0)
 	{
-		const char *kdbg = getenv("MORPH_LOG_KEYS");
-		if (kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && sym != XKB_KEY_NoSymbol)
-		{
-			char name[128];
-			if (xkb_keysym_get_name(sym, name, sizeof(name)) < 0)
-			{
-				snprintf(name, sizeof(name), "(bad)");
-			}
-			wlr_log(WLR_INFO, "keyboard: keysym=%s mods=0x%x", name, mods_filtered);
-		}
+		snprintf(key_name, sizeof(key_name), "(bad)");
+	}
+	if (log_keys)
+	{
+		struct comp_toplevel *focused = kbd->server->focused_toplevel;
+		struct wlr_surface *focused_surface = focused ? toplevel_wlr_surface(focused) : NULL;
+		struct wlr_surface *seat_surface = kbd->server->seat->keyboard_state.focused_surface;
+		const char *focus_app_id = focused && focused->xdg_toplevel && focused->xdg_toplevel->app_id
+			? focused->xdg_toplevel->app_id
+			: "";
+		wlr_log(WLR_INFO,
+			"keyboard: %s keysym=%s mods_before=0x%x focus_app_id='%s' seat_matches=%d",
+			pressed ? "press" : "release", key_name, mods_filtered, focus_app_id,
+			focused_surface && seat_surface == focused_surface);
 	}
 
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
 	wlr_keyboard_notify_key(wlr_kbd, event);
+	if (log_keys)
+	{
+		wlr_log(WLR_INFO, "keyboard: %s keysym=%s mods_after=0x%x",
+			pressed ? "press" : "release", key_name,
+			wlr_kbd->modifiers.depressed & COMP_BIND_MOD_FILTER);
+	}
 	if (pressed && sym == XKB_KEY_Escape && server_window_cycle_active(kbd->server))
 	{
 		/* Swallow the Esc: it aborts the switcher rather than reaching the window. */

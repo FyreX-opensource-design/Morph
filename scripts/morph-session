@@ -256,7 +256,14 @@ mkdir -p "$LOG_DIR"
 
 # Current session detection and mode setup
 # ==============================================================================
-if choose_reachable_x11_display; then
+if wayland_display_reachable; then
+    # A real Wayland session takes precedence even when Xwayland also exports DISPLAY.
+    export WLR_BACKENDS=wayland
+    export WLR_WL_SOCKET="wayland-nested"
+    export MORPH_SESSION_MODE=nested
+    SESSION_MODE_NOTE="nested-wayland"
+    echo "Starting in Nested-Mode under Wayland (WAYLAND_DISPLAY=$WAYLAND_DISPLAY)..."
+elif choose_reachable_x11_display; then
     # X11 session: register compositor as "wayland-nested".
     export DISPLAY="$CHOSEN_X11_DISPLAY"
     export WLR_BACKENDS=x11
@@ -264,13 +271,6 @@ if choose_reachable_x11_display; then
     export MORPH_SESSION_MODE=nested
     SESSION_MODE_NOTE="nested-x11"
     echo "Starting in Nested-Mode under X11 (DISPLAY=$CHOSEN_X11_DISPLAY)..."
-elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    # Wayland session: use "wayland-nested" to avoid socket collisions.
-    export WLR_BACKENDS=wayland
-    export WLR_WL_SOCKET="wayland-nested"
-    export MORPH_SESSION_MODE=nested
-    SESSION_MODE_NOTE="nested-wayland"
-    echo "Starting in Nested-Mode under Wayland..."
 else
     # Console (TTY) or unreachable nested displays: run native backend stack.
     if [ -n "${DISPLAY:-}" ]; then

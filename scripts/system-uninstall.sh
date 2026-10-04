@@ -9,6 +9,7 @@ set -eu
 
 BUILD_DIR="build"
 REMOVE_MODE=0
+FORCE_MODE=0
 
 usage() {
     cat <<'EOF'
@@ -18,12 +19,16 @@ Options:
   --builddir DIR   Meson build directory to inspect (default: build)
   --print-only     Print installed paths without removing anything (default)
   --remove         Remove only unchanged installed files from the manifest
+  --force          With --remove, delete manifest targets without comparing them
   -h, --help       Show this help text
 
 Behavior:
   - The script reads the install manifest from `meson introspect --installed`.
   - `--remove` only deletes targets that still match the recorded source file.
-  - Modified, missing, or uncomparable files are left in place with a warning.
+  - `--remove --force` also deletes modified targets or targets installed from
+    another build tree. Destination paths still come from the manifest.
+  - Without `--force`, modified, missing, or uncomparable files are left in
+    place with a warning.
   - Empty directories are pruned afterwards with `rmdir`, so non-empty system
     directories stay untouched automatically.
 
@@ -47,6 +52,10 @@ while [ $# -gt 0 ]; do
             REMOVE_MODE=0
             ;;
         --remove)
+            REMOVE_MODE=1
+            ;;
+        --force)
+            FORCE_MODE=1
             REMOVE_MODE=1
             ;;
         -h|--help)
@@ -106,6 +115,12 @@ remove_target_if_unchanged() {
 
     if [ ! -e "$dst" ] && [ ! -L "$dst" ]; then
         printf 'WARN: installed path is already absent, leaving it untouched: %s\n' "$dst" >&2
+        return 0
+    fi
+
+    if [ "$FORCE_MODE" -eq 1 ]; then
+        rm -f "$dst"
+        printf 'Force-removed installed file: %s\n' "$dst"
         return 0
     fi
 

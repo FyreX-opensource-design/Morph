@@ -14,6 +14,10 @@
 #include "server.h"
 
 /* Stubs for server actions referenced by comp_config_try_bindings in config.c. */
+static int cycle_step_calls;
+static int cycle_step_delta;
+static uint32_t cycle_step_hold_mods;
+
 void server_set_layout(struct comp_server *server, enum comp_layout layout)
 {
     (void)server;
@@ -62,8 +66,9 @@ void server_window_focus_cycle(struct comp_server *server, int delta)
 void server_window_cycle_step(struct comp_server *server, int delta, uint32_t hold_mods)
 {
     (void)server;
-    (void)delta;
-    (void)hold_mods;
+    cycle_step_calls++;
+    cycle_step_delta = delta;
+    cycle_step_hold_mods = hold_mods;
 }
 
 bool server_window_cycle_active(const struct comp_server *server)
@@ -668,13 +673,33 @@ static int test_window_cycle_actions_parse(void)
         "\n"
         "[bind]\n"
         "mods = Super\n"
+        "key = Tab\n"
+        "action = nextWindow\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super+Shift\n"
+        "key = Tab\n"
+        "action = prevWindow\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super\n"
         "key = j\n"
         "action = window_next\n"
         "\n"
         "[bind]\n"
         "mods = Super\n"
         "key = k\n"
-        "action = FOCUS_PREV\n";
+        "action = FOCUS_PREV\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super\n"
+        "key = BackSpace\n"
+        "action = nextWindow\n"
+        "\n"
+        "[bind]\n"
+        "mods = Super+Alt\n"
+        "key = BackSpace\n"
+        "action = prevWindow\n";
 
     char path[128];
     if (!write_temp_file(cfg_text, path, sizeof(path)))
@@ -686,14 +711,18 @@ static int test_window_cycle_actions_parse(void)
     struct comp_config *cfg = NULL;
     bool ok = comp_config_load(path, &cfg);
     unlink(path);
-    if (!ok || !cfg || cfg->n_binds != 4)
+    if (!ok || !cfg || cfg->n_binds != 8)
     {
-        fprintf(stderr, "expected four window-cycle binds\n");
+        fprintf(stderr, "expected eight window-cycle binds\n");
         comp_config_free(cfg);
         return 1;
     }
 
     const enum comp_keybind_action want[] = {
+        COMP_KEYBIND_WINDOW_NEXT,
+        COMP_KEYBIND_WINDOW_PREV,
+        COMP_KEYBIND_WINDOW_NEXT,
+        COMP_KEYBIND_WINDOW_PREV,
         COMP_KEYBIND_WINDOW_NEXT,
         COMP_KEYBIND_WINDOW_PREV,
         COMP_KEYBIND_WINDOW_NEXT,
@@ -708,6 +737,43 @@ static int test_window_cycle_actions_parse(void)
             comp_config_free(cfg);
             return 1;
         }
+    }
+
+    if (comp_config_window_cycle_hold_mods(cfg, &cfg->binds[0]) != WLR_MODIFIER_ALT ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[1]) != WLR_MODIFIER_ALT ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[2]) != WLR_MODIFIER_LOGO ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[3]) != WLR_MODIFIER_LOGO ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[4]) != WLR_MODIFIER_LOGO ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[5]) != WLR_MODIFIER_LOGO ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[6]) != WLR_MODIFIER_LOGO ||
+        comp_config_window_cycle_hold_mods(cfg, &cfg->binds[7]) != WLR_MODIFIER_LOGO)
+    {
+        fprintf(stderr, "window-cycle bindings did not derive their shared hold modifiers\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+
+    struct comp_server server = {0};
+    cycle_step_calls = 0;
+    if (!comp_config_try_bindings(cfg, &server, true,
+            WLR_MODIFIER_ALT | WLR_MODIFIER_SHIFT, XKB_KEY_ISO_Left_Tab) ||
+        cycle_step_calls != 1 || cycle_step_delta != -1 ||
+        cycle_step_hold_mods != WLR_MODIFIER_ALT)
+    {
+        fprintf(stderr, "Alt+Shift+ISO_Left_Tab did not trigger prevWindow\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+
+    cycle_step_calls = 0;
+    if (!comp_config_try_bindings(cfg, &server, true,
+            WLR_MODIFIER_LOGO | WLR_MODIFIER_SHIFT, XKB_KEY_ISO_Left_Tab) ||
+        cycle_step_calls != 1 || cycle_step_delta != -1 ||
+        cycle_step_hold_mods != WLR_MODIFIER_LOGO)
+    {
+        fprintf(stderr, "Super+Shift+ISO_Left_Tab did not trigger prevWindow\n");
+        comp_config_free(cfg);
+        return 1;
     }
 
     comp_config_free(cfg);
