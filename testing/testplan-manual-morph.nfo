@@ -130,6 +130,21 @@ Expected:
 - configured or fallback reload hook is visible
 - `reload` and `reload_once` actions are logged
 
+Environment re-sourcing:
+Edit ~/.config/morph/environment, for example MORPH_DEBUG_POINTER_FOCUS=1,
+then trigger a reload again.
+
+Filter:
+  rg -n "reload: sourced environment file|reload: environment |reload: keeping caller-provided|reload: applied" "$LOG_BASE"/morph*.log
+
+Expected:
+- both the system and user environment file are listed when they exist
+- only the edited variables are logged as applied
+- values passed on the launcher command line stay untouched
+- restart-only variables (MORPH_DBG, MORPH_LOG_DIR, MORPH_X11, LD_LIBRARY_PATH,
+  MORPH_CONFIG) are applied to the process environment but do not change the
+  running session until the next start
+
 
 6) Hook fallback chain
 ----------------------

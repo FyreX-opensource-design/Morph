@@ -77,7 +77,7 @@ This section is intentionally more detailed than the root [`README.md`](../READM
 |    |└─ [`morph-build.sh`](../scripts/morph-build.sh) | Unified build helper for runtime/debug variants (`--runtime`, `--debug`, `--both`). |
 |    |└─ [`morph-install.sh`](../scripts/morph-install.sh) | Unified install helper for runtime/debug artifacts with optional dry-run mode. |
 |    |└─ [`morph-session`](../scripts/morph-session) | Installed runtime **Morph** session wrapper. It resolves environment, config, logs, and session mode for real sessions. |
-|    |└─ [`morph-uninstall.sh`](../scripts/morph-uninstall.sh) | Unified uninstall helper for runtime/debug artifacts with optional dry-run mode. |
+|    |└─ [`morph-uninstall.sh`](../scripts/morph-uninstall.sh) | Unified uninstall helper for runtime/debug artifacts with optional dry-run and force-cleanup modes. |
 |    |└─ [`shell-helpers.sh`](../scripts/shell-helpers.sh) | Shared shell helper library used throughout the managed session flow. |
 |    |└─ [`system_reload.sh`](../scripts/system_reload.sh) | System reload script for managed config reloads. |
 |    |└─ [`system_shutdown.sh`](../scripts/system_shutdown.sh) | System shutdown script for managed config cleanup. |
@@ -247,6 +247,7 @@ flowchart TD
     A --> B --> C --> D --> E --> F --> G
 ```
 
+- Before the hooks run, **Morph** re-sources the system and user `environment` files, so hooks and newly spawned components see current environment values. See [`Reload Behavior`](ENVIRONMENT.md#reload-behavior) in `docs/ENVIRONMENT.md` for what a reload can and cannot change.
 - This flow is useful for restarting bars, launchers, notification daemons, or other session components without tearing down the full session.
 - The helper layer can also provide guarded commands such as one-shot reload helpers.
 - Path-like reload hook values are sourced as files in the managed flow so reload helpers remain available without re-sourcing the helper library manually.

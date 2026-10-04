@@ -172,6 +172,7 @@ Behavior in the managed flow:
 - With [`MORPH_MANAGED_HOOKS=1`](ENVIRONMENT.md#morph-managed-hooks), the compositor dispatches [`scripts/system_startup.sh`](../scripts/system_startup.sh) instead of running the configured startup hook directly.
 - [`scripts/system_startup.sh`](../scripts/system_startup.sh) prepares nested/native runtime state, starts managed portal setup when needed, and then runs the configured user startup hook or its XDG fallback.
 - Path-like startup hook values such as `~/.config/morph/startup.sh` or `${MORPH_USER_CONFIG_DIR}/startup.sh` are sourced as hook files so managed helpers such as `launch`, `launch_nested`, and `launch_nokill` stay available inside the hook. In development, [`testing/config/startup.sh`](../testing/config/startup.sh) is the user entry point exposed by `dev-install.sh`; in runtime installs, the installed template comes from [`config/startup.sh`](../config/startup.sh). Managed portal setup stays separate in [`testing/config/portals`](../testing/config/portals) for development and [`config/portals`](../config/portals) for runtime packaging.
+- When the configured hook path is not readable — the normal state on a fresh install, since the shipped `morph.conf` points at `${MORPH_USER_CONFIG_DIR}/startup.sh` before that directory exists — the packaged hook in the system config directory (`/etc/morph/startup.sh`) is sourced instead. This mirrors the user → system resolution already used for `morph.conf`, so a default install runs its shipped session components. Only when neither file is readable is the hook skipped, and the log then names both paths tried. A configured path that does not exist is never downgraded to `sh -c <path>`.
 - Services started through `launch <cmd ...>` in the user startup hook are tracked for shutdown cleanup in [`shutdown_list.nfo`](#launcher-managed-shutdown-process-list-file-do-not-edit-this-file).
 - `launch_nokill <cmd ...>` is available for helper processes that should not be registered for shutdown tracking.
 - Nested sessions still run the user startup hook, but skip the native-only managed portal startup path.
@@ -184,9 +185,11 @@ Reload uses the compositor IPC entry point `reload config` / `reload`.
 
 Behavior in the managed flow:
 
+- Before it reloads `morph.conf`, the compositor re-sources the system and user `environment` files so environment edits do not need a session restart. Variables that the launcher consumes before starting the compositor still do; see [`Reload Behavior`](ENVIRONMENT.md#reload-behavior) in `docs/ENVIRONMENT.md`.
 - With [`MORPH_MANAGED_HOOKS=1`](ENVIRONMENT.md#morph-managed-hooks), the compositor dispatches [`scripts/system_reload.sh`](../scripts/system_reload.sh) instead of running the configured reload hook directly.
 - [`scripts/system_reload.sh`](../scripts/system_reload.sh) exposes the same helper library as startup/shutdown and then runs the configured user reload hook or its XDG fallback.
 - Path-like reload hook values such as `~/.config/morph/reload.sh` or `${MORPH_USER_CONFIG_DIR}/reload.sh` are sourced as hook files so reload helpers remain available in-process.
+- As with startup, an unreadable configured path falls back to the packaged `/etc/morph/reload.sh` before the hook is skipped.
 - User reload hooks can restart managed session components in-place with `reload <cmd ...>`, for example `reload sfwbar`.
 - User reload hooks can also start optional components once with `reload_once <cmd ...>`, for example `reload_once mutagen`.
 - The `reload` helper stops the currently running process by basename, starts the replacement command, and keeps the shutdown tracker free of duplicate entries.
@@ -203,6 +206,7 @@ Behavior in the managed flow:
 - With [`MORPH_MANAGED_HOOKS=1`](ENVIRONMENT.md#morph-managed-hooks), the compositor dispatches [`scripts/system_shutdown.sh`](../scripts/system_shutdown.sh) instead of running the configured shutdown hook directly.
 - [`scripts/system_shutdown.sh`](../scripts/system_shutdown.sh) first runs the configured user shutdown hook or its XDG fallback.
 - Path-like shutdown hook values such as `~/.config/morph/shutdown.sh` or `${MORPH_USER_CONFIG_DIR}/shutdown.sh` are sourced as hook files so user cleanup can share the managed logging helpers directly. In development, [`testing/config/shutdown.sh`](../testing/config/shutdown.sh) is the user entry point exposed by `dev-install.sh`; in runtime installs, the installed template comes from [`config/shutdown.sh`](../config/shutdown.sh).
+- As with startup, an unreadable configured path falls back to the packaged `/etc/morph/shutdown.sh` before the hook is skipped.
 - After the user shutdown hook returns, [`scripts/system_shutdown.sh`](../scripts/system_shutdown.sh) performs the managed cleanup, including tracked process termination from [`shutdown_list.nfo`](#launcher-managed-shutdown-process-list-file-do-not-edit-this-file).
 - The shutdown hook runs synchronously: **Morph** waits for the user shutdown hook to finish before the managed cleanup continues.
 - Nested sessions still follow the same hook resolution path, but the managed cleanup remains scoped to the nested session state.

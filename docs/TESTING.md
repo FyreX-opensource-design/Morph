@@ -118,8 +118,8 @@ Common troubleshooting approach:
 
 ## Typical Failure Patterns
 
-1. Dependency `wlroots-0.19` not found
-   - Check: `pkg-config --modversion wlroots-0.19`
+1. Dependency `wlroots-0.20` not found
+   - Check: `pkg-config --modversion wlroots-0.20`
    - Fix: install the matching development package or adjust `PKG_CONFIG_PATH`
 2. `wayland-scanner` missing
    - Fix: install the Wayland development tools and `wayland-protocols`

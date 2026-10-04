@@ -52,6 +52,8 @@
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_export_dmabuf_v1.h>
+#include <wlr/types/wlr_ext_data_control_v1.h>
 #include <wlr/util/box.h>
 #include <wlr/util/region.h>
 #include <wlr/util/edges.h>
@@ -61,7 +63,12 @@
 #include "config.h"
 #include "crash_handler.h"
 #include "ext_workspace.h"
+#include "gamma_control.h"
+#include "image_capture.h"
+#include "output_mgmt.h"
+#include "output_power.h"
 #include "server.h"
+#include "virtual_input.h"
 
 /**
  * Runtime state for one tablet tool cursor stream.
@@ -112,6 +119,11 @@ struct comp_layer_popup
 };
 
 static void focus_toplevel(struct comp_server *server, struct comp_toplevel *toplevel);
+static void window_cycle_forget(struct comp_server *server, struct comp_toplevel *view);
+static void window_cycle_commit(struct comp_server *server);
+static void window_cycle_reset(struct comp_server *server);
+static void window_cycle_overlay_hide(struct comp_server *server);
+static void window_cycle_overlay_sync(struct comp_server *server);
 static struct wlr_output *primary_wlr_output(struct comp_server *server);
 static void process_cursor_motion(struct comp_server *server, uint32_t time_msec);
 static void cursor_constrain(struct comp_server *server, struct wlr_pointer_constraint_v1 *constraint,
@@ -151,7 +163,7 @@ static struct comp_output *toplevel_preferred_output(struct comp_toplevel *view)
 static struct comp_output *toplevel_tile_output(struct comp_toplevel *t);
 static void foreign_toplevel_refresh(struct comp_toplevel *view);
 static void foreign_toplevel_sync_all(struct comp_server *server);
-static void server_update_seat_capabilities(struct comp_server *server);
+void server_update_seat_capabilities(struct comp_server *server);
 static void layer_surface_try_keyboard_focus_click(struct comp_server *server, double lx, double ly);
 static void track_input_device(struct comp_server *server, struct wlr_input_device *dev);
 static void input_device_apply_libinput_defaults(struct wlr_input_device *dev);
@@ -220,6 +232,14 @@ static void server_detach_global_listeners(struct comp_server *server)
 	detach_listener_if_linked(&server->seat_pointer_focus_change);
 	detach_listener_if_linked(&server->new_pointer_constraint);
 	detach_listener_if_linked(&server->pointer_constraint_commit);
+	output_power_fini(server);
+	virtual_input_fini(server);
+	output_mgmt_fini(server);
+	if (server->image_capture_new_request.link.prev)
+	{
+		wl_list_remove(&server->image_capture_new_request.link);
+		wl_list_init(&server->image_capture_new_request.link);
+	}
 }
 
 /** Return the root wl_surface for an XDG or Xwayland toplevel, or NULL if unavailable. */
@@ -274,14 +294,15 @@ static void toplevel_set_maximized_size(struct comp_toplevel *view, bool maximiz
 	{
 		return;
 	}
-	const struct wlr_xdg_toplevel_state current = view->xdg_toplevel->current;
+	const struct wlr_xdg_toplevel_configure scheduled = view->xdg_toplevel->scheduled;
 	struct wlr_xdg_toplevel_configure configure = {
 		.maximized = maximized,
-		.fullscreen = current.fullscreen,
-		.resizing = current.resizing,
-		.activated = current.activated,
-		.suspended = current.suspended,
-		.tiled = current.tiled,
+		.fullscreen = scheduled.fullscreen,
+		.resizing = scheduled.resizing,
+		.activated = scheduled.activated,
+		.suspended = scheduled.suspended,
+		.tiled = scheduled.tiled,
+		.constrained = scheduled.constrained,
 		.width = width,
 		.height = height,
 	};
@@ -325,6 +346,11 @@ static void toplevel_set_minimized(struct comp_toplevel *view, bool minimized)
 	{
 		server_arrange_toplevels(view->server);
 	}
+	if (minimized)
+	{
+		/* A frozen cycle must never retain a view that is no longer focusable. */
+		window_cycle_forget(view->server, view);
+	}
 	foreign_toplevel_refresh(view);
 }
 
@@ -333,10 +359,20 @@ static void toplevel_arrange_tile(struct comp_toplevel *v, int layout_x, int lay
 {
 	(void)layout_x;
 	(void)layout_y;
-	if (v->xdg_toplevel)
+	if (!v->xdg_toplevel)
 	{
-		toplevel_set_size(v, w, h);
+		return;
 	}
+	if (v->xdg_toplevel->current.maximized || v->xdg_toplevel->scheduled.maximized)
+	{
+		/* A maximized state lets clients retain the output-wide width even when a
+		 * narrower tile size is sent. Clear it in the same configure as the tile
+		 * dimensions so clients never observe a half-unmaximized transition. */
+		toplevel_set_maximized_size(v, false, w, h);
+		v->has_restore = false;
+		return;
+	}
+	toplevel_set_size(v, w, h);
 }
 
 /** True after `wlr_backend_start` so shutdown hook runs only for a real session. */
@@ -349,8 +385,10 @@ static bool xdg_commit_debug_logs_enabled;
 static bool pointer_focus_debug_logs_enabled;
 /** Layer-shell hitbox trace used when panel hover regions fight toplevel hit-testing. */
 static bool layer_hit_debug_logs_enabled;
+/** Tested default resize pace for the legacy X11 bridge (17 Hz). */
+#define BRIDGE_RESIZE_INTERVAL_MSEC_DEFAULT 59
 /** Pace legacy X11 bridge resizes so GTK2 can process ConfigureNotify without a backlog. */
-static uint32_t bridge_resize_interval_msec = 59;
+static uint32_t bridge_resize_interval_msec = BRIDGE_RESIZE_INTERVAL_MSEC_DEFAULT;
 /** Extra pointer-focus band for bottom/top panels whose hover visuals extend past their surface. */
 static const int layer_pointer_guard_px = 40;
 /** Optional append-only log target set by `--log-file`; NULL means stderr-only. */
@@ -369,6 +407,7 @@ static void configure_bridge_resize_rate_from_env(void)
 	const char *value = getenv("MORPH_BRIDGE_RESIZE_HZ");
 	if (!value || !value[0])
 	{
+		bridge_resize_interval_msec = BRIDGE_RESIZE_INTERVAL_MSEC_DEFAULT;
 		return;
 	}
 
@@ -379,6 +418,7 @@ static void configure_bridge_resize_rate_from_env(void)
 	{
 		wlr_log(WLR_ERROR,
 			"Ignoring invalid MORPH_BRIDGE_RESIZE_HZ='%s' (expected 1..240)", value);
+		bridge_resize_interval_msec = BRIDGE_RESIZE_INTERVAL_MSEC_DEFAULT;
 		return;
 	}
 
@@ -386,6 +426,34 @@ static void configure_bridge_resize_rate_from_env(void)
 	bridge_resize_interval_msec = (uint32_t)((1000 + hz / 2) / hz);
 	wlr_log(WLR_INFO, "Legacy bridge resize rate: %ld Hz (%u ms)",
 		hz, bridge_resize_interval_msec);
+}
+
+/**
+ * Latch the environment-driven debug and tuning flags.
+ *
+ * Runs at startup and again after a config reload re-sources the environment
+ * files, so every flag read here follows the current process environment.
+ */
+static void apply_env_runtime_flags(void)
+{
+	{
+		const char *e = getenv("MORPH_DEBUG_XDG");
+		xdg_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
+	}
+	{
+		const char *e = getenv("MORPH_DEBUG_XDG_COMMITS");
+		xdg_commit_debug_logs_enabled = xdg_debug_logs_enabled &&
+			e && e[0] && strcmp(e, "0") != 0;
+	}
+	{
+		const char *e = getenv("MORPH_DEBUG_POINTER_FOCUS");
+		pointer_focus_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
+	}
+	{
+		const char *e = getenv("MORPH_DEBUG_LAYER_HIT");
+		layer_hit_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
+	}
+	configure_bridge_resize_rate_from_env();
 }
 
 /** Map wlroots importance to an ordered rank for deterministic threshold checks. */
@@ -563,6 +631,32 @@ static void log_xdg_state(const char *tag, struct comp_toplevel *view)
 			toplevel->pending.max_width, toplevel->pending.max_height);
 }
 
+/** Trace foreign-toplevel restore ordering and the compositor/seat focus invariants. */
+static void log_foreign_focus_state(const char *tag, struct comp_toplevel *view,
+									int requested_minimized)
+{
+	if (!xdg_debug_logs_enabled || !view || !view->server || !view->xdg_toplevel ||
+		!view->xdg_toplevel->base)
+	{
+		return;
+	}
+	struct wlr_surface *surface = toplevel_wlr_surface(view);
+	struct wlr_surface *seat_surface = view->server->seat
+		? view->server->seat->keyboard_state.focused_surface
+		: NULL;
+	wlr_log(WLR_INFO,
+		"xdgdbg:%s app_id='%s' requested_minimized=%d minimized=%d visible=%d "
+		"compositor_focused=%d seat_focused=%d activated=current:%d,pending:%d,scheduled:%d "
+		"pending_configure=%u",
+		tag,
+		view->xdg_toplevel->app_id ? view->xdg_toplevel->app_id : "",
+		requested_minimized, view->minimized,
+		view->scene_tree ? view->scene_tree->node.enabled : 0,
+		view->server->focused_toplevel == view, surface && seat_surface == surface,
+		view->xdg_toplevel->current.activated, view->xdg_toplevel->pending.activated,
+		view->xdg_toplevel->scheduled.activated, view->pending_configure_serial);
+}
+
 /** Optional verbose trace for compositor-owned interactive resize state. */
 static void log_resize_state(const char *tag, struct comp_toplevel *view, int x, int y, int w, int h,
 							 uint32_t edges)
@@ -707,46 +801,57 @@ static bool foreign_toplevel_cache_string(char **cached, const char *value)
  */
 static void foreign_toplevel_refresh(struct comp_toplevel *view)
 {
-	if (!view || !view->foreign_toplevel)
+	if (!view)
 	{
 		return;
 	}
 	const char *title = "";
 	const char *app_id = "";
 	toplevel_title_app_for_config(view, &title, &app_id);
-	if (foreign_toplevel_cache_string(&view->foreign_title, title))
+	const bool title_changed = foreign_toplevel_cache_string(&view->foreign_title, title);
+	const bool app_changed = foreign_toplevel_cache_string(&view->foreign_app_id, app_id);
+
+	if (view->foreign_toplevel)
 	{
-		wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel, view->foreign_title);
+		if (title_changed)
+		{
+			wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel, view->foreign_title);
+		}
+		if (app_changed)
+		{
+			wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel, view->foreign_app_id);
+		}
+		const bool activated = view->server->focused_toplevel == view && toplevel_surface_mapped(view) &&
+							   view->workspace == view->server->current_workspace;
+		const bool maximized = view->xdg_toplevel && view->xdg_toplevel->current.maximized;
+		const bool fullscreen = view->xdg_toplevel && view->xdg_toplevel->current.fullscreen;
+		if (!view->foreign_state_valid || view->foreign_activated != activated)
+		{
+			wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, activated);
+			view->foreign_activated = activated;
+		}
+		if (!view->foreign_state_valid || view->foreign_maximized != maximized)
+		{
+			wlr_foreign_toplevel_handle_v1_set_maximized(view->foreign_toplevel, maximized);
+			view->foreign_maximized = maximized;
+		}
+		if (!view->foreign_state_valid || view->foreign_fullscreen != fullscreen)
+		{
+			wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel, fullscreen);
+			view->foreign_fullscreen = fullscreen;
+		}
+		if (!view->foreign_state_valid || view->foreign_minimized != view->minimized)
+		{
+			wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, view->minimized);
+			view->foreign_minimized = view->minimized;
+		}
+		view->foreign_state_valid = true;
 	}
-	if (foreign_toplevel_cache_string(&view->foreign_app_id, app_id))
+
+	if (title_changed || app_changed)
 	{
-		wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel, view->foreign_app_id);
+		image_capture_toplevel_refresh(view);
 	}
-	const bool activated = view->server->focused_toplevel == view && toplevel_surface_mapped(view) &&
-						   view->workspace == view->server->current_workspace;
-	const bool maximized = view->xdg_toplevel && view->xdg_toplevel->current.maximized;
-	const bool fullscreen = view->xdg_toplevel && view->xdg_toplevel->current.fullscreen;
-	if (!view->foreign_state_valid || view->foreign_activated != activated)
-	{
-		wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, activated);
-		view->foreign_activated = activated;
-	}
-	if (!view->foreign_state_valid || view->foreign_maximized != maximized)
-	{
-		wlr_foreign_toplevel_handle_v1_set_maximized(view->foreign_toplevel, maximized);
-		view->foreign_maximized = maximized;
-	}
-	if (!view->foreign_state_valid || view->foreign_fullscreen != fullscreen)
-	{
-		wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel, fullscreen);
-		view->foreign_fullscreen = fullscreen;
-	}
-	if (!view->foreign_state_valid || view->foreign_minimized != view->minimized)
-	{
-		wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, view->minimized);
-		view->foreign_minimized = view->minimized;
-	}
-	view->foreign_state_valid = true;
 }
 
 /** Refresh foreign-toplevel metadata for all known toplevels. */
@@ -1132,24 +1237,62 @@ static void output_frame(struct wl_listener *listener, void *data)
 	struct wlr_output *clock_out = primary_wlr_output(server);
 	const bool run_layout_anim = clock_out && output->wlr_output == clock_out;
 	const bool layout_anim = run_layout_anim && layout_anim_tick(server, &now);
+	const bool force_scene_frame = output->force_scene_frame;
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	const bool log_frames = kdbg && kdbg[0] && strcmp(kdbg, "0") != 0;
 
-	if (!wlr_scene_output_needs_frame(output->scene_output) && !layout_anim)
+	if (log_frames && force_scene_frame)
+	{
+		wlr_log(WLR_INFO, "output-frame: forced scene commit output=%s needs=%d",
+			output->wlr_output->name, wlr_scene_output_needs_frame(output->scene_output));
+	}
+
+	/* A scene-node visibility change can be queued after damage was evaluated. */
+	if (!wlr_scene_output_needs_frame(output->scene_output) && !layout_anim && !force_scene_frame)
 	{
 		return;
 	}
 
-	if (!wlr_scene_output_commit(output->scene_output, NULL))
+	bool committed;
+	if (force_scene_frame)
 	{
-		if (layout_anim)
+		/* wlr_scene_output_commit() skips the backend commit when it sees no
+		 * pending damage. Use a full damage region so a hidden UI tree is
+		 * actually presented to the output. */
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		if (!wlr_scene_output_build_state(output->scene_output, &state, NULL))
 		{
-			struct comp_output *o;
-			wl_list_for_each(o, &server->outputs, link)
-			{
-				wlr_output_schedule_frame(o->wlr_output);
-			}
+			wlr_output_state_finish(&state);
+			wlr_output_schedule_frame(output->wlr_output);
+			return;
+		}
+		pixman_region32_t damage;
+		pixman_region32_init_rect(&damage, 0, 0, output->wlr_output->width,
+			output->wlr_output->height);
+		wlr_output_state_set_damage(&state, &damage);
+		committed = wlr_output_commit_state(output->wlr_output, &state);
+		pixman_region32_fini(&damage);
+		wlr_output_state_finish(&state);
+	}
+	else
+	{
+		committed = wlr_scene_output_commit(output->scene_output, NULL);
+	}
+	if (!committed)
+	{
+		if (layout_anim || force_scene_frame)
+		{
+			wlr_output_schedule_frame(output->wlr_output);
 		}
 		return;
 	}
+	if (log_frames && force_scene_frame)
+	{
+		wlr_log(WLR_INFO, "output-frame: forced scene commit completed output=%s",
+			output->wlr_output->name);
+	}
+	output->force_scene_frame = false;
 	wlr_scene_output_send_frame_done(output->scene_output, &now);
 
 	if (layout_anim)
@@ -1358,6 +1501,18 @@ static bool layer_popup_unconstrain(struct comp_layer_popup *popup)
 		wlr_output_layout_get_box(popup->layer->server->output_layout,
 								  popup->layer->layer_surface->output, &box);
 	}
+	/* xdg_popup_unconstrain_from_box() expects coordinates relative to the
+	 * popup parent. layer_workarea is in global layout coordinates, so convert
+	 * it from the layer surface's scene position before applying the constraint.
+	 * This lets a bottom-panel popup use the space above the panel. */
+	int layer_x = 0;
+	int layer_y = 0;
+	if (popup->layer->scene_layer && popup->layer->scene_layer->tree)
+	{
+		wlr_scene_node_coords(&popup->layer->scene_layer->tree->node, &layer_x, &layer_y);
+	}
+	box.x -= layer_x;
+	box.y -= layer_y;
 	wlr_xdg_popup_unconstrain_from_box(popup->wlr_popup, &box);
 	return true;
 }
@@ -1614,6 +1769,7 @@ static void output_commit(struct wl_listener *listener, void *data)
 	struct comp_output *output = wl_container_of(listener, output, commit);
 	struct comp_server *srv = output->server;
 	layer_shell_arrange(srv);
+	output_mgmt_update_config(srv);
 }
 
 /** Output destroy callback: leave foreign outputs, detach scene/output layout, and free state. */
@@ -1632,6 +1788,7 @@ static void output_destroy(struct wl_listener *listener, void *data)
 	}
 	server_apply_input_device_maps(output->server);
 	ext_workspace_on_output_remove(output->server, output->wlr_output);
+	output_mgmt_update_config(output->server);
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->commit.link);
 	wl_list_remove(&output->destroy.link);
@@ -1708,6 +1865,7 @@ static void server_new_output(struct wl_listener *listener, void *data)
 	}
 	ext_workspace_on_output_new(server, wlr_output);
 	layer_shell_arrange(server);
+	output_mgmt_update_config(server);
 	server_apply_input_device_maps(server);
 }
 
@@ -1877,6 +2035,76 @@ static void toplevel_handle_set_app_id(struct wl_listener *listener, void *data)
 	foreign_toplevel_refresh(view);
 }
 
+/** Cancel a queued post-ACK keyboard re-enter before the view can change or disappear. */
+static void foreign_keyboard_reenter_idle_cancel(struct comp_toplevel *view)
+{
+	if (view && view->keyboard_reenter_idle)
+	{
+		wl_event_source_remove(view->keyboard_reenter_idle);
+		view->keyboard_reenter_idle = NULL;
+	}
+}
+
+/** Re-enter keyboard focus after the restored client has acknowledged its activation configure. */
+static void foreign_keyboard_reenter_idle(void *data)
+{
+	struct comp_toplevel *view = data;
+	view->keyboard_reenter_idle = NULL;
+	if (!view->server || view->server->focused_toplevel != view || view->minimized ||
+		!view->xdg_toplevel)
+	{
+		log_foreign_focus_state("foreign-activate:reenter-idle-skipped", view, -1);
+		return;
+	}
+	struct wlr_surface *surface = toplevel_wlr_surface(view);
+	struct wlr_seat *seat = view->server->seat;
+	if (!surface || !seat)
+	{
+		return;
+	}
+	/* Sending enter to the same seat surface is coalesced by wlroots. A real
+	 * leave/enter makes Electron consume the input it received after restore. */
+	wlr_seat_keyboard_notify_clear_focus(seat);
+	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(seat);
+	if (kbd)
+	{
+		wlr_seat_keyboard_notify_enter(seat, surface, kbd->keycodes, kbd->num_keycodes,
+			&kbd->modifiers);
+	}
+	else
+	{
+		wlr_seat_keyboard_notify_enter(seat, surface, NULL, 0, NULL);
+	}
+	log_foreign_focus_state("foreign-activate:reenter-after-configure-ack", view, -1);
+}
+
+/** Apply panel/task-switcher minimize requests before any following activation request. */
+static void foreign_toplevel_handle_request_minimize(struct wl_listener *listener, void *data)
+{
+	struct comp_toplevel *view = wl_container_of(listener, view, foreign_request_minimize);
+	struct wlr_foreign_toplevel_handle_v1_minimized_event *ev = data;
+	if (!view || !view->xdg_toplevel || !toplevel_surface_mapped(view) || !ev)
+	{
+		return;
+	}
+	/* Panels normally send unset_minimized followed by activate. Keeping those
+	 * operations separate gives clients a visibility transition before focus. */
+	log_foreign_focus_state("foreign-minimize:before", view, ev->minimized);
+	if (ev->minimized)
+	{
+		foreign_keyboard_reenter_idle_cancel(view);
+		view->foreign_restore_pending = false;
+		view->keyboard_reenter_on_configure = false;
+	}
+	else if (view->minimized)
+	{
+		/* Preserve this across duplicate unset requests until activate arrives. */
+		view->foreign_restore_pending = true;
+	}
+	toplevel_set_minimized(view, ev->minimized);
+	log_foreign_focus_state("foreign-minimize:after", view, ev->minimized);
+}
+
 /** Handle foreign-toplevel activate requests (bars/task switchers) with seat/workspace validation. */
 static void foreign_toplevel_handle_request_activate(struct wl_listener *listener, void *data)
 {
@@ -1890,6 +2118,7 @@ static void foreign_toplevel_handle_request_activate(struct wl_listener *listene
 	{
 		return;
 	}
+	log_foreign_focus_state("foreign-activate:before", view, -1);
 	if (view->workspace != view->server->current_workspace)
 	{
 		server_workspace_go(view->server, view->workspace);
@@ -1899,7 +2128,15 @@ static void foreign_toplevel_handle_request_activate(struct wl_listener *listene
 		toplevel_set_minimized(view, false);
 	}
 	focus_toplevel(view->server, view);
+	if (view->foreign_restore_pending && view->server->focused_toplevel == view)
+	{
+		/* Electron can ignore keyboard enter while its activated configure is still
+		 * pending. Repeat the seat transition only after that configure is acknowledged. */
+		view->keyboard_reenter_on_configure = view->pending_configure_serial != 0;
+		view->foreign_restore_pending = false;
+	}
 	foreign_toplevel_sync_all(view->server);
+	log_foreign_focus_state("foreign-activate:after", view, -1);
 }
 
 /**
@@ -2177,6 +2414,7 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_toplevel *view = wl_container_of(listener, view, destroy);
+	foreign_keyboard_reenter_idle_cancel(view);
 	if (view->xdg_decoration)
 	{
 		detach_listener_if_linked(&view->xdg_decoration_destroy);
@@ -2209,15 +2447,28 @@ static void toplevel_destroy(struct wl_listener *listener, void *data)
 		wl_list_remove(&view->link);
 		view->listed = false;
 	}
+	if (view->focus_listed)
+	{
+		wl_list_remove(&view->focus_link);
+		view->focus_listed = false;
+	}
+	window_cycle_forget(view->server, view);
 	if (view->foreign_toplevel)
 	{
+		detach_listener_if_linked(&view->foreign_request_minimize);
 		detach_listener_if_linked(&view->foreign_request_activate);
 		detach_listener_if_linked(&view->foreign_request_close);
 		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
 		view->foreign_toplevel = NULL;
 	}
+	image_capture_toplevel_destroy(view);
 	free(view->foreign_title);
 	free(view->foreign_app_id);
+	if (view->server->motion_focus_target == view)
+	{
+		view->server->motion_focus_target = NULL;
+		view->server->motion_focus_clear = false;
+	}
 	if (view->server->focused_toplevel == view)
 	{
 		clear_keyboard_focus(view->server);
@@ -2254,8 +2505,26 @@ static void toplevel_commit(struct wl_listener *listener, void *data)
 	if (configure_acked)
 	{
 		view->pending_configure_serial = 0;
+		if (view->keyboard_reenter_on_configure)
+		{
+			view->keyboard_reenter_on_configure = false;
+			if (view->server->focused_toplevel == view && !view->minimized)
+			{
+				struct wl_event_loop *loop = wl_display_get_event_loop(view->server->wl_display);
+				if (loop && !view->keyboard_reenter_idle)
+				{
+					view->keyboard_reenter_idle = wl_event_loop_add_idle(
+						loop, foreign_keyboard_reenter_idle, view);
+					if (!view->keyboard_reenter_idle)
+					{
+						wlr_log(WLR_ERROR, "Failed to schedule post-restore keyboard re-enter");
+					}
+					log_foreign_focus_state("foreign-activate:reenter-scheduled", view, -1);
+				}
+			}
+		}
 	}
-	/* wlroots 0.19 asserts if we schedule configure before initialized. */
+	/* wlroots asserts if we schedule configure before initialized. */
 	if (xdg->initial_commit && xdg->initialized)
 	{
 		const struct wlr_box *geo = &xdg->geometry;
@@ -2690,11 +2959,14 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	view->foreign_toplevel = server->foreign_toplevel_manager ? wlr_foreign_toplevel_handle_v1_create(server->foreign_toplevel_manager) : NULL;
 	if (view->foreign_toplevel)
 	{
+		view->foreign_request_minimize.notify = foreign_toplevel_handle_request_minimize;
+		wl_signal_add(&view->foreign_toplevel->events.request_minimize, &view->foreign_request_minimize);
 		view->foreign_request_activate.notify = foreign_toplevel_handle_request_activate;
 		wl_signal_add(&view->foreign_toplevel->events.request_activate, &view->foreign_request_activate);
 		view->foreign_request_close.notify = foreign_toplevel_handle_request_close;
 		wl_signal_add(&view->foreign_toplevel->events.request_close, &view->foreign_request_close);
 	}
+	image_capture_toplevel_create(view);
 
 	view->set_title.notify = toplevel_handle_set_title;
 	wl_signal_add(&xdg_toplevel->events.set_title, &view->set_title);
@@ -2751,6 +3023,9 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	log_new_toplevel_state(xdg_toplevel, shell_ver, wm_caps_enabled);
 	wl_list_insert(server->toplevels.prev, &view->link);
 	view->listed = true;
+	/* Enter focus history behind existing windows; focus_toplevel promotes it on first focus. */
+	wl_list_insert(server->focus_order.prev, &view->focus_link);
+	view->focus_listed = true;
 	foreign_toplevel_refresh(view);
 }
 
@@ -2776,11 +3051,28 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 		 * otherwise later pointer motion keeps driving the old client after a new map/focus. */
 		cancel_active_grab(server);
 	}
+	struct wlr_surface *surf = toplevel_wlr_surface(toplevel);
 	struct comp_toplevel *prev = server->focused_toplevel;
 	if (prev == toplevel)
 	{
+		/* Same toplevel: still repair seat keyboard focus if pointer leave or a
+		 * layer click left the seat keyboard on a different surface. */
+		if (surf && server->seat && server->seat->keyboard_state.focused_surface != surf)
+		{
+			struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
+			if (kbd)
+			{
+				wlr_seat_keyboard_notify_enter(server->seat, surf, kbd->keycodes, kbd->num_keycodes,
+											   &kbd->modifiers);
+			}
+			else
+			{
+				wlr_seat_keyboard_notify_enter(server->seat, surf, NULL, 0, NULL);
+			}
+		}
 		return;
 	}
+	server->focused_toplevel = toplevel;
 	if (prev && toplevel_surface_initialized(prev))
 	{
 		log_xdg_state("focus:deactivate-prev", prev);
@@ -2794,11 +3086,16 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 	{
 		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
 	}
-	server->focused_toplevel = toplevel;
+	/* Alt-Tab previews must not reorder history mid-session, or the frozen ring
+	 * would no longer match what the next step walks. Committed on modifier release. */
+	if (toplevel->focus_listed && !server->cycle.suppress_mru)
+	{
+		wl_list_remove(&toplevel->focus_link);
+		wl_list_insert(&server->focus_order, &toplevel->focus_link);
+	}
 	foreign_toplevel_refresh(toplevel);
 	scroll_sync_to_focused(server);
 
-	struct wlr_surface *surf = toplevel_wlr_surface(toplevel);
 	if (!surf)
 	{
 		return;
@@ -2856,6 +3153,232 @@ static void clear_keyboard_focus(struct comp_server *server)
 	}
 	server->focused_toplevel = NULL;
 	wlr_seat_keyboard_notify_clear_focus(server->seat);
+}
+
+/** Active pointer-driven keyboard focus policy from config (defaults to click-to-focus). */
+static enum comp_focus_policy server_focus_policy(struct comp_server *server)
+{
+	if (server && server->config)
+	{
+		return server->config->focus_policy;
+	}
+	return COMP_FOCUS_CLICK;
+}
+
+/** Cancel a pending deferred motion-focus handoff without applying it. */
+static void motion_focus_idle_cancel(struct comp_server *server)
+{
+	if (!server)
+	{
+		return;
+	}
+	if (server->motion_focus_idle)
+	{
+		wl_event_source_remove(server->motion_focus_idle);
+		server->motion_focus_idle = NULL;
+	}
+	server->motion_focus_target = NULL;
+	server->motion_focus_clear = false;
+}
+
+/** Idle callback: apply the latest scheduled FocusFollowsMouse / SloppyFocus handoff. */
+static void motion_focus_idle_apply(void *data)
+{
+	struct comp_server *server = data;
+	server->motion_focus_idle = NULL;
+	if (!server->seat || server->display_terminate_requested || server->grab != COMP_GRAB_NONE)
+	{
+		server->motion_focus_target = NULL;
+		server->motion_focus_clear = false;
+		return;
+	}
+	struct comp_toplevel *target = server->motion_focus_target;
+	const bool clear = server->motion_focus_clear;
+	server->motion_focus_target = NULL;
+	server->motion_focus_clear = false;
+	if (target)
+	{
+		/* Target may have been destroyed between schedule and idle. */
+		struct comp_toplevel *t;
+		bool alive = false;
+		wl_list_for_each(t, &server->toplevels, link)
+		{
+			if (t == target)
+			{
+				alive = true;
+				break;
+			}
+		}
+		if (alive)
+		{
+			focus_toplevel(server, target);
+		}
+		return;
+	}
+	if (clear && server->focused_toplevel)
+	{
+		clear_keyboard_focus(server);
+	}
+}
+
+/**
+ * Schedule FocusFollowsMouse / SloppyFocus keyboard handoff for after the current
+ * pointer event finishes. ClickToFocus is a no-op. Layer-shell panel hover is ignored.
+ *
+ * empty_root must be true for true empty layout space and for desktop-like
+ * BACKGROUND/BOTTOM layer surfaces (wallpapers). TOP/OVERLAY panels are not empty root.
+ */
+static void apply_motion_focus_policy(struct comp_server *server, struct comp_toplevel *under_cursor,
+									  bool empty_root)
+{
+	enum comp_focus_policy policy = server_focus_policy(server);
+	if (policy == COMP_FOCUS_CLICK || !server || !server->wl_display ||
+		server->grab != COMP_GRAB_NONE || server->display_terminate_requested)
+	{
+		return;
+	}
+
+	struct comp_toplevel *target = NULL;
+	bool clear = false;
+	if (under_cursor)
+	{
+		if (under_cursor == server->focused_toplevel)
+		{
+			/* Pointer is back over the focused window: drop a pending empty-root clear. */
+			if (server->motion_focus_idle && server->motion_focus_clear && !server->motion_focus_target)
+			{
+				motion_focus_idle_cancel(server);
+			}
+			/* Reassert seat keyboard on idle if a leave/layer click left it elsewhere. */
+			struct wlr_surface *surf = toplevel_wlr_surface(under_cursor);
+			if (!surf || !server->seat || server->seat->keyboard_state.focused_surface == surf)
+			{
+				return;
+			}
+			target = under_cursor;
+		}
+		else
+		{
+			target = under_cursor;
+		}
+	}
+	else if (empty_root)
+	{
+		if (policy == COMP_FOCUS_FOLLOWS_MOUSE)
+		{
+			/* Empty desktop only: FocusFollowsMouse clears; SloppyFocus keeps the last focus.
+			 * Hovering layer-shell panels does not clear keyboard focus. */
+			if (!server->focused_toplevel)
+			{
+				return;
+			}
+			clear = true;
+		}
+		else if (policy == COMP_FOCUS_SLOPPY)
+		{
+			/* Keep last focus. Cancel a pending clear only; keep a pending enter-focus. */
+			if (server->motion_focus_idle && server->motion_focus_clear && !server->motion_focus_target)
+			{
+				motion_focus_idle_cancel(server);
+			}
+			if (server->motion_focus_idle && server->motion_focus_target)
+			{
+				return;
+			}
+			if (!server->focused_toplevel)
+			{
+				return;
+			}
+			/* Reassert keyboard focus on the last toplevel after pointer leave to desktop. */
+			struct wlr_surface *surf = toplevel_wlr_surface(server->focused_toplevel);
+			if (!surf || !server->seat || server->seat->keyboard_state.focused_surface == surf)
+			{
+				return;
+			}
+			target = server->focused_toplevel;
+		}
+		else
+		{
+			return;
+		}
+	}
+	else
+	{
+		return;
+	}
+
+	/* Coalesce to the latest pointer target; replace any pending idle request. */
+	if (server->motion_focus_idle)
+	{
+		wl_event_source_remove(server->motion_focus_idle);
+		server->motion_focus_idle = NULL;
+	}
+	server->motion_focus_target = target;
+	server->motion_focus_clear = clear;
+	struct wl_event_loop *loop = wl_display_get_event_loop(server->wl_display);
+	server->motion_focus_idle = wl_event_loop_add_idle(loop, motion_focus_idle_apply, server);
+	if (!server->motion_focus_idle)
+	{
+		server->motion_focus_target = NULL;
+		server->motion_focus_clear = false;
+		wlr_log(WLR_ERROR, "focus: failed to schedule motion focus idle");
+	}
+}
+
+/**
+ * True when a layer-shell surface should count as "desktop" for focus policy
+ * (FocusFollowsMouse clears; SloppyFocus keeps). BACKGROUND/BOTTOM wallpapers
+ * qualify; TOP/OVERLAY panels do not.
+ */
+static bool layer_surface_is_desktop_backdrop(struct wlr_layer_surface_v1 *ls)
+{
+	if (!ls || !ls->surface || !ls->surface->mapped)
+	{
+		return false;
+	}
+	const enum zwlr_layer_shell_v1_layer lyr = ls->current.layer;
+	return lyr == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND || lyr == ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM;
+}
+
+/**
+ * Classify the pointer position for keyboard focus policy.
+ * Sets *out_toplevel when an XDG toplevel is under the cursor.
+ * Returns true when the point is empty desktop (no toplevel; no panel).
+ */
+static bool pointer_focus_target_at(struct comp_server *server, double lx, double ly,
+									struct comp_toplevel **out_toplevel)
+{
+	if (out_toplevel)
+	{
+		*out_toplevel = NULL;
+	}
+	if (!server)
+	{
+		return true;
+	}
+	double sx, sy;
+	struct wlr_surface *surface = surface_at(server, lx, ly, &sx, &sy);
+	if (!surface)
+	{
+		return true;
+	}
+	struct wlr_surface *root = wlr_surface_get_root_surface(surface);
+	if (root && wlr_xdg_toplevel_try_from_wlr_surface(root))
+	{
+		struct comp_toplevel *under = toplevel_at(server, lx, ly, &sx, &sy);
+		if (out_toplevel)
+		{
+			*out_toplevel = under;
+		}
+		return false;
+	}
+	struct wlr_layer_surface_v1 *ls = root ? wlr_layer_surface_v1_try_from_wlr_surface(root) : NULL;
+	if (layer_surface_is_desktop_backdrop(ls))
+	{
+		return true;
+	}
+	/* Panels / overlays / other layer surfaces: not empty desktop. */
+	return false;
 }
 
 /** Start move grab and capture cursor/view origin for delta-based motion. */
@@ -3645,6 +4168,18 @@ void server_arrange_toplevels(struct comp_server *server)
 	layout_anim_kick_outputs(server);
 }
 
+/**
+ * True when `v` can receive focus right now from a non-pointer path.
+ *
+ * Shared by workspace switching and window cycling so both skip the same stale
+ * or invisible views instead of drifting apart.
+ */
+static bool toplevel_focus_candidate(const struct comp_server *server, const struct comp_toplevel *v)
+{
+	return v && toplevel_surface_mapped(v) && toplevel_surface_initialized(v) && !v->minimized &&
+		   v->workspace == server->current_workspace;
+}
+
 /** Enable only windows belonging to the active workspace. */
 void server_workspace_apply_visibility(struct comp_server *server)
 {
@@ -3676,6 +4211,8 @@ void server_workspace_go(struct comp_server *server, int idx)
 	{
 		return;
 	}
+	/* Candidates are workspace-scoped, so the frozen ring cannot survive the switch. */
+	window_cycle_commit(server);
 	server->current_workspace = idx;
 	struct comp_toplevel *t;
 	wl_list_for_each(t, &server->toplevels, link)
@@ -3686,11 +4223,11 @@ void server_workspace_go(struct comp_server *server, int idx)
 	{
 		clear_keyboard_focus(server);
 	}
+	/* Focus history order, so returning to a workspace restores the window last used there. */
 	struct comp_toplevel *pick = NULL;
-	wl_list_for_each(t, &server->toplevels, link)
+	wl_list_for_each(t, &server->focus_order, focus_link)
 	{
-		if (t->workspace == server->current_workspace && toplevel_surface_mapped(t) &&
-			toplevel_surface_initialized(t) && !t->minimized)
+		if (toplevel_focus_candidate(server, t))
 		{
 			pick = t;
 			break;
@@ -3727,6 +4264,368 @@ void server_workspace_relative(struct comp_server *server, int delta)
 	server_workspace_go(server, idx);
 }
 
+/**
+ * Snapshot focus candidates in focus-history order.
+ *
+ * Walks focus history rather than server->toplevels: the latter is creation
+ * order, so cycling it would jump around unpredictably as windows open and
+ * close. Returns the candidate count and stores a malloc'd array in `*out_ring`
+ * (untouched when the count is 0).
+ */
+static size_t window_cycle_collect(struct comp_server *server, struct comp_toplevel ***out_ring)
+{
+	size_t n = 0;
+	struct comp_toplevel *t;
+	wl_list_for_each(t, &server->focus_order, focus_link)
+	{
+		if (toplevel_focus_candidate(server, t))
+		{
+			n++;
+		}
+	}
+	if (n == 0)
+	{
+		return 0;
+	}
+	struct comp_toplevel **ring = calloc(n, sizeof(*ring));
+	if (!ring)
+	{
+		wlr_log(WLR_ERROR, "window cycle: out of memory for %zu candidates", n);
+		return 0;
+	}
+	size_t i = 0;
+	wl_list_for_each(t, &server->focus_order, focus_link)
+	{
+		if (toplevel_focus_candidate(server, t))
+		{
+			ring[i++] = t;
+		}
+	}
+	*out_ring = ring;
+	return n;
+}
+
+/** Index of the focused toplevel within `ring`, or `len` when it is not present. */
+static size_t window_cycle_find_focused(const struct comp_server *server,
+										struct comp_toplevel *const *ring, size_t len)
+{
+	for (size_t i = 0; i < len; i++)
+	{
+		if (ring[i] == server->focused_toplevel)
+		{
+			return i;
+		}
+	}
+	return len;
+}
+
+/** Wrap `index + delta` into [0, len). */
+static size_t window_cycle_wrap(size_t index, int delta, size_t len)
+{
+	long long step = (long long)index + delta;
+	step %= (long long)len;
+	if (step < 0)
+	{
+		step += (long long)len;
+	}
+	return (size_t)step;
+}
+
+/** Focus a cycle candidate without disturbing focus history (preview step). */
+static void window_cycle_preview(struct comp_server *server, struct comp_toplevel *target)
+{
+	if (!target || target == server->focused_toplevel)
+	{
+		return;
+	}
+	server->cycle.suppress_mru = true;
+	focus_toplevel(server, target);
+	server->cycle.suppress_mru = false;
+	foreign_toplevel_sync_all(server);
+}
+
+/** Hide the switcher overlay without ending the session. */
+static void window_cycle_overlay_hide(struct comp_server *server)
+{
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	const bool log_overlay = kdbg && kdbg[0] && strcmp(kdbg, "0") != 0;
+	if (log_overlay && server->cycle.overlay.tree)
+	{
+		wlr_log(WLR_INFO, "switcher: hide before enabled=%d buffer=%d",
+			server->cycle.overlay.tree->node.enabled,
+			server->cycle.overlay.buffer && server->cycle.overlay.buffer->buffer != NULL);
+	}
+	comp_ui_overlay_hide(&server->cycle.overlay);
+	if (log_overlay && server->cycle.overlay.tree)
+	{
+		wlr_log(WLR_INFO, "switcher: hide after enabled=%d buffer=%d",
+			server->cycle.overlay.tree->node.enabled,
+			server->cycle.overlay.buffer && server->cycle.overlay.buffer->buffer != NULL);
+	}
+	struct comp_output *o;
+	wl_list_for_each(o, &server->outputs, link)
+	{
+		if (o->wlr_output)
+		{
+			/* Keep the hide visible even if wlroots has already cleared scene damage. */
+			o->force_scene_frame = true;
+			wlr_output_schedule_frame(o->wlr_output);
+		}
+	}
+}
+
+/** Rebuild the switcher list from the frozen ring and center it on the previewed output. */
+static void window_cycle_overlay_sync(struct comp_server *server)
+{
+	if (!server->cycle.active || server->cycle.len == 0)
+	{
+		window_cycle_overlay_hide(server);
+		return;
+	}
+	struct comp_ui_switcher_row *rows = calloc(server->cycle.len, sizeof(*rows));
+	if (!rows)
+	{
+		wlr_log(WLR_ERROR, "switcher: out of memory for %zu rows", server->cycle.len);
+		return;
+	}
+	for (size_t i = 0; i < server->cycle.len; i++)
+	{
+		struct comp_toplevel *t = server->cycle.ring[i];
+		rows[i].title = t && t->xdg_toplevel ? t->xdg_toplevel->title : NULL;
+		rows[i].app_id = t && t->xdg_toplevel ? t->xdg_toplevel->app_id : NULL;
+	}
+	struct comp_toplevel *sel =
+		server->cycle.index < server->cycle.len ? server->cycle.ring[server->cycle.index] : NULL;
+	struct comp_output *out = sel ? toplevel_tile_output(sel) : NULL;
+	if (!out)
+	{
+		out = comp_output_from_wlr(server, primary_wlr_output(server));
+	}
+	struct wlr_box workarea = {0, 0, 800, 600};
+	float scale = 1.0f;
+	if (out)
+	{
+		workarea = out->layer_workarea;
+		if (workarea.width <= 0 || workarea.height <= 0)
+		{
+			wlr_output_layout_get_box(server->output_layout, out->wlr_output, &workarea);
+		}
+		if (out->wlr_output && out->wlr_output->scale > 0)
+		{
+			scale = out->wlr_output->scale;
+		}
+	}
+	if (!comp_ui_switcher_present(&server->cycle.overlay, &workarea, scale, rows, server->cycle.len,
+								  server->cycle.index))
+	{
+		window_cycle_overlay_hide(server);
+		free(rows);
+		return;
+	}
+	free(rows);
+	struct comp_output *o;
+	wl_list_for_each(o, &server->outputs, link)
+	{
+		if (o->wlr_output)
+		{
+			wlr_output_schedule_frame(o->wlr_output);
+		}
+	}
+}
+
+/** Release session state without touching focus. */
+static void window_cycle_reset(struct comp_server *server)
+{
+	window_cycle_overlay_hide(server);
+	free(server->cycle.ring);
+	server->cycle.ring = NULL;
+	server->cycle.len = 0;
+	server->cycle.index = 0;
+	server->cycle.hold_mods = 0;
+	server->cycle.origin = NULL;
+	server->cycle.active = false;
+	server->cycle.suppress_mru = false;
+}
+
+/** Promote the current selection to the front of focus history and end the session. */
+static void window_cycle_commit(struct comp_server *server)
+{
+	if (!server->cycle.active)
+	{
+		return;
+	}
+	struct comp_toplevel *selected =
+		server->cycle.index < server->cycle.len ? server->cycle.ring[server->cycle.index] : NULL;
+	window_cycle_reset(server);
+	if (selected && selected->focus_listed)
+	{
+		wl_list_remove(&selected->focus_link);
+		wl_list_insert(&server->focus_order, &selected->focus_link);
+	}
+}
+
+void server_window_cycle_cancel(struct comp_server *server)
+{
+	if (!server || !server->cycle.active)
+	{
+		return;
+	}
+	struct comp_toplevel *origin = server->cycle.origin;
+	const bool restore = origin && toplevel_focus_candidate(server, origin);
+	window_cycle_reset(server);
+	if (restore)
+	{
+		/* Origin is already at the front of focus history, so a plain focus is enough. */
+		focus_toplevel(server, origin);
+		foreign_toplevel_sync_all(server);
+	}
+}
+
+bool server_window_cycle_active(const struct comp_server *server)
+{
+	return server && server->cycle.active;
+}
+
+void server_window_cycle_notify_mods(struct comp_server *server, uint32_t depressed)
+{
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	if (kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && server && server->cycle.active)
+	{
+		wlr_log(WLR_INFO, "window-cycle: modifiers depressed=0x%x hold=0x%x",
+			depressed, server->cycle.hold_mods);
+	}
+	if (!server || !server->cycle.active)
+	{
+		return;
+	}
+	if ((depressed & server->cycle.hold_mods) == 0)
+	{
+		window_cycle_commit(server);
+	}
+}
+
+/** Drop an unavailable toplevel from the active session so the frozen ring stays valid. */
+static void window_cycle_forget(struct comp_server *server, struct comp_toplevel *view)
+{
+	if (!server->cycle.active)
+	{
+		return;
+	}
+	size_t removed = server->cycle.len;
+	size_t out = 0;
+	for (size_t i = 0; i < server->cycle.len; i++)
+	{
+		if (server->cycle.ring[i] == view)
+		{
+			removed = i;
+			continue;
+		}
+		server->cycle.ring[out++] = server->cycle.ring[i];
+	}
+	if (removed == server->cycle.len)
+	{
+		return;
+	}
+	if (server->cycle.origin == view)
+	{
+		server->cycle.origin = NULL;
+	}
+	/* Keep the same selected object when an earlier ring entry disappears. */
+	if (removed < server->cycle.index)
+	{
+		server->cycle.index--;
+	}
+	server->cycle.len = out;
+	if (out == 0)
+	{
+		window_cycle_reset(server);
+		return;
+	}
+	if (server->cycle.index >= out)
+	{
+		server->cycle.index = out - 1;
+	}
+	window_cycle_overlay_sync(server);
+}
+
+/** Focus-history window cycling (Alt-Tab / Alt-Shift-Tab) with wrap-around. */
+void server_window_focus_cycle(struct comp_server *server, int delta)
+{
+	if (!server || delta == 0)
+	{
+		return;
+	}
+	if (server->cycle.active && server->cycle.len > 0)
+	{
+		/* IPC focus changes during Alt-Tab must move the frozen selection as well. */
+		const size_t current = window_cycle_find_focused(server, server->cycle.ring, server->cycle.len);
+		const size_t base = current < server->cycle.len ? current : server->cycle.index;
+		server->cycle.index = window_cycle_wrap(base, delta, server->cycle.len);
+		window_cycle_preview(server, server->cycle.ring[server->cycle.index]);
+		window_cycle_overlay_sync(server);
+		return;
+	}
+	struct comp_toplevel **ring = NULL;
+	const size_t n = window_cycle_collect(server, &ring);
+	if (n < 2)
+	{
+		free(ring);
+		return;
+	}
+	const size_t current = window_cycle_find_focused(server, ring, n);
+	/* Nothing focused (or focus sits on a layer surface): enter the ring at an end. */
+	struct comp_toplevel *target =
+		current == n ? (delta > 0 ? ring[0] : ring[n - 1]) : ring[window_cycle_wrap(current, delta, n)];
+	free(ring);
+	if (target && target != server->focused_toplevel)
+	{
+		focus_toplevel(server, target);
+		foreign_toplevel_sync_all(server);
+	}
+}
+
+void server_window_cycle_step(struct comp_server *server, int delta, uint32_t hold_mods)
+{
+	if (!server || delta == 0)
+	{
+		return;
+	}
+	if (hold_mods == 0)
+	{
+		/* No shared modifier remains, so there is nothing to hold the ring open. */
+		server_window_focus_cycle(server, delta);
+		return;
+	}
+	if (server->cycle.active && server->cycle.hold_mods != hold_mods)
+	{
+		/* A different chord took over; settle the old session before starting anew. */
+		window_cycle_commit(server);
+	}
+	if (!server->cycle.active)
+	{
+		struct comp_toplevel **ring = NULL;
+		const size_t n = window_cycle_collect(server, &ring);
+		if (n < 2)
+		{
+			free(ring);
+			return;
+		}
+		server->cycle.ring = ring;
+		server->cycle.len = n;
+		server->cycle.hold_mods = hold_mods;
+		server->cycle.origin = server->focused_toplevel;
+		server->cycle.active = true;
+		const size_t current = window_cycle_find_focused(server, ring, n);
+		server->cycle.index = current == n ? (delta > 0 ? 0 : n - 1) : window_cycle_wrap(current, delta, n);
+	}
+	else
+	{
+		server->cycle.index = window_cycle_wrap(server->cycle.index, delta, server->cycle.len);
+	}
+	window_cycle_preview(server, server->cycle.ring[server->cycle.index]);
+	window_cycle_overlay_sync(server);
+}
+
 /** Move focused window to another workspace, then repair focus/visibility. */
 void server_workspace_move_focused(struct comp_server *server, int target)
 {
@@ -3739,6 +4638,8 @@ void server_workspace_move_focused(struct comp_server *server, int target)
 	{
 		return;
 	}
+	/* Moving a window off the workspace invalidates the frozen ring. */
+	window_cycle_commit(server);
 	const bool was_focused = server->focused_toplevel == f;
 	f->workspace = target;
 	f->layout_anim_tracked = false;
@@ -3746,9 +4647,9 @@ void server_workspace_move_focused(struct comp_server *server, int target)
 	{
 		struct comp_toplevel *pick = NULL;
 		struct comp_toplevel *t;
-		wl_list_for_each(t, &server->toplevels, link)
+		wl_list_for_each(t, &server->focus_order, focus_link)
 		{
-			if (t != f && t->workspace == server->current_workspace && toplevel_surface_mapped(t))
+			if (t != f && toplevel_focus_candidate(server, t))
 			{
 				pick = t;
 				break;
@@ -4199,6 +5100,7 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 	{
 		return;
 	}
+	const enum comp_layout previous_layout = server->layout;
 	server->layout = layout;
 	if (layout == COMP_LAYOUT_TILE || layout == COMP_LAYOUT_SCROLL)
 	{
@@ -4220,6 +5122,28 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 		wl_list_for_each(v, &server->toplevels, link)
 		{
 			v->layout_anim_tracked = false;
+			if ((previous_layout == COMP_LAYOUT_TILE || previous_layout == COMP_LAYOUT_SCROLL) &&
+				toplevel_surface_mapped(v) && v->xdg_toplevel)
+			{
+				int scene_x = v->scene_tree->node.x;
+				int scene_y = v->scene_tree->node.y;
+				int width = v->xdg_toplevel->base->geometry.width;
+				int height = v->xdg_toplevel->base->geometry.height;
+				if ((width <= 0 || height <= 0) && v->xdg_toplevel->base->surface)
+				{
+					width = v->xdg_toplevel->base->surface->current.width;
+					height = v->xdg_toplevel->base->surface->current.height;
+				}
+				if (width > 0 && height > 0)
+				{
+					/* Scroll keeps non-selected windows one or more output widths offscreen.
+					 * Normalize every mapped view, including minimized ones, while entering
+					 * stack so a later panel activation restores it inside the workarea. */
+					toplevel_clamp_floating_box_to_workarea(v,
+						&scene_x, &scene_y, &width, &height);
+					wlr_scene_node_set_position(&v->scene_tree->node, scene_x, scene_y);
+				}
+			}
 		}
 		server->layout_anim_last_ns = 0;
 		if (server->focused_toplevel)
@@ -4227,6 +5151,8 @@ void server_set_layout(struct comp_server *server, enum comp_layout layout)
 			wlr_scene_node_raise_to_top(&server->focused_toplevel->scene_tree->node);
 		}
 	}
+	server_workspace_apply_visibility(server);
+	foreign_toplevel_sync_all(server);
 	server_sync_xdg_decorations(server);
 	comp_config_sync_shell_env(server);
 }
@@ -4490,12 +5416,69 @@ static void ipc_process_line(struct comp_server *server, char *line)
 		}
 		return;
 	}
+	if (!strncmp(line, "window ", 7))
+	{
+		const char *rest = line + 7;
+		while (*rest == ' ' || *rest == '\t')
+		{
+			rest++;
+		}
+		/* `window focus next` and the shorter `window next` both cycle focus history. */
+		if (!strncmp(rest, "focus ", 6))
+		{
+			rest += 6;
+			while (*rest == ' ' || *rest == '\t')
+			{
+				rest++;
+			}
+		}
+		if (!strcmp(rest, "next"))
+		{
+			server_window_focus_cycle(server, 1);
+		}
+		else if (!strcmp(rest, "prev"))
+		{
+			server_window_focus_cycle(server, -1);
+		}
+		else
+		{
+			wlr_log(WLR_INFO, "ipc: unknown window subcommand '%s' (use focus next|prev)", rest);
+		}
+		return;
+	}
+	if (!strncmp(line, "focus ", 6))
+	{
+		const char *rest = line + 6;
+		while (*rest == ' ' || *rest == '\t')
+		{
+			rest++;
+		}
+		enum comp_focus_policy pol;
+		if (!comp_config_parse_focus_policy(rest, &pol))
+		{
+			wlr_log(WLR_INFO,
+					"ipc: unknown focus '%s' (use ClickToFocus, FocusFollowsMouse, or SloppyFocus)", rest);
+			return;
+		}
+		if (!server->config)
+		{
+			wlr_log(WLR_ERROR, "ipc: focus set failed (no config)");
+			return;
+		}
+		server->config->focus_policy = pol;
+		wlr_log(WLR_INFO, "ipc: focus policy set to %s", comp_config_focus_policy_name(pol));
+		return;
+	}
 	wlr_log(WLR_INFO, "ipc: unknown command '%s'", line);
 }
 
 /** Reload config from remembered/default path and apply runtime updates atomically. */
 static bool server_reload_config(struct comp_server *server)
 {
+	/* Environment first: config resolution and hook spawns below read getenv(). */
+	comp_config_reload_environment();
+	apply_env_runtime_flags();
+
 	const char *path = server->config_path;
 	char fallback[PATH_MAX];
 	if (!path || !path[0])
@@ -4653,6 +5636,30 @@ static void keyboard_handle_destroy(struct wl_listener *listener, void *data)
 
 /* wlr_keyboard_notify_key() re-emits keyboard->events.key; ignore nested calls. */
 static int keyboard_key_dispatch_depth;
+static void keyboard_handle_key(struct wl_listener *listener, void *data);
+static void keyboard_handle_modifiers(struct wl_listener *listener, void *data);
+
+void server_keyboard_register(struct comp_server *server, struct wlr_keyboard *wlr_kbd)
+{
+	struct wlr_input_device *dev = &wlr_kbd->base;
+	struct comp_keyboard *kbd = calloc(1, sizeof(*kbd));
+	if (!kbd)
+	{
+		wlr_log(WLR_ERROR, "Out of memory allocating keyboard state");
+		return;
+	}
+	kbd->server = server;
+	kbd->dev = dev;
+
+	kbd->destroy.notify = keyboard_handle_destroy;
+	wl_signal_add(&dev->events.destroy, &kbd->destroy);
+	kbd->key.notify = keyboard_handle_key;
+	wl_signal_add(&wlr_kbd->events.key, &kbd->key);
+	kbd->modifiers.notify = keyboard_handle_modifiers;
+	wl_signal_add(&wlr_kbd->events.modifiers, &kbd->modifiers);
+
+	wlr_seat_set_keyboard(server->seat, wlr_kbd);
+}
 
 /**
  * Keyboard key callback.
@@ -4695,22 +5702,42 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data)
 	}
 
 	const bool pressed = event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
-	if (pressed)
+	const char *kdbg = getenv("MORPH_LOG_KEYS");
+	const bool log_keys = kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && sym != XKB_KEY_NoSymbol;
+	char key_name[128] = {0};
+	if (log_keys && xkb_keysym_get_name(sym, key_name, sizeof(key_name)) < 0)
 	{
-		const char *kdbg = getenv("MORPH_LOG_KEYS");
-		if (kdbg && kdbg[0] && strcmp(kdbg, "0") != 0 && sym != XKB_KEY_NoSymbol)
-		{
-			char name[128];
-			if (xkb_keysym_get_name(sym, name, sizeof(name)) < 0)
-			{
-				snprintf(name, sizeof(name), "(bad)");
-			}
-			wlr_log(WLR_INFO, "keyboard: keysym=%s mods=0x%x", name, mods_filtered);
-		}
+		snprintf(key_name, sizeof(key_name), "(bad)");
+	}
+	if (log_keys)
+	{
+		struct comp_toplevel *focused = kbd->server->focused_toplevel;
+		struct wlr_surface *focused_surface = focused ? toplevel_wlr_surface(focused) : NULL;
+		struct wlr_surface *seat_surface = kbd->server->seat->keyboard_state.focused_surface;
+		const char *focus_app_id = focused && focused->xdg_toplevel && focused->xdg_toplevel->app_id
+			? focused->xdg_toplevel->app_id
+			: "";
+		wlr_log(WLR_INFO,
+			"keyboard: %s keysym=%s mods_before=0x%x focus_app_id='%s' seat_matches=%d",
+			pressed ? "press" : "release", key_name, mods_filtered, focus_app_id,
+			focused_surface && seat_surface == focused_surface);
 	}
 
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
 	wlr_keyboard_notify_key(wlr_kbd, event);
+	if (log_keys)
+	{
+		wlr_log(WLR_INFO, "keyboard: %s keysym=%s mods_after=0x%x",
+			pressed ? "press" : "release", key_name,
+			wlr_kbd->modifiers.depressed & COMP_BIND_MOD_FILTER);
+	}
+	if (pressed && sym == XKB_KEY_Escape && server_window_cycle_active(kbd->server))
+	{
+		/* Swallow the Esc: it aborts the switcher rather than reaching the window. */
+		server_window_cycle_cancel(kbd->server);
+		keyboard_key_dispatch_depth--;
+		return;
+	}
 	if (pressed && comp_config_try_bindings(kbd->server->config, kbd->server, pressed, mods_filtered, sym))
 	{
 		if (mods_filtered & WLR_MODIFIER_LOGO)
@@ -4736,6 +5763,7 @@ static void keyboard_handle_modifiers(struct wl_listener *listener, void *data)
 	struct wlr_keyboard *wlr_kbd = wlr_keyboard_from_input_device(kbd->dev);
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
 	wlr_seat_keyboard_notify_modifiers(kbd->server->seat, &wlr_kbd->modifiers);
+	server_window_cycle_notify_mods(kbd->server, wlr_kbd->modifiers.depressed);
 	if ((wlr_kbd->modifiers.depressed & WLR_MODIFIER_LOGO) == 0)
 	{
 		kbd->server->suppress_logo_pointer_drag = false;
@@ -4867,7 +5895,7 @@ static void server_clear_tracked_inputs(struct comp_server *server)
 }
 
 /** Recompute wl_seat capability bitset from currently tracked devices. */
-static void server_update_seat_capabilities(struct comp_server *server)
+void server_update_seat_capabilities(struct comp_server *server)
 {
 	uint32_t caps = WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
 	struct comp_tracked_input *ti;
@@ -5380,14 +6408,6 @@ static void server_new_input(struct wl_listener *listener, void *data)
 	case WLR_INPUT_DEVICE_KEYBOARD:
 	{
 		struct wlr_keyboard *wlr_kbd = wlr_keyboard_from_input_device(dev);
-		struct comp_keyboard *kbd = calloc(1, sizeof(*kbd));
-		if (!kbd)
-		{
-			wlr_log(WLR_ERROR, "Out of memory allocating keyboard state");
-			return;
-		}
-		kbd->server = server;
-		kbd->dev = dev;
 
 		const char *xkb_layout = getenv("XKB_DEFAULT_LAYOUT");
 		const char *xkb_model = getenv("XKB_DEFAULT_MODEL");
@@ -5448,14 +6468,7 @@ static void server_new_input(struct wl_listener *listener, void *data)
 		xkb_context_unref(ctx);
 		wlr_keyboard_set_repeat_info(wlr_kbd, 25, 600);
 
-		kbd->destroy.notify = keyboard_handle_destroy;
-		wl_signal_add(&dev->events.destroy, &kbd->destroy);
-		kbd->key.notify = keyboard_handle_key;
-		wl_signal_add(&wlr_kbd->events.key, &kbd->key);
-		kbd->modifiers.notify = keyboard_handle_modifiers;
-		wl_signal_add(&wlr_kbd->events.modifiers, &kbd->modifiers);
-
-		wlr_seat_set_keyboard(server->seat, wlr_kbd);
+		server_keyboard_register(server, wlr_kbd);
 		server_update_seat_capabilities(server);
 		/* Do not wlr_cursor_attach_input_device(keyboard): only pointer/touch/tablet. */
 		break;
@@ -5963,6 +6976,14 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 		/* Re-entering transfers cursor ownership back to the client immediately. */
 		wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
 		wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
+		/* FocusFollowsMouse / SloppyFocus: keyboard follows XDG toplevel enter only.
+		 * Desktop-like BACKGROUND/BOTTOM layers count as empty root; panels do not. */
+		if (server_focus_policy(server) != COMP_FOCUS_CLICK)
+		{
+			struct comp_toplevel *under = NULL;
+			const bool empty_root = pointer_focus_target_at(server, server->cursor->x, server->cursor->y, &under);
+			apply_motion_focus_policy(server, under, empty_root);
+		}
 		return;
 	}
 
@@ -5977,6 +6998,7 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 			 * spurious resizer jumps in transient surface holes. */
 			/* Keep last client-owned pointer focus/cursor untouched to prevent
 			 * mode flapping while crossing tiny no-surface gaps near edges. */
+			apply_motion_focus_policy(server, edge_view, false);
 			return;
 		}
 		const uint32_t edges = toplevel_resize_edges_at_cursor(server, edge_view);
@@ -6000,6 +7022,7 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 	/* Background/empty space: compositor default cursor and no focused pointer surface. */
 	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 	wlr_seat_pointer_notify_clear_focus(server->seat);
+	apply_motion_focus_policy(server, NULL, true);
 }
 
 /** Relative pointer motion callback. */
@@ -6195,7 +7218,11 @@ static void server_cursor_button(struct wl_listener *listener, void *data)
 		else
 		{
 			layer_surface_try_keyboard_focus_click(server, server->cursor->x, server->cursor->y);
-			if (!surface_at(server, server->cursor->x, server->cursor->y, NULL, NULL))
+			/* ClickToFocus and FocusFollowsMouse clear on empty root / desktop backdrop;
+			 * SloppyFocus keeps focus. Panels are not empty root. */
+			struct comp_toplevel *under = NULL;
+			if (server_focus_policy(server) != COMP_FOCUS_SLOPPY &&
+				pointer_focus_target_at(server, server->cursor->x, server->cursor->y, &under) && !under)
 			{
 				clear_keyboard_focus(server);
 			}
@@ -6379,6 +7406,20 @@ bool server_init(struct comp_server *server)
 		return false;
 	}
 
+	server->export_dmabuf_manager = wlr_export_dmabuf_manager_v1_create(dpy);
+	if (!server->export_dmabuf_manager)
+	{
+		wlr_log(WLR_ERROR, "Failed to create wlr_export_dmabuf_manager_v1");
+		return false;
+	}
+
+	server->ext_data_control_manager = wlr_ext_data_control_manager_v1_create(dpy, 1);
+	if (!server->ext_data_control_manager)
+	{
+		wlr_log(WLR_ERROR, "Failed to create wlr_ext_data_control_manager_v1");
+		return false;
+	}
+
 	server->pointer_constraints = wlr_pointer_constraints_v1_create(dpy);
 	if (!server->pointer_constraints)
 	{
@@ -6406,12 +7447,22 @@ bool server_init(struct comp_server *server)
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = wlr_scene_tree_create(&server->scene->tree);
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] =
 		wlr_scene_tree_create(&server->scene->tree);
+	server->ui_tree = wlr_scene_tree_create(&server->scene->tree);
+
+	if (!gamma_control_init(server))
+	{
+		return false;
+	}
 
 	server->xdg_shell = wlr_xdg_shell_create(dpy, 3);
 	server->foreign_toplevel_manager = wlr_foreign_toplevel_manager_v1_create(dpy);
 	if (!server->foreign_toplevel_manager)
 	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_foreign_toplevel_manager_v1");
+		return false;
+	}
+	if (!image_capture_init(server))
+	{
 		return false;
 	}
 	/* Keep backend lifetime wired to compositor shutdown. */
@@ -6461,6 +7512,10 @@ bool server_init(struct comp_server *server)
 		wlr_log(WLR_ERROR, "Failed to create wlr_tablet_v2 manager");
 		return false;
 	}
+	if (!virtual_input_init(server))
+	{
+		return false;
+	}
 	wl_list_init(&server->tablets);
 	wl_list_init(&server->tracked_inputs);
 
@@ -6507,6 +7562,18 @@ bool server_init(struct comp_server *server)
 
 	wl_list_init(&server->outputs);
 	wl_list_init(&server->toplevels);
+	wl_list_init(&server->focus_order);
+	comp_ui_overlay_init(&server->cycle.overlay, server->ui_tree);
+
+	if (!output_power_init(server))
+	{
+		return false;
+	}
+	if (!output_mgmt_init(server))
+	{
+		return false;
+	}
+
 	server->ipc_listen_fd = -1;
 	server->ipc_socket_path[0] = '\0';
 	server->grab = COMP_GRAB_NONE;
@@ -6533,12 +7600,16 @@ static void server_finish(struct comp_server *server)
 	 * on partially destroyed seat/client objects.
 	 */
 	server_clear_tracked_inputs(server);
+	window_cycle_reset(server);
+	comp_ui_overlay_fini(&server->cycle.overlay);
 	/*
 	 * Prevent wlroots destroy-time assertions by removing our listeners from
 	 * protocol/backend listener lists before the display/global teardown starts.
 	 */
 	server_detach_global_listeners(server);
+	motion_focus_idle_cancel(server);
 	compositor_session_active = false;
+	gamma_control_fini(server);
 	ext_workspace_fini(server);
 	ipc_fini(server);
 	comp_config_free(server->config);
@@ -6576,6 +7647,8 @@ static void print_usage(const char *argv0)
 	printf("  --scroll-move ARG          prev|next|left|right|N\n");
 	printf("  --workspace ARG            1..%d|next|prev\n", COMP_WORKSPACE_COUNT);
 	printf("  --workspace-move N         Move focused window to workspace N\n");
+	printf("  --window-focus next|prev   Cycle window focus in focus-history order\n");
+	printf("  --focus POLICY             ClickToFocus|FocusFollowsMouse|SloppyFocus\n");
 	printf("  --reload-config            Send reload request to running compositor\n");
 	printf("  --allow-builtin-fallback   Start with synthesized config defaults if no file resolves\n");
 	printf("  --ipc                      Keep compatibility; IPC is default-on\n");
@@ -6704,24 +7777,7 @@ int main(int argc, char **argv)
 
 	wlr_log_init(startup_log_level, morph_log_callback);
 	morph_active_log_level = startup_log_level;
-	{
-		const char *e = getenv("MORPH_DEBUG_XDG");
-		xdg_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
-	}
-	{
-		const char *e = getenv("MORPH_DEBUG_XDG_COMMITS");
-		xdg_commit_debug_logs_enabled = xdg_debug_logs_enabled &&
-			e && e[0] && strcmp(e, "0") != 0;
-	}
-	{
-		const char *e = getenv("MORPH_DEBUG_POINTER_FOCUS");
-		pointer_focus_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
-	}
-	{
-		const char *e = getenv("MORPH_DEBUG_LAYER_HIT");
-		layer_hit_debug_logs_enabled = e && e[0] && strcmp(e, "0") != 0;
-	}
-	configure_bridge_resize_rate_from_env();
+	apply_env_runtime_flags();
 	/*
 	 * Some parent processes leave SIGCHLD ignored; the kernel then auto-reaps
 	 * children and waitpid() in when= / shutdown hooks fails with ECHILD.
@@ -6752,9 +7808,13 @@ int main(int argc, char **argv)
 	char workspace_line[64];
 	bool workspace_move_from_argv = false;
 	char workspace_move_line[64];
+	bool window_focus_from_argv = false;
+	char window_focus_line[64];
 	bool no_ipc = false;
 	bool reload_config_from_argv = false;
 	bool allow_builtin_fallback = false;
+	bool focus_from_argv = false;
+	enum comp_focus_policy initial_focus_policy = COMP_FOCUS_CLICK;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -6996,6 +8056,29 @@ int main(int argc, char **argv)
 			snprintf(workspace_move_line, sizeof(workspace_move_line), "workspace move %ld\n", n);
 			workspace_move_from_argv = true;
 		}
+		else if (!strcmp(argv[i], "--window-focus"))
+		{
+			if (i + 1 >= argc)
+			{
+				wlr_log(WLR_ERROR, "Missing value after --window-focus");
+				return 1;
+			}
+			const char *v = argv[++i];
+			if (!strcasecmp(v, "next"))
+			{
+				snprintf(window_focus_line, sizeof(window_focus_line), "window focus next\n");
+			}
+			else if (!strcasecmp(v, "prev"))
+			{
+				snprintf(window_focus_line, sizeof(window_focus_line), "window focus prev\n");
+			}
+			else
+			{
+				wlr_log(WLR_ERROR, "Unknown --window-focus %s (use next or prev)", v);
+				return 1;
+			}
+			window_focus_from_argv = true;
+		}
 		else if (!strcmp(argv[i], "--ipc"))
 		{
 			/* IPC is default-on when XDG_RUNTIME_DIR is set; flag kept for scripts. */
@@ -7007,6 +8090,22 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[i], "--reload-config"))
 		{
 			reload_config_from_argv = true;
+		}
+		else if (!strcmp(argv[i], "--focus"))
+		{
+			if (i + 1 >= argc)
+			{
+				wlr_log(WLR_ERROR, "Missing value after --focus");
+				return 1;
+			}
+			const char *v = argv[++i];
+			if (!comp_config_parse_focus_policy(v, &initial_focus_policy))
+			{
+				wlr_log(WLR_ERROR,
+						"Unknown --focus %s (use ClickToFocus, FocusFollowsMouse, or SloppyFocus)", v);
+				return 1;
+			}
+			focus_from_argv = true;
 		}
 		else if (!strcmp(argv[i], "--allow-builtin-fallback"))
 		{
@@ -7079,6 +8178,15 @@ int main(int argc, char **argv)
 		}
 		wlr_log(WLR_INFO, "Sent workspace to running morph via IPC");
 	}
+	if (window_focus_from_argv)
+	{
+		if (ipc_client_send_line(window_focus_line) != 0)
+		{
+			wlr_log(WLR_ERROR, "No running morph or IPC failed for --window-focus");
+			return 1;
+		}
+		wlr_log(WLR_INFO, "Sent window focus to running morph via IPC");
+	}
 	if (layout_from_argv)
 	{
 		char line[48];
@@ -7090,8 +8198,18 @@ int main(int argc, char **argv)
 			return 0;
 		}
 	}
+	if (focus_from_argv)
+	{
+		char line[64];
+		snprintf(line, sizeof(line), "focus %s\n", comp_config_focus_policy_name(initial_focus_policy));
+		if (ipc_client_send_line(line) == 0)
+		{
+			wlr_log(WLR_INFO, "Applied focus policy to running morph via IPC");
+			return 0;
+		}
+	}
 	if (tile_move_from_argv || tile_grid_from_argv || scroll_move_from_argv ||
-		workspace_from_argv || workspace_move_from_argv)
+		workspace_from_argv || workspace_move_from_argv || window_focus_from_argv)
 	{
 		return 0;
 	}
@@ -7119,6 +8237,12 @@ int main(int argc, char **argv)
 	{
 		wlr_log(WLR_ERROR, "Failed to load keybind config");
 		return 1;
+	}
+	if (focus_from_argv)
+	{
+		cfg->focus_policy = initial_focus_policy;
+		wlr_log(WLR_INFO, "Startup focus policy override: %s",
+				comp_config_focus_policy_name(initial_focus_policy));
 	}
 
 	char ipc_probe[108];

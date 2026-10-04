@@ -1,0 +1,713 @@
+[2026-09-04 15:50:22] INFO: [morph] ============================= N E W  S T A R T ================================
+[2026-09-04 15:50:22] INFO: [morph] Cleared shutdown list file.
+[2026-09-04 15:50:22] INFO: [morph] Runtime summary:
+[2026-09-04 15:50:22] INFO: [morph] --------------------------------------------------------------------------------
+[2026-09-04 15:50:22] INFO: [morph] Environment source:              loaded system environment: /etc/morph/environment
+[2026-09-04 15:50:22] INFO: [morph] Selected session mode:           native-tty
+[2026-09-04 15:50:22] INFO: [morph] X11 probe details:               DISPLAY is not set and no reachable X11 display was found
+[2026-09-04 15:50:22] INFO: [morph] Config file path:                /home/nathan/.config/morph/morph.conf (user config fallback)
+[2026-09-04 15:50:22] INFO: [morph] Builtin fallback enabled:        0
+[2026-09-04 15:50:22] INFO: [morph] Managed hooks enabled:           1
+[2026-09-04 15:50:22] INFO: [morph] Managed system hook directory:   /etc/morph
+[2026-09-04 15:50:22] INFO: [morph] Managed system config directory: /etc/morph
+[2026-09-04 15:50:22] INFO: [morph] User config directory:           /home/nathan/.config/morph
+[2026-09-04 15:50:22] INFO: [morph] Compositor binary:               /usr/bin/morph
+[2026-09-04 15:50:22] INFO: [morph] WLR_BACKENDS:                    drm,libinput...
+[2026-09-04 15:50:22] INFO: [morph] WLR_WL_SOCKET:                   unset
+[2026-09-04 15:50:22] INFO: [morph] LD_LIBRARY_PATH:                 unset
+[2026-09-04 15:50:22] INFO: [morph] MORPH_DBG:                       0
+[2026-09-04 15:50:22] INFO: [morph] MORPH_LOG_LEVEL:                 error
+[2026-09-04 15:50:22] INFO: [morph] Crash handler enabled:           0
+[2026-09-04 15:50:22] INFO: [morph] MORPH_X11:                       1
+[2026-09-04 15:50:22] INFO: [morph] MORPH_X11_DISPLAY:               auto (:2..:99)
+[2026-09-04 15:50:22] INFO: [morph] Log file path:                   /home/nathan/.local/state/morph/morph.log
+[2026-09-04 15:50:22] INFO: [morph] Crash log file path:             /home/nathan/.local/state/morph/morph-crash.log
+[2026-09-04 15:50:22] INFO: [morph] Startup log file:                /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-04 15:50:22] INFO: [morph] Shutdown log file:               /home/nathan/.local/state/morph/morph-shutdown.log
+[2026-09-04 15:50:22] INFO: [morph] Shutdown list file:              /home/nathan/.local/state/morph/shutdown_list.nfo
+[2026-09-04 15:50:22] INFO: [morph] Execution mode: log-level=error, crash-handler=disabled (--no-crash-handler)
+[2026-09-04 15:50:22] INFO: [morph] Capturing compositor stdout/stderr into startup log: /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-04 15:50:22] INFO: [morph] Native Wayland mode detected. Starting managed session services.
+ 2026-09-04T20:50:22.836Z INFO  xwayland_satellite > Starting xwayland-satellite version 0.8.2
+[2026-09-04 15:50:22] WARN: [morph] Portal executable candidate is not a directory: /usr/libexec
+[2026-09-04 15:50:22] WARN: [morph] Portal executable candidate is incomplete: /usr/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-04 15:50:22] WARN: [morph] Portal executable candidate is not a directory: /usr/local/libexec
+[2026-09-04 15:50:22] WARN: [morph] Portal executable candidate is incomplete: /usr/local/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-04 15:50:22] ERROR: [morph] No complete xdg-desktop-portal default set found in MORPH_PORTAL_LIBEXEC_DIR or known libexec paths.
+[2026-09-04 15:50:22] ERROR: [morph] Portal startup skipped because portal configuration failed to load.
+[2026-09-04 15:50:22] INFO: [morph] Configured user startup hook file is not readable, skipping: ~/.config/morph/startup.sh
+ 2026-09-04T20:50:22.848Z WARN  xwayland_satellite::server > Couldn't bind fractional scale manager: the requested global was not found in the registry. Fractional scaling will not work.
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > > Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > >                   Using F23, ignoring XF86TouchpadOff
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK23> redefined
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK24> redefined
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOn
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOff
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ActionOnSelection
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualInsert
+ 2026-09-04T20:50:22.946Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualQuery
+ 2026-09-04T20:50:22.947Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-04T20:50:22.953Z INFO  xwayland_satellite::xstate > xfixes version: 1.0
+ 2026-09-04T20:50:22.959Z INFO  xwayland_satellite         > Connected to Xwayland on :2
+ 2026-09-04T20:50:22.959Z INFO  xwayland_satellite         > Successfully notified systemd of ready state.
+ 2026-09-04T20:50:22.968Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-04T20:50:22.968Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-04T20:50:22.968Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-04T20:50:22.968Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-04T20:50:22.968Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:50:22.968Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-04T20:50:22.968Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:50:22.969Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-04T20:50:28.448Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-04T20:50:28.448Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-04T20:50:28.448Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-04T20:50:28.448Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-04T20:50:28.448Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:50:28.448Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-04T20:50:28.448Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:50:28.449Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+sh: line 1: [stack: command not found
+sh: line 1: [stack: command not found
+sh: line 1: [stack: command not found
+sh: line 1: [stack: command not found
+sh: line 1: [stack: command not found
+sh: line 1: [stack: command not found
+Io error: Io error: Broken pipe (os error Connection reset by peer32 (os error )104
+)
+Io error: Connection reset by peer (os error 104)
+Io error: Io error: Broken pipe (os error 32)
+Broken pipe (os error 32)
+
+thread 'main' (247264) panicked at src/server/mod.rs:789:21:
+Failed flushing clientside events: Io(
+    Os {
+        code: 32,
+        kind: BrokenPipe,
+        message: "Broken pipe",
+    },
+)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Io error: Connection reset by peer (os error 104)
+Error: ExitFailure(1)
+Io error: Broken pipe (os error 32)
+Error: ExitFailure(1)
+[2026-09-04 15:55:14] INFO: [morph] ============================= N E W  S T A R T ================================
+[2026-09-04 15:55:14] INFO: [morph] Cleared shutdown list file.
+[2026-09-04 15:55:14] INFO: [morph] Runtime summary:
+[2026-09-04 15:55:14] INFO: [morph] --------------------------------------------------------------------------------
+[2026-09-04 15:55:14] INFO: [morph] Environment source:              loaded system environment: /etc/morph/environment
+[2026-09-04 15:55:14] INFO: [morph] Selected session mode:           native-tty
+[2026-09-04 15:55:14] INFO: [morph] X11 probe details:               DISPLAY is not set and no reachable X11 display was found
+[2026-09-04 15:55:14] INFO: [morph] Config file path:                /home/nathan/.config/morph/morph.conf (user config fallback)
+[2026-09-04 15:55:14] INFO: [morph] Builtin fallback enabled:        0
+[2026-09-04 15:55:14] INFO: [morph] Managed hooks enabled:           1
+[2026-09-04 15:55:14] INFO: [morph] Managed system hook directory:   /etc/morph
+[2026-09-04 15:55:14] INFO: [morph] Managed system config directory: /etc/morph
+[2026-09-04 15:55:14] INFO: [morph] User config directory:           /home/nathan/.config/morph
+[2026-09-04 15:55:14] INFO: [morph] Compositor binary:               /usr/bin/morph
+[2026-09-04 15:55:14] INFO: [morph] WLR_BACKENDS:                    drm,libinput...
+[2026-09-04 15:55:14] INFO: [morph] WLR_WL_SOCKET:                   unset
+[2026-09-04 15:55:14] INFO: [morph] LD_LIBRARY_PATH:                 unset
+[2026-09-04 15:55:14] INFO: [morph] MORPH_DBG:                       0
+[2026-09-04 15:55:14] INFO: [morph] MORPH_LOG_LEVEL:                 error
+[2026-09-04 15:55:14] INFO: [morph] Crash handler enabled:           0
+[2026-09-04 15:55:14] INFO: [morph] MORPH_X11:                       1
+[2026-09-04 15:55:14] INFO: [morph] MORPH_X11_DISPLAY:               auto (:2..:99)
+[2026-09-04 15:55:14] INFO: [morph] Log file path:                   /home/nathan/.local/state/morph/morph.log
+[2026-09-04 15:55:14] INFO: [morph] Crash log file path:             /home/nathan/.local/state/morph/morph-crash.log
+[2026-09-04 15:55:14] INFO: [morph] Startup log file:                /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-04 15:55:14] INFO: [morph] Shutdown log file:               /home/nathan/.local/state/morph/morph-shutdown.log
+[2026-09-04 15:55:14] INFO: [morph] Shutdown list file:              /home/nathan/.local/state/morph/shutdown_list.nfo
+[2026-09-04 15:55:14] INFO: [morph] Execution mode: log-level=error, crash-handler=disabled (--no-crash-handler)
+[2026-09-04 15:55:14] INFO: [morph] Capturing compositor stdout/stderr into startup log: /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-04 15:55:15] INFO: [morph] Native Wayland mode detected. Starting managed session services.
+[2026-09-04 15:55:15] WARN: [morph] Portal executable candidate is not a directory: /usr/libexec
+ 2026-09-04T20:55:15.870Z INFO  xwayland_satellite > Starting xwayland-satellite version 0.8.2
+[2026-09-04 15:55:15] WARN: [morph] Portal executable candidate is incomplete: /usr/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-04 15:55:15] WARN: [morph] Portal executable candidate is not a directory: /usr/local/libexec
+[2026-09-04 15:55:15] WARN: [morph] Portal executable candidate is incomplete: /usr/local/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-04 15:55:15] ERROR: [morph] No complete xdg-desktop-portal default set found in MORPH_PORTAL_LIBEXEC_DIR or known libexec paths.
+[2026-09-04 15:55:15] ERROR: [morph] Portal startup skipped because portal configuration failed to load.
+[2026-09-04 15:55:15] INFO: [morph] Configured user startup hook file is not readable, skipping: ~/.config/morph/startup.sh
+ 2026-09-04T20:55:15.890Z WARN  xwayland_satellite::server > Couldn't bind fractional scale manager: the requested global was not found in the registry. Fractional scaling will not work.
+ 2026-09-04T20:55:15.996Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-04T20:55:15.996Z INFO  xwayland_process           > > Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+ 2026-09-04T20:55:15.996Z INFO  xwayland_process           > >                   Using F23, ignoring XF86TouchpadOff
+ 2026-09-04T20:55:15.996Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK23> redefined
+ 2026-09-04T20:55:15.996Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-04T20:55:15.996Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK24> redefined
+ 2026-09-04T20:55:15.996Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-04T20:55:15.997Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOn
+ 2026-09-04T20:55:15.997Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOff
+ 2026-09-04T20:55:15.997Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ActionOnSelection
+ 2026-09-04T20:55:15.997Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualInsert
+ 2026-09-04T20:55:15.997Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualQuery
+ 2026-09-04T20:55:15.998Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-04T20:55:16.004Z INFO  xwayland_satellite::xstate > xfixes version: 1.0
+ 2026-09-04T20:55:16.013Z INFO  xwayland_satellite         > Connected to Xwayland on :2
+ 2026-09-04T20:55:16.013Z INFO  xwayland_satellite         > Successfully notified systemd of ready state.
+ 2026-09-04T20:55:16.023Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-04T20:55:16.023Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-04T20:55:16.023Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-04T20:55:16.023Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-04T20:55:16.023Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:55:16.023Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-04T20:55:16.023Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:55:16.025Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-04T20:55:29.607Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-04T20:55:29.607Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-04T20:55:29.607Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-04T20:55:29.608Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-04T20:55:29.608Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:55:29.608Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-04T20:55:29.608Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:55:29.609Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+Io error: Io error: Connection reset by peer (os error 104)
+Broken pipe (os error 32)
+
+thread 'main' (896) panicked at src/server/mod.rs:789:21:
+Failed flushing clientside events: Io(
+    Os {
+        code: 32,
+        kind: BrokenPipe,
+        message: "Broken pipe",
+    },
+)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Io error: Connection reset by peer (os error 104)
+Io error: Connection reset by peer (os error 104)
+Error: ExitFailure(1)
+[2026-09-04 15:58:02] INFO: [morph] ============================= N E W  S T A R T ================================
+[2026-09-04 15:58:02] INFO: [morph] Cleared shutdown list file.
+[2026-09-04 15:58:02] INFO: [morph] Runtime summary:
+[2026-09-04 15:58:02] INFO: [morph] --------------------------------------------------------------------------------
+[2026-09-04 15:58:02] INFO: [morph] Environment source:              loaded system environment: /etc/morph/environment
+[2026-09-04 15:58:02] INFO: [morph] Selected session mode:           native-tty
+[2026-09-04 15:58:02] INFO: [morph] X11 probe details:               DISPLAY is not set and no reachable X11 display was found
+[2026-09-04 15:58:02] INFO: [morph] Config file path:                /home/nathan/.config/morph/morph.conf (user config fallback)
+[2026-09-04 15:58:02] INFO: [morph] Builtin fallback enabled:        0
+[2026-09-04 15:58:02] INFO: [morph] Managed hooks enabled:           1
+[2026-09-04 15:58:02] INFO: [morph] Managed system hook directory:   /etc/morph
+[2026-09-04 15:58:02] INFO: [morph] Managed system config directory: /etc/morph
+[2026-09-04 15:58:02] INFO: [morph] User config directory:           /home/nathan/.config/morph
+[2026-09-04 15:58:02] INFO: [morph] Compositor binary:               /usr/bin/morph
+[2026-09-04 15:58:02] INFO: [morph] WLR_BACKENDS:                    drm,libinput...
+[2026-09-04 15:58:02] INFO: [morph] WLR_WL_SOCKET:                   unset
+[2026-09-04 15:58:02] INFO: [morph] LD_LIBRARY_PATH:                 unset
+[2026-09-04 15:58:02] INFO: [morph] MORPH_DBG:                       0
+[2026-09-04 15:58:02] INFO: [morph] MORPH_LOG_LEVEL:                 error
+[2026-09-04 15:58:02] INFO: [morph] Crash handler enabled:           0
+[2026-09-04 15:58:02] INFO: [morph] MORPH_X11:                       1
+[2026-09-04 15:58:02] INFO: [morph] MORPH_X11_DISPLAY:               auto (:2..:99)
+[2026-09-04 15:58:02] INFO: [morph] Log file path:                   /home/nathan/.local/state/morph/morph.log
+[2026-09-04 15:58:02] INFO: [morph] Crash log file path:             /home/nathan/.local/state/morph/morph-crash.log
+[2026-09-04 15:58:02] INFO: [morph] Startup log file:                /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-04 15:58:02] INFO: [morph] Shutdown log file:               /home/nathan/.local/state/morph/morph-shutdown.log
+[2026-09-04 15:58:02] INFO: [morph] Shutdown list file:              /home/nathan/.local/state/morph/shutdown_list.nfo
+[2026-09-04 15:58:02] INFO: [morph] Execution mode: log-level=error, crash-handler=disabled (--no-crash-handler)
+[2026-09-04 15:58:02] INFO: [morph] Capturing compositor stdout/stderr into startup log: /home/nathan/.local/state/morph/morph-startup.log
+ 2026-09-04T20:58:02.446Z INFO  xwayland_satellite > Starting xwayland-satellite version 0.8.2
+[2026-09-04 15:58:02] INFO: [morph] Native Wayland mode detected. Starting managed session services.
+ 2026-09-04T20:58:02.455Z WARN  xwayland_satellite::server > Couldn't bind fractional scale manager: the requested global was not found in the registry. Fractional scaling will not work.
+[2026-09-04 15:58:02] WARN: [morph] Portal executable candidate is not a directory: /usr/libexec
+[2026-09-04 15:58:02] WARN: [morph] Portal executable candidate is incomplete: /usr/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-04 15:58:02] WARN: [morph] Portal executable candidate is not a directory: /usr/local/libexec
+[2026-09-04 15:58:02] WARN: [morph] Portal executable candidate is incomplete: /usr/local/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-04 15:58:02] ERROR: [morph] No complete xdg-desktop-portal default set found in MORPH_PORTAL_LIBEXEC_DIR or known libexec paths.
+[2026-09-04 15:58:02] ERROR: [morph] Portal startup skipped because portal configuration failed to load.
+[2026-09-04 15:58:02] INFO: [morph] Configured user startup hook file is not readable, skipping: ~/.config/morph/startup.sh
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > > Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > >                   Using F23, ignoring XF86TouchpadOff
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK23> redefined
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK24> redefined
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOn
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOff
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ActionOnSelection
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualInsert
+ 2026-09-04T20:58:02.561Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualQuery
+ 2026-09-04T20:58:02.563Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-04T20:58:02.566Z INFO  xwayland_satellite::xstate > xfixes version: 1.0
+ 2026-09-04T20:58:02.574Z INFO  xwayland_satellite         > Connected to Xwayland on :2
+ 2026-09-04T20:58:02.574Z INFO  xwayland_satellite         > Successfully notified systemd of ready state.
+ 2026-09-04T20:58:02.583Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-04T20:58:02.583Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-04T20:58:02.583Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-04T20:58:02.584Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-04T20:58:02.584Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:58:02.584Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-04T20:58:02.584Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:58:02.585Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-04T20:58:10.617Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-04T20:58:10.617Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-04T20:58:10.617Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-04T20:58:10.617Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-04T20:58:10.617Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:58:10.617Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-04T20:58:10.617Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-04T20:58:10.618Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+sh: line 1: [stack: command not found
+sh: line 1: [stack: command not found
+Io error: Broken pipe (os error 32)
+
+thread 'main' (4626) panicked at src/server/mod.rs:818:79:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Error: ExitFailure(1)
+Error: ExitFailure(1)
+[2026-09-04 15:59:32] INFO: [morph] Compositor exited normally with exit code 0.
+[2026-09-04 15:59:32] INFO: [morph] Compositor exited cleanly; relying on compositor-managed shutdown hooks.
+[2026-09-06 19:44:03] INFO: [morph] ============================= N E W  S T A R T ================================
+[2026-09-06 19:44:03] INFO: [morph] Cleared shutdown list file.
+[2026-09-06 19:44:03] INFO: [morph] Runtime summary:
+[2026-09-06 19:44:03] INFO: [morph] --------------------------------------------------------------------------------
+[2026-09-06 19:44:03] INFO: [morph] Environment source:              loaded system environment: /etc/morph/environment
+[2026-09-06 19:44:03] INFO: [morph] Selected session mode:           native-tty
+[2026-09-06 19:44:03] INFO: [morph] X11 probe details:               DISPLAY is not set and no reachable X11 display was found
+[2026-09-06 19:44:03] INFO: [morph] Config file path:                /home/nathan/.config/morph/morph.conf (user config fallback)
+[2026-09-06 19:44:03] INFO: [morph] Builtin fallback enabled:        0
+[2026-09-06 19:44:03] INFO: [morph] Managed hooks enabled:           1
+[2026-09-06 19:44:03] INFO: [morph] Managed system hook directory:   /etc/morph
+[2026-09-06 19:44:03] INFO: [morph] Managed system config directory: /etc/morph
+[2026-09-06 19:44:03] INFO: [morph] User config directory:           /home/nathan/.config/morph
+[2026-09-06 19:44:03] INFO: [morph] Compositor binary:               /usr/bin/morph
+[2026-09-06 19:44:03] INFO: [morph] WLR_BACKENDS:                    drm,libinput...
+[2026-09-06 19:44:03] INFO: [morph] WLR_WL_SOCKET:                   unset
+[2026-09-06 19:44:03] INFO: [morph] LD_LIBRARY_PATH:                 unset
+[2026-09-06 19:44:03] INFO: [morph] MORPH_DBG:                       0
+[2026-09-06 19:44:03] INFO: [morph] MORPH_LOG_LEVEL:                 error
+[2026-09-06 19:44:03] INFO: [morph] Crash handler enabled:           0
+[2026-09-06 19:44:03] INFO: [morph] MORPH_X11:                       1
+[2026-09-06 19:44:03] INFO: [morph] MORPH_X11_DISPLAY:               auto (:2..:99)
+[2026-09-06 19:44:03] INFO: [morph] Log file path:                   /home/nathan/.local/state/morph/morph.log
+[2026-09-06 19:44:03] INFO: [morph] Crash log file path:             /home/nathan/.local/state/morph/morph-crash.log
+[2026-09-06 19:44:03] INFO: [morph] Startup log file:                /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-06 19:44:03] INFO: [morph] Shutdown log file:               /home/nathan/.local/state/morph/morph-shutdown.log
+[2026-09-06 19:44:03] INFO: [morph] Shutdown list file:              /home/nathan/.local/state/morph/shutdown_list.nfo
+[2026-09-06 19:44:03] INFO: [morph] Execution mode: log-level=error, crash-handler=disabled (--no-crash-handler)
+[2026-09-06 19:44:03] INFO: [morph] Capturing compositor stdout/stderr into startup log: /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-06 19:44:05] INFO: [morph] Native Wayland mode detected. Starting managed session services.
+[2026-09-06 19:44:05] WARN: [morph] Portal executable candidate is not a directory: /usr/libexec
+[2026-09-06 19:44:05] WARN: [morph] Portal executable candidate is incomplete: /usr/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-06 19:44:05] WARN: [morph] Portal executable candidate is not a directory: /usr/local/libexec
+[2026-09-06 19:44:05] WARN: [morph] Portal executable candidate is incomplete: /usr/local/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-06 19:44:05] ERROR: [morph] No complete xdg-desktop-portal default set found in MORPH_PORTAL_LIBEXEC_DIR or known libexec paths.
+[2026-09-06 19:44:05] ERROR: [morph] Portal startup skipped because portal configuration failed to load.
+ 2026-09-07T00:44:05.043Z INFO  xwayland_satellite > Starting xwayland-satellite version 0.8.2
+[2026-09-06 19:44:05] INFO: [morph] Configured user startup hook file is not readable, skipping: ~/.config/morph/startup.sh
+ 2026-09-07T00:44:05.058Z WARN  xwayland_satellite::server > Couldn't bind fractional scale manager: the requested global was not found in the registry. Fractional scaling will not work.
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > > Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > >                   Using F23, ignoring XF86TouchpadOff
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK23> redefined
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK24> redefined
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOn
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOff
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ActionOnSelection
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualInsert
+ 2026-09-07T00:44:05.113Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualQuery
+ 2026-09-07T00:44:05.114Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-07T00:44:05.117Z INFO  xwayland_satellite::xstate > xfixes version: 1.0
+ 2026-09-07T00:44:05.121Z INFO  xwayland_satellite         > Connected to Xwayland on :2
+ 2026-09-07T00:44:05.122Z INFO  xwayland_satellite         > Successfully notified systemd of ready state.
+ 2026-09-07T00:44:05.126Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-07T00:44:05.126Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-07T00:44:05.126Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-07T00:44:05.126Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-07T00:44:05.126Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T00:44:05.126Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-07T00:44:05.126Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T00:44:05.127Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-07T00:44:11.587Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-07T00:44:11.587Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-07T00:44:11.587Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-07T00:44:11.587Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-07T00:44:11.587Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T00:44:11.587Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-07T00:44:11.587Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T00:44:11.588Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+
+thread 'main' (1134) panicked at src/server/mod.rs:789:21:
+Failed flushing clientside events: Io(
+    Os {
+        code: 32,
+        kind: BrokenPipe,
+        message: "Broken pipe",
+    },
+)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Io error: Broken pipe (os error 32)
+Io error: Connection reset by peer (os error 104)
+Io error: Connection reset by peer (os error 104)
+Io error: Broken pipe (os error 32)
+Error: ExitFailure(1)
+Io error: Connection reset by peer (os error 104)
+Error: ExitFailure(1)
+[2026-09-06 20:06:05] INFO: [morph] ============================= N E W  S T A R T ================================
+[2026-09-06 20:06:05] INFO: [morph] Cleared shutdown list file.
+[2026-09-06 20:06:05] INFO: [morph] Runtime summary:
+[2026-09-06 20:06:05] INFO: [morph] --------------------------------------------------------------------------------
+[2026-09-06 20:06:05] INFO: [morph] Environment source:              loaded system environment: /etc/morph/environment
+[2026-09-06 20:06:05] INFO: [morph] Selected session mode:           native-tty
+[2026-09-06 20:06:05] INFO: [morph] X11 probe details:               DISPLAY is not set and no reachable X11 display was found
+[2026-09-06 20:06:05] INFO: [morph] Config file path:                /home/nathan/.config/morph/morph.conf (user config fallback)
+[2026-09-06 20:06:05] INFO: [morph] Builtin fallback enabled:        0
+[2026-09-06 20:06:05] INFO: [morph] Managed hooks enabled:           1
+[2026-09-06 20:06:05] INFO: [morph] Managed system hook directory:   /etc/morph
+[2026-09-06 20:06:05] INFO: [morph] Managed system config directory: /etc/morph
+[2026-09-06 20:06:05] INFO: [morph] User config directory:           /home/nathan/.config/morph
+[2026-09-06 20:06:05] INFO: [morph] Compositor binary:               /usr/bin/morph
+[2026-09-06 20:06:05] INFO: [morph] WLR_BACKENDS:                    drm,libinput...
+[2026-09-06 20:06:05] INFO: [morph] WLR_WL_SOCKET:                   unset
+[2026-09-06 20:06:05] INFO: [morph] LD_LIBRARY_PATH:                 unset
+[2026-09-06 20:06:05] INFO: [morph] MORPH_DBG:                       0
+[2026-09-06 20:06:05] INFO: [morph] MORPH_LOG_LEVEL:                 error
+[2026-09-06 20:06:05] INFO: [morph] Crash handler enabled:           0
+[2026-09-06 20:06:05] INFO: [morph] MORPH_X11:                       1
+[2026-09-06 20:06:05] INFO: [morph] MORPH_X11_DISPLAY:               auto (:2..:99)
+[2026-09-06 20:06:05] INFO: [morph] Log file path:                   /home/nathan/.local/state/morph/morph.log
+[2026-09-06 20:06:05] INFO: [morph] Crash log file path:             /home/nathan/.local/state/morph/morph-crash.log
+[2026-09-06 20:06:05] INFO: [morph] Startup log file:                /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-06 20:06:05] INFO: [morph] Shutdown log file:               /home/nathan/.local/state/morph/morph-shutdown.log
+[2026-09-06 20:06:05] INFO: [morph] Shutdown list file:              /home/nathan/.local/state/morph/shutdown_list.nfo
+[2026-09-06 20:06:05] INFO: [morph] Execution mode: log-level=error, crash-handler=disabled (--no-crash-handler)
+[2026-09-06 20:06:05] INFO: [morph] Capturing compositor stdout/stderr into startup log: /home/nathan/.local/state/morph/morph-startup.log
+ 2026-09-07T01:06:05.678Z INFO  xwayland_satellite > Starting xwayland-satellite version 0.8.2
+[2026-09-06 20:06:05] INFO: [morph] Native Wayland mode detected. Starting managed session services.
+ 2026-09-07T01:06:05.688Z WARN  xwayland_satellite::server > Couldn't bind fractional scale manager: the requested global was not found in the registry. Fractional scaling will not work.
+[2026-09-06 20:06:05] WARN: [morph] Portal executable candidate is not a directory: /usr/libexec
+[2026-09-06 20:06:05] WARN: [morph] Portal executable candidate is incomplete: /usr/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-06 20:06:05] WARN: [morph] Portal executable candidate is not a directory: /usr/local/libexec
+[2026-09-06 20:06:05] WARN: [morph] Portal executable candidate is incomplete: /usr/local/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-06 20:06:05] ERROR: [morph] No complete xdg-desktop-portal default set found in MORPH_PORTAL_LIBEXEC_DIR or known libexec paths.
+[2026-09-06 20:06:05] ERROR: [morph] Portal startup skipped because portal configuration failed to load.
+[2026-09-06 20:06:05] INFO: [morph] Configured user startup hook file is not readable, skipping: ~/.config/morph/startup.sh
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > > Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > >                   Using F23, ignoring XF86TouchpadOff
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK23> redefined
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK24> redefined
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOn
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOff
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ActionOnSelection
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualInsert
+ 2026-09-07T01:06:05.786Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualQuery
+ 2026-09-07T01:06:05.788Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-07T01:06:05.790Z INFO  xwayland_satellite::xstate > xfixes version: 1.0
+ 2026-09-07T01:06:05.793Z INFO  xwayland_satellite         > Connected to Xwayland on :2
+ 2026-09-07T01:06:05.793Z INFO  xwayland_satellite         > Successfully notified systemd of ready state.
+ 2026-09-07T01:06:05.799Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-07T01:06:05.799Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-07T01:06:05.799Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-07T01:06:05.799Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-07T01:06:05.799Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T01:06:05.799Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-07T01:06:05.799Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T01:06:05.800Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-07T01:06:11.288Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-07T01:06:11.288Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-07T01:06:11.288Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-07T01:06:11.288Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-07T01:06:11.288Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T01:06:11.288Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-07T01:06:11.288Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T01:06:11.289Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+Io error: Broken pipe (os error 32)
+
+thread 'main' (23213) panicked at src/server/mod.rs:818:79:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Io error: Broken pipe (os error 32)
+Error: ExitFailure(1)
+ 2026-09-07T01:07:04.573Z INFO  xwayland_process           > (EE) failed to read Wayland events: Broken pipe
+Error: ExitFailure(1)
+[2026-09-06 20:07:04] INFO: [morph] Compositor exited normally with exit code 0.
+[2026-09-06 20:07:04] INFO: [morph] Compositor exited cleanly; relying on compositor-managed shutdown hooks.
+[2026-09-07 09:07:00] INFO: [morph] ============================= N E W  S T A R T ================================
+[2026-09-07 09:07:00] INFO: [morph] Cleared shutdown list file.
+[2026-09-07 09:07:00] INFO: [morph] Runtime summary:
+[2026-09-07 09:07:00] INFO: [morph] --------------------------------------------------------------------------------
+[2026-09-07 09:07:00] INFO: [morph] Environment source:              loaded system environment: /etc/morph/environment
+[2026-09-07 09:07:00] INFO: [morph] Selected session mode:           native-tty
+[2026-09-07 09:07:00] INFO: [morph] X11 probe details:               DISPLAY is not set and no reachable X11 display was found
+[2026-09-07 09:07:00] INFO: [morph] Config file path:                /home/nathan/.config/morph/morph.conf (user config fallback)
+[2026-09-07 09:07:00] INFO: [morph] Builtin fallback enabled:        0
+[2026-09-07 09:07:00] INFO: [morph] Managed hooks enabled:           1
+[2026-09-07 09:07:00] INFO: [morph] Managed system hook directory:   /etc/morph
+[2026-09-07 09:07:00] INFO: [morph] Managed system config directory: /etc/morph
+[2026-09-07 09:07:00] INFO: [morph] User config directory:           /home/nathan/.config/morph
+[2026-09-07 09:07:00] INFO: [morph] Compositor binary:               /usr/bin/morph
+[2026-09-07 09:07:00] INFO: [morph] WLR_BACKENDS:                    drm,libinput...
+[2026-09-07 09:07:00] INFO: [morph] WLR_WL_SOCKET:                   unset
+[2026-09-07 09:07:00] INFO: [morph] LD_LIBRARY_PATH:                 unset
+[2026-09-07 09:07:00] INFO: [morph] MORPH_DBG:                       0
+[2026-09-07 09:07:00] INFO: [morph] MORPH_LOG_LEVEL:                 error
+[2026-09-07 09:07:00] INFO: [morph] Crash handler enabled:           0
+[2026-09-07 09:07:00] INFO: [morph] MORPH_X11:                       1
+[2026-09-07 09:07:00] INFO: [morph] MORPH_X11_DISPLAY:               auto (:2..:99)
+[2026-09-07 09:07:00] INFO: [morph] Log file path:                   /home/nathan/.local/state/morph/morph.log
+[2026-09-07 09:07:00] INFO: [morph] Crash log file path:             /home/nathan/.local/state/morph/morph-crash.log
+[2026-09-07 09:07:00] INFO: [morph] Startup log file:                /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-07 09:07:00] INFO: [morph] Shutdown log file:               /home/nathan/.local/state/morph/morph-shutdown.log
+[2026-09-07 09:07:00] INFO: [morph] Shutdown list file:              /home/nathan/.local/state/morph/shutdown_list.nfo
+[2026-09-07 09:07:00] INFO: [morph] Execution mode: log-level=error, crash-handler=disabled (--no-crash-handler)
+[2026-09-07 09:07:00] INFO: [morph] Capturing compositor stdout/stderr into startup log: /home/nathan/.local/state/morph/morph-startup.log
+ 2026-09-07T14:07:01.039Z INFO  xwayland_satellite > Starting xwayland-satellite version 0.8.2
+[2026-09-07 09:07:01] INFO: [morph] Native Wayland mode detected. Starting managed session services.
+ 2026-09-07T14:07:01.050Z WARN  xwayland_satellite::server > Couldn't bind fractional scale manager: the requested global was not found in the registry. Fractional scaling will not work.
+[2026-09-07 09:07:01] WARN: [morph] Portal executable candidate is not a directory: /usr/libexec
+[2026-09-07 09:07:01] WARN: [morph] Portal executable candidate is incomplete: /usr/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-07 09:07:01] WARN: [morph] Portal executable candidate is not a directory: /usr/local/libexec
+[2026-09-07 09:07:01] WARN: [morph] Portal executable candidate is incomplete: /usr/local/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-07 09:07:01] ERROR: [morph] No complete xdg-desktop-portal default set found in MORPH_PORTAL_LIBEXEC_DIR or known libexec paths.
+[2026-09-07 09:07:01] ERROR: [morph] Portal startup skipped because portal configuration failed to load.
+[2026-09-07 09:07:01] INFO: [morph] Configured user startup hook file is not readable, skipping: ~/.config/morph/startup.sh
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > > Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > >                   Using F23, ignoring XF86TouchpadOff
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK23> redefined
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK24> redefined
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOn
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOff
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ActionOnSelection
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualInsert
+ 2026-09-07T14:07:01.148Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualQuery
+ 2026-09-07T14:07:01.150Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-07T14:07:01.153Z INFO  xwayland_satellite::xstate > xfixes version: 1.0
+ 2026-09-07T14:07:01.160Z INFO  xwayland_satellite         > Connected to Xwayland on :2
+ 2026-09-07T14:07:01.160Z INFO  xwayland_satellite         > Successfully notified systemd of ready state.
+ 2026-09-07T14:07:01.169Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-07T14:07:01.169Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-07T14:07:01.169Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-07T14:07:01.169Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-07T14:07:01.169Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T14:07:01.169Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-07T14:07:01.169Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T14:07:01.170Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-07T14:07:47.897Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-07T14:07:47.898Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-07T14:07:47.898Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-07T14:07:47.898Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-07T14:07:47.898Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T14:07:47.898Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-07T14:07:47.898Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-07T14:07:47.899Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+Io error: Broken pipe (os error 32)
+
+thread 'main' (749671) panicked at src/server/mod.rs:818:79:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[2026-09-07 09:07:48] INFO: [morph] Compositor exited normally with exit code 0.
+[2026-09-07 09:07:48] INFO: [morph] Compositor exited cleanly; relying on compositor-managed shutdown hooks.
+[2026-09-14 11:43:35] INFO: [morph] ============================= N E W  S T A R T ================================
+[2026-09-14 11:43:35] INFO: [morph] Cleared shutdown list file.
+[2026-09-14 11:43:35] INFO: [morph] Runtime summary:
+[2026-09-14 11:43:35] INFO: [morph] --------------------------------------------------------------------------------
+[2026-09-14 11:43:35] INFO: [morph] Environment source:              loaded system environment: /etc/morph/environment; loaded user environment: /home/nathan/.config/morph/environment
+[2026-09-14 11:43:35] INFO: [morph] Selected session mode:           native-tty
+[2026-09-14 11:43:35] INFO: [morph] X11 probe details:               DISPLAY is not set and no reachable X11 display was found
+[2026-09-14 11:43:35] INFO: [morph] Config file path:                /home/nathan/.config/morph/morph.conf (user config fallback)
+[2026-09-14 11:43:35] INFO: [morph] Builtin fallback enabled:        0
+[2026-09-14 11:43:35] INFO: [morph] Managed hooks enabled:           1
+[2026-09-14 11:43:35] INFO: [morph] Managed system hook directory:   /etc/morph
+[2026-09-14 11:43:35] INFO: [morph] Managed system config directory: /etc/morph
+[2026-09-14 11:43:35] INFO: [morph] User config directory:           /home/nathan/.config/morph
+[2026-09-14 11:43:35] INFO: [morph] Compositor binary:               /usr/bin/morph
+[2026-09-14 11:43:35] INFO: [morph] WLR_BACKENDS:                    drm,libinput...
+[2026-09-14 11:43:35] INFO: [morph] WLR_WL_SOCKET:                   unset
+[2026-09-14 11:43:35] INFO: [morph] LD_LIBRARY_PATH:                 unset
+[2026-09-14 11:43:35] INFO: [morph] MORPH_DBG:                       0
+[2026-09-14 11:43:35] INFO: [morph] MORPH_LOG_LEVEL:                 error
+[2026-09-14 11:43:35] INFO: [morph] Crash handler enabled:           0
+[2026-09-14 11:43:35] INFO: [morph] MORPH_X11:                       1
+[2026-09-14 11:43:35] INFO: [morph] MORPH_X11_DISPLAY:               auto (:2..:99)
+[2026-09-14 11:43:35] INFO: [morph] Log file path:                   /home/nathan/.local/state/morph/morph.log
+[2026-09-14 11:43:35] INFO: [morph] Crash log file path:             /home/nathan/.local/state/morph/morph-crash.log
+[2026-09-14 11:43:35] INFO: [morph] Startup log file:                /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-14 11:43:35] INFO: [morph] Shutdown log file:               /home/nathan/.local/state/morph/morph-shutdown.log
+[2026-09-14 11:43:35] INFO: [morph] Shutdown list file:              /home/nathan/.local/state/morph/shutdown_list.nfo
+[2026-09-14 11:43:35] INFO: [morph] Execution mode: log-level=error, crash-handler=disabled (--no-crash-handler)
+[2026-09-14 11:43:35] INFO: [morph] Capturing compositor stdout/stderr into startup log: /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-14 11:43:35] INFO: [morph] Native Wayland mode detected. Starting managed session services.
+ 2026-09-14T16:43:35.531Z INFO  xwayland_satellite > Starting xwayland-satellite version 0.8.2
+[2026-09-14 11:43:35] WARN: [morph] Portal executable candidate is not a directory: /usr/libexec
+[2026-09-14 11:43:35] WARN: [morph] Portal executable candidate is incomplete: /usr/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-14 11:43:35] WARN: [morph] Portal executable candidate is not a directory: /usr/local/libexec
+[2026-09-14 11:43:35] WARN: [morph] Portal executable candidate is incomplete: /usr/local/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-14 11:43:35] ERROR: [morph] No complete xdg-desktop-portal default set found in MORPH_PORTAL_LIBEXEC_DIR or known libexec paths.
+[2026-09-14 11:43:35] ERROR: [morph] Portal startup skipped because portal configuration failed to load.
+[2026-09-14 11:43:35] INFO: [morph] Configured user startup hook file is not readable, skipping: ~/.config/morph/startup.sh
+ 2026-09-14T16:43:35.543Z WARN  xwayland_satellite::server > Couldn't bind fractional scale manager: the requested global was not found in the registry. Fractional scaling will not work.
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > > Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > >                   Using F23, ignoring XF86TouchpadOff
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK23> redefined
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK24> redefined
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOn
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOff
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ActionOnSelection
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualInsert
+ 2026-09-14T16:43:35.640Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualQuery
+ 2026-09-14T16:43:35.642Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-14T16:43:35.647Z INFO  xwayland_satellite::xstate > xfixes version: 1.0
+ 2026-09-14T16:43:35.655Z INFO  xwayland_satellite         > Connected to Xwayland on :2
+ 2026-09-14T16:43:35.655Z INFO  xwayland_satellite         > Successfully notified systemd of ready state.
+ 2026-09-14T16:43:35.666Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-14T16:43:35.666Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-14T16:43:35.666Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-14T16:43:35.666Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-14T16:43:35.666Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-14T16:43:35.666Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-14T16:43:35.666Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-14T16:43:35.667Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-14T16:44:35.711Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-14T16:44:35.711Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-14T16:44:35.711Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-14T16:44:35.711Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-14T16:44:35.711Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-14T16:44:35.711Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-14T16:44:35.711Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-14T16:44:35.712Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-14T16:54:27.142Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:27.159Z WARN  xwayland_satellite::server > No last focused toplevel, cannot focus window Window { res_id: 6291488 }
+ 2026-09-14T16:54:27.352Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:32.496Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:32.504Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:32.504Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:32.520Z WARN  xwayland_satellite::server > Window Window { res_id: 8388673 } is marked transient for unknown window Window { res_id: 0 }
+ 2026-09-14T16:54:32.644Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:32.649Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:38.431Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:40.130Z WARN  xwayland_satellite::server > No last focused toplevel, cannot focus window Window { res_id: 8388666 }
+ 2026-09-14T16:54:53.396Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:53.396Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:54:53.706Z WARN  xwayland_satellite::server > No last focused toplevel, cannot focus window Window { res_id: 8389075 }
+ 2026-09-14T16:55:00.169Z WARN  xwayland_satellite::server > No last focused toplevel, cannot focus window Window { res_id: 8389075 }
+ 2026-09-14T16:55:00.424Z WARN  xwayland_satellite::server > No last focused toplevel, cannot focus window Window { res_id: 8389075 }
+ 2026-09-14T16:55:05.410Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:55:05.439Z WARN  xwayland_satellite::server > No last focused toplevel, cannot focus window Window { res_id: 8389147 }
+ 2026-09-14T16:55:28.073Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:55:28.078Z WARN  xwayland_satellite::server > No last focused toplevel, cannot focus window Window { res_id: 8389416 }
+ 2026-09-14T16:57:51.886Z WARN  xwayland_satellite::xstate > unrecognized message: "_NET_REQUEST_FRAME_EXTENTS"
+ 2026-09-14T16:57:51.892Z WARN  xwayland_satellite::server > No last focused toplevel, cannot focus window Window { res_id: 8390029 }
+[2026-09-14 13:11:08] INFO: [morph] ============================= N E W  S T A R T ================================
+[2026-09-14 13:11:08] INFO: [morph] Cleared shutdown list file.
+[2026-09-14 13:11:08] INFO: [morph] Runtime summary:
+[2026-09-14 13:11:08] INFO: [morph] --------------------------------------------------------------------------------
+[2026-09-14 13:11:08] INFO: [morph] Environment source:              loaded system environment: /etc/morph/environment; loaded user environment: /home/nathan/.config/morph/environment
+[2026-09-14 13:11:08] INFO: [morph] Selected session mode:           native-tty
+[2026-09-14 13:11:08] INFO: [morph] X11 probe details:               DISPLAY is not set and no reachable X11 display was found
+[2026-09-14 13:11:08] INFO: [morph] Config file path:                /home/nathan/.config/morph/morph.conf (user config fallback)
+[2026-09-14 13:11:08] INFO: [morph] Builtin fallback enabled:        0
+[2026-09-14 13:11:08] INFO: [morph] Managed hooks enabled:           1
+[2026-09-14 13:11:08] INFO: [morph] Managed system hook directory:   /etc/morph
+[2026-09-14 13:11:08] INFO: [morph] Managed system config directory: /etc/morph
+[2026-09-14 13:11:08] INFO: [morph] User config directory:           /home/nathan/.config/morph
+[2026-09-14 13:11:08] INFO: [morph] Compositor binary:               /usr/bin/morph
+[2026-09-14 13:11:08] INFO: [morph] WLR_BACKENDS:                    drm,libinput...
+[2026-09-14 13:11:08] INFO: [morph] WLR_WL_SOCKET:                   unset
+[2026-09-14 13:11:08] INFO: [morph] LD_LIBRARY_PATH:                 unset
+[2026-09-14 13:11:08] INFO: [morph] MORPH_DBG:                       0
+[2026-09-14 13:11:08] INFO: [morph] MORPH_LOG_LEVEL:                 error
+[2026-09-14 13:11:08] INFO: [morph] Crash handler enabled:           0
+[2026-09-14 13:11:08] INFO: [morph] MORPH_X11:                       1
+[2026-09-14 13:11:08] INFO: [morph] MORPH_X11_DISPLAY:               auto (:2..:99)
+[2026-09-14 13:11:08] INFO: [morph] Log file path:                   /home/nathan/.local/state/morph/morph.log
+[2026-09-14 13:11:08] INFO: [morph] Crash log file path:             /home/nathan/.local/state/morph/morph-crash.log
+[2026-09-14 13:11:08] INFO: [morph] Startup log file:                /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-14 13:11:08] INFO: [morph] Shutdown log file:               /home/nathan/.local/state/morph/morph-shutdown.log
+[2026-09-14 13:11:08] INFO: [morph] Shutdown list file:              /home/nathan/.local/state/morph/shutdown_list.nfo
+[2026-09-14 13:11:08] INFO: [morph] Execution mode: log-level=error, crash-handler=disabled (--no-crash-handler)
+[2026-09-14 13:11:08] INFO: [morph] Capturing compositor stdout/stderr into startup log: /home/nathan/.local/state/morph/morph-startup.log
+[2026-09-14 13:11:10] INFO: [morph] Native Wayland mode detected. Starting managed session services.
+[2026-09-14 13:11:10] WARN: [morph] Portal executable candidate is not a directory: /usr/libexec
+ 2026-09-14T18:11:10.168Z INFO  xwayland_satellite > Starting xwayland-satellite version 0.8.2
+[2026-09-14 13:11:10] WARN: [morph] Portal executable candidate is incomplete: /usr/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-14 13:11:10] WARN: [morph] Portal executable candidate is not a directory: /usr/local/libexec
+[2026-09-14 13:11:10] WARN: [morph] Portal executable candidate is incomplete: /usr/local/lib (missing: xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk)
+[2026-09-14 13:11:10] ERROR: [morph] No complete xdg-desktop-portal default set found in MORPH_PORTAL_LIBEXEC_DIR or known libexec paths.
+[2026-09-14 13:11:10] ERROR: [morph] Portal startup skipped because portal configuration failed to load.
+[2026-09-14 13:11:10] INFO: [morph] Configured user startup hook file is not readable, skipping: ~/.config/morph/startup.sh
+ 2026-09-14T18:11:10.188Z WARN  xwayland_satellite::server > Couldn't bind fractional scale manager: the requested global was not found in the registry. Fractional scaling will not work.
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > > Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > >                   Using F23, ignoring XF86TouchpadOff
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK23> redefined
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > > Warning:          Symbol map for key <FK24> redefined
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > >                   Using last definition for conflicting fields
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOn
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ElectronicPrivacyScreenOff
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ActionOnSelection
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualInsert
+ 2026-09-14T18:11:10.294Z INFO  xwayland_process           > > Warning:          Could not resolve keysym XF86ContextualQuery
+ 2026-09-14T18:11:10.296Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-14T18:11:10.300Z INFO  xwayland_satellite::xstate > xfixes version: 1.0
+ 2026-09-14T18:11:10.308Z INFO  xwayland_satellite         > Connected to Xwayland on :2
+ 2026-09-14T18:11:10.308Z INFO  xwayland_satellite         > Successfully notified systemd of ready state.
+ 2026-09-14T18:11:10.316Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-14T18:11:10.316Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-14T18:11:10.316Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-14T18:11:10.316Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-14T18:11:10.316Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-14T18:11:10.316Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-14T18:11:10.316Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-14T18:11:10.317Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-14T18:11:18.429Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-14T18:11:18.429Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-14T18:11:18.429Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-14T18:11:18.429Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-14T18:11:18.429Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-14T18:11:18.429Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-14T18:11:18.429Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-14T18:11:18.430Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-15T11:40:50.849Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-15T11:40:50.849Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-15T11:40:50.849Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-15T11:40:50.850Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-15T11:40:50.850Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-15T11:40:50.850Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-15T11:40:50.850Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-15T11:40:50.852Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-15T11:40:50.862Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-15T11:40:50.863Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-15T11:40:50.863Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-15T11:40:50.863Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-15T11:40:50.863Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-15T11:40:50.863Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-15T11:40:50.863Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-15T11:40:50.865Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server
+ 2026-09-15T11:41:02.697Z INFO  xwayland_process           > The XKEYBOARD keymap compiler (xkbcomp) reports:
+ 2026-09-15T11:41:02.697Z INFO  xwayland_process           > > Warning:          Unsupported maximum keycode 709, clipping.
+ 2026-09-15T11:41:02.697Z INFO  xwayland_process           > >                   X11 cannot support keycodes above 255.
+ 2026-09-15T11:41:02.698Z INFO  xwayland_process           > > Warning:          Virtual modifier Hyper multiply defined
+ 2026-09-15T11:41:02.698Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-15T11:41:02.698Z INFO  xwayland_process           > > Warning:          Virtual modifier ScrollLock multiply defined
+ 2026-09-15T11:41:02.698Z INFO  xwayland_process           > >                   Using 0, ignoring 0
+ 2026-09-15T11:41:02.699Z INFO  xwayland_process           > Errors from xkbcomp are not fatal to the X server

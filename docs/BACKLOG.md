@@ -101,9 +101,14 @@ Relevant implementation points:
 
 ## What Still Needs Work
 
-- [ ] Build a small reusable compositor-owned UI foundation before implementing multiple one-off UI features independently.
-- [ ] Use that shared UI layer first for WinList / `Alt-Tab` / `Alt-Shift-Tab`, then for root menus, and only after that for SSD titlebars and other compositor-owned chrome.
-- [ ] Add a real WindowList / MRU structure separate from `server->toplevels`, since the existing toplevel list is not a focus-history model.
+- [x] Add a real WindowList / MRU structure separate from `server->toplevels`, since the existing toplevel list is not a focus-history model. Source: [`src/server.h`](../src/server.h) (`comp_server.focus_order`, `comp_toplevel.focus_link`), [`src/main.c`](../src/main.c) (`server_window_focus_cycle`, `toplevel_focus_candidate`)
+- [x] Ship `Alt-Tab` / `Alt-Shift-Tab` without an overlay first: `nextWindow` / `prevWindow` keybind actions, `window focus next|prev` IPC, and `--window-focus next|prev` CLI all commit focus immediately.
+- [x] Held-modifier cycling session: freeze the candidate ring while Alt is held, preview focus without reordering MRU, commit on modifier release, cancel with `Esc`.
+- [x] Compositor-owned switcher overlay for the held session: title / app_id list with the current candidate highlighted, visual-only (pointer pass-through). Source: [`src/ui.c`](../src/ui.c), [`src/ui.h`](../src/ui.h), `server->ui_tree`
+- [ ] Grow `src/ui.c` into a small reusable compositor-owned UI foundation before implementing further one-off chrome independently (root menus, SSD titlebars).
+- [ ] Use that shared UI layer for root menus after the switcher, and only after that for SSD titlebars and other compositor-owned chrome. The MRU list above is the data source the switcher already reads.
+- [ ] Decide whether scratchpad, fullscreen, and future per-output workspaces participate in the cycle candidate set; currently the filter is mapped + initialized + non-minimized + current workspace.
+- [ ] Show icons in the switcher when a freedesktop icon is available for the window's app_id.
 - [ ] Keep the root-menu DSL and registry work separate from the shared popup/overlay runtime so menus do not become the implicit UI foundation for everything else.
 - [ ] Revisit theme integration later so compositor-owned UI can eventually align with client-side styling where practical, without making GTK/Qt a hard dependency for the first implementation.
 
@@ -138,22 +143,23 @@ Relevant implementation points:
 
 ## Current State
 
-Morph currently behaves as a click-to-focus compositor: clicking a toplevel gives it keyboard focus, and clicking empty root space clears toplevel focus. This default should stay stable before adding configurable alternatives.
+Morph supports configurable pointer-driven keyboard focus policies via **`[focus]`** in the INI config. The default remains **`ClickToFocus`**. **`FocusFollowsMouse`** and **`SloppyFocus`** are implemented, and interaction rules with layer-shell, root clicks, grabs, and future SSD are documented in **`docs/CONFIG.md`**.
 
 Relevant implementation points:
 
-- [`src/main.c:2110`](../src/main.c#L2110) activates the focused toplevel and forwards keyboard focus to its root surface.
-- [`src/main.c:4827`](../src/main.c#L4827) handles pointer button focus handoff for toplevel clicks.
-- [`src/main.c:4923`](../src/main.c#L4923) clears keyboard focus when a click lands on empty root space.
-- [`docs/CONFIG.md`](CONFIG.md) currently has no focus policy config option.
+- [`src/config.h`](../src/config.h) defines `enum comp_focus_policy` and `comp_config.focus_policy`.
+- [`src/config.c`](../src/config.c) parses the **`[focus]`** section (`policy` / `mode` / `focus_policy`).
+- [`src/main.c`](../src/main.c) applies enter/leave policy from pointer motion and gates empty-root click clearing for SloppyFocus.
+- [`docs/CONFIG.md`](CONFIG.md) documents policies and interaction rules.
 
 ## What Still Needs Work
 
-- [x] Default click-to-focus behavior exists for normal toplevel clicks and root-click focus clearing. Source: [`src/main.c:4827`](../src/main.c#L4827), [`src/main.c:4923`](../src/main.c#L4923)
-- [ ] Add a config option for `ClickToFocus` as the explicit default policy.
-- [ ] Add `FocusFollowsMouse`: pointer enter gives keyboard focus to that window, and pointer leave to root clears focus.
-- [ ] Add `SloppyFocus`: pointer enter gives keyboard focus, but passing over root space does not clear focus until another focus target is selected.
-- [ ] Define how focus policies interact with layer-shell surfaces, root clicks, compositor-owned move/resize grabs, and future server-side decorations before exposing them in `docs/CONFIG.md`.
+- [x] Default click-to-focus behavior exists for normal toplevel clicks and root-click focus clearing.
+- [x] Config option for `ClickToFocus` as the explicit default policy. Source: [`src/config.c`](../src/config.c), [`docs/CONFIG.md`](CONFIG.md)
+- [x] `FocusFollowsMouse`: pointer enter gives keyboard focus; leave to root clears focus.
+- [x] `SloppyFocus`: pointer enter gives keyboard focus; root does not clear until another focus target is selected.
+- [x] Focus policy interactions with layer-shell, root clicks, compositor-owned move/resize grabs, and future SSD are documented in `docs/CONFIG.md`.
+- [ ] Manual nested/native session checks for FocusFollowsMouse / SloppyFocus against panels, grabs, and multi-window stack raise behavior (until a compositor input harness exists).
 
 # ----------------------------------------------------------------------------
 # Compositor input test coverage

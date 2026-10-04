@@ -18,12 +18,15 @@ cc = meson.get_compiler('c')
 m_dep = cc.find_library('m', required: false)
 
 wlroots = dependency(
-  ['wlroots-0.19', 'wlroots-0.20', 'wlroots-0.22', 'wlroots-git', 'wlroots'],
-  version: '>=0.19'
+  ['wlroots-0.20', 'wlroots-0.22', 'wlroots-git', 'wlroots'],
+  version: '>=0.20.2'
 )
 # Needed for compositor-side touchpad defaults such as tap-to-click.
 libinput = dependency('libinput')
 pixman = dependency('pixman-1')
+cairo = dependency('cairo')
+pangocairo = dependency('pangocairo')
+libdrm = dependency('libdrm')
 wayland_server = dependency('wayland-server')
 xkbcommon = dependency('xkbcommon')
 wayland_protocols = dependency('wayland-protocols', version: '>=1.32')
@@ -51,6 +54,14 @@ layer_shell_server_h = custom_target(
   'wlr-layer-shell-protocol',
   output: 'wlr-layer-shell-unstable-v1-protocol.h',
   input: layer_shell_xml,
+  command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+
+output_power_xml = files('protocols/wlr-output-power-management-unstable-v1.xml')
+output_power_server_h = custom_target(
+  'wlr-output-power-protocol',
+  output: 'wlr-output-power-management-unstable-v1-protocol.h',
+  input: output_power_xml,
   command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
 )
 
@@ -96,14 +107,21 @@ executable(
   'src/main.c',
   'src/config.c',
   'src/ext_workspace.c',
+  'src/gamma_control.c',
+  'src/image_capture.c',
+  'src/output_mgmt.c',
+  'src/output_power.c',
+  'src/virtual_input.c',
+  'src/ui.c',
   xdg_shell_server_h,
   layer_shell_server_h,
+  output_power_server_h,
   ext_workspace_server_h,
   ext_workspace_private_c,
   tablet_v2_server_h,
   tablet_v2_private_c,
   pointer_constraints_server_h,
-  dependencies: [wlroots, libinput, pixman, wayland_server, xkbcommon, m_dep],
+  dependencies: [wlroots, libinput, pixman, cairo, pangocairo, libdrm, wayland_server, xkbcommon, m_dep],
   install: true,
   install_dir: morph_bindir,
 )

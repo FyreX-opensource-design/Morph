@@ -26,10 +26,10 @@ MORPH_DEBUG_XDG=1
 WAYLAND_DEBUG=1
 WLR_LOGTS=1
 
-# Local wlroots runtime fallback (for systems without distro wlroots-0.19).
+# Local wlroots runtime fallback (for systems without distro wlroots-0.20).
 # Prefer system runtime libraries when available.
 # Uncomment when morph-session runs from a display manager and cannot resolve
-# libwlroots-0.19.so without shell-provided LD_LIBRARY_PATH.
+# libwlroots-0.20.so without shell-provided LD_LIBRARY_PATH.
 #LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 # Java/X11 compatibility helpers
@@ -38,11 +38,11 @@ _JAVA_AWT_WM_NONREPARENTING=1
 
 # XKB defaults forwarded into compositor keyboard setup.
 # Leave commented to use system defaults from libxkbcommon.
-XKB_DEFAULT_LAYOUT=de,us
+XKB_DEFAULT_LAYOUT=de
 XKB_DEFAULT_MODEL=pc105
 #XKB_DEFAULT_VARIANT=
 # grp:alt_shift_toggle is typically Left Alt + Left Shift
-XKB_DEFAULT_OPTIONS=grp:alt_shift_toggle
+#XKB_DEFAULT_OPTIONS=grp:alt_shift_toggle
 
 # X11 bridge controls (xwayland-satellite in compositor)
 # Empty MORPH_X11 uses the enabled default in the launcher.
