@@ -351,6 +351,14 @@ struct comp_server
 	struct comp_window_cycle cycle;
 	enum comp_layout layout;
 	struct comp_toplevel *focused_toplevel;
+	/**
+	 * Mapped layer-shell surface with exclusive keyboard interactivity.
+	 * While set, pointer, touch, and tablet input stay on this surface and its
+	 * popups, and other clients cannot take keyboard focus.
+	 */
+	struct wlr_layer_surface_v1 *exclusive_layer;
+	/** Deferred keyboard enter so a launcher can finish mapping before it receives keys. */
+	struct wl_event_source *exclusive_keyboard_idle;
 	int current_workspace;
 	enum comp_grab grab;
 	struct comp_toplevel *grabbed_toplevel;

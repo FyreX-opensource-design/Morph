@@ -5,6 +5,7 @@
 #include <linux/input-event-codes.h>
 #include <math.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,6 +23,9 @@
 #include <xdg-shell-protocol.h>
 #include <wlr/backend.h>
 #include <wlr/backend/libinput.h>
+#include <wlr/backend/multi.h>
+#include <wlr/backend/wayland.h>
+#include <wlr/backend/x11.h>
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
@@ -126,6 +130,8 @@ static void window_cycle_overlay_hide(struct comp_server *server);
 static void window_cycle_overlay_sync(struct comp_server *server);
 static struct wlr_output *primary_wlr_output(struct comp_server *server);
 static void process_cursor_motion(struct comp_server *server, uint32_t time_msec);
+static void layer_exclusive_sync(struct comp_server *server);
+static void layer_keyboard_enter(struct comp_server *server, struct wlr_surface *surface);
 static void cursor_constrain(struct comp_server *server, struct wlr_pointer_constraint_v1 *constraint,
 							 double sx, double sy);
 static void apply_pointer_motion(struct comp_server *server, struct wlr_input_device *dev,
@@ -1003,6 +1009,41 @@ static struct wlr_surface *surface_at(struct comp_server *server, double lx, dou
 	return ss ? ss->surface : NULL;
 }
 
+/** True while a mapped layer-shell client holds exclusive keyboard interactivity. */
+static bool layer_exclusive_active(const struct comp_server *server)
+{
+	return server && server->exclusive_layer && server->exclusive_layer->surface &&
+		   server->exclusive_layer->surface->mapped;
+}
+
+/**
+ * True when `surface` is the exclusive layer, one of its subsurfaces, or an
+ * xdg popup chained from it. Those stay clickable; everything else is held.
+ */
+static bool surface_is_under_layer(struct wlr_surface *surface, struct wlr_layer_surface_v1 *layer)
+{
+	if (!surface || !layer || !layer->surface)
+	{
+		return false;
+	}
+	struct wlr_surface *cursor = surface;
+	for (int depth = 0; depth < 16 && cursor; depth++)
+	{
+		struct wlr_surface *root = wlr_surface_get_root_surface(cursor);
+		if (root == layer->surface)
+		{
+			return true;
+		}
+		struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(root);
+		if (!xdg || xdg->role != WLR_XDG_SURFACE_ROLE_POPUP || !xdg->popup || !xdg->popup->parent)
+		{
+			return false;
+		}
+		cursor = xdg->popup->parent;
+	}
+	return false;
+}
+
 /** Hit-test and resolve the compositor toplevel at layout coordinates. */
 static struct comp_toplevel *toplevel_at(struct comp_server *server, double lx, double ly, double *sx, double *sy)
 {
@@ -1400,6 +1441,7 @@ static void comp_layer_map(struct wl_listener *listener, void *data)
 	(void)data;
 	struct comp_layer *layer = wl_container_of(listener, layer, map);
 	layer_shell_arrange(layer->server);
+	layer_exclusive_sync(layer->server);
 }
 
 /** layer-shell unmap callback: trigger arrange. */
@@ -1408,6 +1450,7 @@ static void comp_layer_unmap(struct wl_listener *listener, void *data)
 	(void)data;
 	struct comp_layer *layer = wl_container_of(listener, layer, unmap);
 	layer_shell_arrange(layer->server);
+	layer_exclusive_sync(layer->server);
 }
 
 /** layer-shell commit callback: re-arrange on initial/pending commits. */
@@ -1423,6 +1466,11 @@ static void comp_layer_commit(struct wl_listener *listener, void *data)
 	if (layer->layer_surface->pending.committed)
 	{
 		layer_shell_arrange(layer->server);
+	}
+	/* Keyboard interactivity is applied with the surface commit, including map. */
+	if (layer->layer_surface->surface && layer->layer_surface->surface->mapped)
+	{
+		layer_exclusive_sync(layer->server);
 	}
 }
 
@@ -1700,6 +1748,7 @@ static void comp_layer_destroy(struct wl_listener *listener, void *data)
 {
 	(void)data;
 	struct comp_layer *layer = wl_container_of(listener, layer, destroy);
+	struct comp_server *server = layer->server;
 	wl_list_remove(&layer->map.link);
 	wl_list_remove(&layer->unmap.link);
 	wl_list_remove(&layer->commit.link);
@@ -1707,6 +1756,8 @@ static void comp_layer_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&layer->destroy.link);
 	wl_list_remove(&layer->link);
 	free(layer);
+	/* Unlink first so a surface destroyed without unmap cannot stay exclusive. */
+	layer_exclusive_sync(server);
 }
 
 /** new layer-shell surface callback: create wrapper, scene node, and listeners. */
@@ -2940,6 +2991,130 @@ static void spawn_xwayland_satellite(const char *wayland_display)
 	wlr_log(WLR_INFO, "xwayland-satellite on DISPLAY=%s (pid %d)", disp, pid);
 }
 
+static void note_nested_backend(struct wlr_backend *backend, void *data)
+{
+	bool *nested = data;
+	if (wlr_backend_is_wl(backend) || wlr_backend_is_x11(backend))
+	{
+		*nested = true;
+	}
+}
+
+/** True when this process is a window on another compositor rather than a seat session. */
+static bool compositor_backend_is_nested(struct wlr_backend *backend)
+{
+	const char *mode = getenv("MORPH_SESSION_MODE");
+	if (mode && strcmp(mode, "nested") == 0)
+	{
+		return true;
+	}
+	if (!backend)
+	{
+		return false;
+	}
+	if (!wlr_backend_is_multi(backend))
+	{
+		return wlr_backend_is_wl(backend) || wlr_backend_is_x11(backend);
+	}
+	bool nested = false;
+	wlr_multi_for_each_backend(backend, note_nested_backend, &nested);
+	return nested;
+}
+
+static bool append_set_env_name(char *list, size_t list_len, const char *name)
+{
+	const char *value = getenv(name);
+	if (!value || !value[0])
+	{
+		return false;
+	}
+	const size_t used = strlen(list);
+	const int wrote = snprintf(list + used, list_len - used, "%s%s", used ? " " : "", name);
+	return wrote > 0 && (size_t)wrote < list_len - used;
+}
+
+/**
+ * Publish the session display variables to D-Bus and the systemd user manager.
+ *
+ * Processes Morph itself starts inherit this environment. Host commands started
+ * later, including `flatpak-spawn --host` from Gear Lever, use the user
+ * manager's environment instead. Without this import an AppImage sees neither
+ * WAYLAND_DISPLAY nor DISPLAY.
+ *
+ * Nested compositors skip the import so they do not replace the host session.
+ */
+static void publish_client_session_environment(struct wlr_backend *backend)
+{
+	if (compositor_backend_is_nested(backend))
+	{
+		wlr_log(WLR_INFO, "Nested session: not publishing display variables to the user bus");
+		return;
+	}
+	if (!getenv("XDG_SESSION_TYPE") || !getenv("XDG_SESSION_TYPE")[0])
+	{
+		setenv("XDG_SESSION_TYPE", "wayland", 0);
+	}
+
+	char names[256] = {0};
+	append_set_env_name(names, sizeof(names), "WAYLAND_DISPLAY");
+	append_set_env_name(names, sizeof(names), "DISPLAY");
+	append_set_env_name(names, sizeof(names), "XDG_CURRENT_DESKTOP");
+	append_set_env_name(names, sizeof(names), "XDG_SESSION_TYPE");
+	append_set_env_name(names, sizeof(names), "XDG_SESSION_DESKTOP");
+	if (!names[0])
+	{
+		return;
+	}
+
+	char cmd[1024];
+	const int wrote = snprintf(cmd, sizeof(cmd),
+		"rc=0; "
+		"if command -v dbus-update-activation-environment >/dev/null 2>&1; then "
+		"dbus-update-activation-environment --systemd %s || rc=$?; "
+		"fi; "
+		"if command -v systemctl >/dev/null 2>&1; then "
+		"systemctl --user import-environment %s || rc=$?; "
+		"fi; "
+		"exit \"$rc\"",
+		names, names);
+	if (wrote < 0 || (size_t)wrote >= sizeof(cmd))
+	{
+		wlr_log(WLR_ERROR, "Session environment publish command is too long");
+		return;
+	}
+
+	pid_t pid = 0;
+	char *argv[] = {"sh", "-c", cmd, NULL};
+	const int err = posix_spawnp(&pid, "sh", NULL, NULL, argv, environ);
+	if (err != 0)
+	{
+		errno = err;
+		wlr_log_errno(WLR_ERROR, "posix_spawnp session environment publish");
+		return;
+	}
+	int status = 0;
+	for (;;)
+	{
+		const pid_t w = waitpid(pid, &status, 0);
+		if (w == pid)
+		{
+			break;
+		}
+		if (w < 0 && errno == EINTR)
+		{
+			continue;
+		}
+		wlr_log_errno(WLR_ERROR, "waitpid session environment publish");
+		return;
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+	{
+		wlr_log(WLR_ERROR, "Failed to publish session environment (%s)", names);
+		return;
+	}
+	wlr_log(WLR_INFO, "Published session environment: %s", names);
+}
+
 /** Create per-toplevel compositor view state for a new xdg_toplevel. */
 static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 {
@@ -3042,6 +3217,11 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 		return;
 	}
 	if (toplevel->workspace != server->current_workspace)
+	{
+		return;
+	}
+	/* Exclusive layer-shell clients (wofi and similar) keep the keyboard until they close. */
+	if (layer_exclusive_active(server))
 	{
 		return;
 	}
@@ -3152,6 +3332,11 @@ static void clear_keyboard_focus(struct comp_server *server)
 		foreign_toplevel_refresh(prev);
 	}
 	server->focused_toplevel = NULL;
+	/* Leave the seat keyboard on an exclusive layer; only the remembered toplevel is dropped. */
+	if (layer_exclusive_active(server))
+	{
+		return;
+	}
 	wlr_seat_keyboard_notify_clear_focus(server->seat);
 }
 
@@ -3233,7 +3418,8 @@ static void apply_motion_focus_policy(struct comp_server *server, struct comp_to
 {
 	enum comp_focus_policy policy = server_focus_policy(server);
 	if (policy == COMP_FOCUS_CLICK || !server || !server->wl_display ||
-		server->grab != COMP_GRAB_NONE || server->display_terminate_requested)
+		server->grab != COMP_GRAB_NONE || server->display_terminate_requested ||
+		layer_exclusive_active(server))
 	{
 		return;
 	}
@@ -5724,6 +5910,12 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data)
 	}
 
 	wlr_seat_set_keyboard(kbd->server->seat, wlr_kbd);
+	/* Repair focus before the key is recorded, so Escape reaches wofi instead of the window under it. */
+	if (layer_exclusive_active(kbd->server) && kbd->server->exclusive_layer->surface &&
+		kbd->server->seat->keyboard_state.focused_surface != kbd->server->exclusive_layer->surface)
+	{
+		layer_keyboard_enter(kbd->server, kbd->server->exclusive_layer->surface);
+	}
 	wlr_keyboard_notify_key(wlr_kbd, event);
 	if (log_keys)
 	{
@@ -6149,6 +6341,11 @@ static void server_cursor_tablet_tool_tip(struct wl_listener *listener, void *da
 	}
 
 	/* TIP_DOWN */
+	if (layer_exclusive_active(server) &&
+		!(surface && surface_is_under_layer(surface, server->exclusive_layer)))
+	{
+		return;
+	}
 	if (!surface || !wlr_surface_accepts_tablet_v2(surface, v2tab))
 	{
 		tt->emulating_pointer_from_tip = true;
@@ -6206,6 +6403,11 @@ static void server_cursor_tablet_tool_button(struct wl_listener *listener, void 
 	struct wlr_tablet_v2_tablet *v2tab = tab->v2_tablet;
 	if (!surface || !wlr_surface_accepts_tablet_v2(surface, v2tab))
 	{
+		if (layer_exclusive_active(server) &&
+			!(surface && surface_is_under_layer(surface, server->exclusive_layer)))
+		{
+			return;
+		}
 		uint32_t btn = BTN_RIGHT;
 		enum wl_pointer_button_state st = event->state == WLR_BUTTON_PRESSED
 											  ? WL_POINTER_BUTTON_STATE_PRESSED
@@ -6233,6 +6435,11 @@ static void server_cursor_touch_down(struct wl_listener *listener, void *data)
 
 	double sx, sy;
 	struct wlr_surface *surface = surface_at(server, lx, ly, &sx, &sy);
+	if (layer_exclusive_active(server) &&
+		!(surface && surface_is_under_layer(surface, server->exclusive_layer)))
+	{
+		return;
+	}
 
 	if (surface && wlr_surface_accepts_touch(surface, server->seat))
 	{
@@ -6306,6 +6513,17 @@ static void server_cursor_touch_motion(struct wl_listener *listener, void *data)
 	double lx, ly;
 	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base, event->x, event->y, &lx, &ly);
 	double sx, sy;
+	if (layer_exclusive_active(server) &&
+		!(server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id))
+	{
+		struct wlr_surface *surface = surface_at(server, lx, ly, &sx, &sy);
+		if (surface && surface_is_under_layer(surface, server->exclusive_layer) &&
+			wlr_surface_accepts_touch(surface, server->seat))
+		{
+			wlr_seat_touch_notify_motion(server->seat, event->time_msec, event->touch_id, sx, sy);
+		}
+		return;
+	}
 	if (server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id)
 	{
 		wlr_cursor_warp_closest(server->cursor, &event->touch->base, lx, ly);
@@ -6918,6 +7136,38 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 		return;
 	}
 
+	/*
+	 * Exclusive layer-shell (wofi and similar) keeps pointer ownership until it
+	 * closes. Events land on that surface and its popups; everything else is
+	 * swallowed so other windows cannot be clicked, focused, or dragged.
+	 */
+	if (layer_exclusive_active(server))
+	{
+		if (server->grab == COMP_GRAB_MOVE)
+		{
+			/* The drag offset was already applied. Keep the pointer off other clients. */
+			wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+			wlr_seat_pointer_notify_clear_focus(server->seat);
+			return;
+		}
+		double ex, ey;
+		struct wlr_surface *exclusive_surface =
+			surface_at(server, server->cursor->x, server->cursor->y, &ex, &ey);
+		if (exclusive_surface && surface_is_under_layer(exclusive_surface, server->exclusive_layer))
+		{
+			if (!server->seat->pointer_state.focused_surface)
+			{
+				wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+			}
+			wlr_seat_pointer_notify_enter(server->seat, exclusive_surface, ex, ey);
+			wlr_seat_pointer_notify_motion(server->seat, time_msec, ex, ey);
+			return;
+		}
+		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+		wlr_seat_pointer_notify_clear_focus(server->seat);
+		return;
+	}
+
 	/* Bridge-provided CSD can cover the visible frame with a client surface without ever
 	 * issuing request_resize. Give Morph's fallback ring first chance on those windows. */
 	struct comp_toplevel *edge_view = toplevel_near_cursor_resize_edge(server);
@@ -7023,6 +7273,191 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 	wlr_seat_pointer_notify_clear_focus(server->seat);
 	apply_motion_focus_policy(server, NULL, true);
+}
+
+static void layer_exclusive_keyboard_idle_cancel(struct comp_server *server)
+{
+	if (server && server->exclusive_keyboard_idle)
+	{
+		wl_event_source_remove(server->exclusive_keyboard_idle);
+		server->exclusive_keyboard_idle = NULL;
+	}
+}
+
+/** Retry keyboard enter after the client has finished handling its map commit. */
+static void layer_exclusive_keyboard_idle(void *data)
+{
+	struct comp_server *server = data;
+	server->exclusive_keyboard_idle = NULL;
+	if (!server->seat || server->display_terminate_requested || !layer_exclusive_active(server))
+	{
+		return;
+	}
+	if (server->seat->keyboard_state.focused_surface == server->exclusive_layer->surface)
+	{
+		return;
+	}
+	layer_keyboard_enter(server, server->exclusive_layer->surface);
+}
+
+static void layer_exclusive_schedule_keyboard(struct comp_server *server)
+{
+	if (!server || !server->wl_display || server->exclusive_keyboard_idle ||
+		server->display_terminate_requested)
+	{
+		return;
+	}
+	struct wl_event_loop *loop = wl_display_get_event_loop(server->wl_display);
+	server->exclusive_keyboard_idle = wl_event_loop_add_idle(loop, layer_exclusive_keyboard_idle, server);
+}
+
+/** Give keyboard focus to a layer-shell surface without changing the remembered toplevel. */
+static void layer_keyboard_enter(struct comp_server *server, struct wlr_surface *surface)
+{
+	if (!server || !server->seat || !surface)
+	{
+		return;
+	}
+	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
+	if (kbd)
+	{
+		wlr_seat_keyboard_notify_enter(server->seat, surface, kbd->keycodes, kbd->num_keycodes,
+									   &kbd->modifiers);
+	}
+	else
+	{
+		wlr_seat_keyboard_notify_enter(server->seat, surface, NULL, 0, NULL);
+	}
+}
+
+/** Highest mapped layer wins. Overlay outranks top, then bottom, then background. */
+static int layer_shell_rank(enum zwlr_layer_shell_v1_layer layer)
+{
+	switch (layer)
+	{
+	case ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY:
+		return 3;
+	case ZWLR_LAYER_SHELL_V1_LAYER_TOP:
+		return 2;
+	case ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+/**
+ * Topmost mapped layer surface that requested exclusive keyboard interactivity.
+ * The layer list is newest-first, so the first surface at the winning rank is used.
+ */
+static struct wlr_layer_surface_v1 *exclusive_keyboard_layer(struct comp_server *server)
+{
+	struct wlr_layer_surface_v1 *best = NULL;
+	int best_rank = -1;
+	struct comp_layer *layer;
+	wl_list_for_each(layer, &server->layers, link)
+	{
+		struct wlr_layer_surface_v1 *ls = layer->layer_surface;
+		if (!ls || !ls->surface || !ls->surface->mapped || !ls->configured)
+		{
+			continue;
+		}
+		if (ls->current.keyboard_interactive != ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
+		{
+			continue;
+		}
+		const int rank = layer_shell_rank(ls->current.layer);
+		if (rank > best_rank)
+		{
+			best = ls;
+			best_rank = rank;
+		}
+	}
+	return best;
+}
+
+/**
+ * Track exclusive layer-shell keyboard focus and the pointer grab that goes with it.
+ *
+ * Launchers such as wofi set exclusive interactivity so the compositor, not the
+ * client, keeps other windows from taking clicks until the launcher closes.
+ */
+static void layer_exclusive_sync(struct comp_server *server)
+{
+	static bool syncing;
+	if (!server || !server->seat || server->display_terminate_requested || syncing)
+	{
+		return;
+	}
+	syncing = true;
+
+	struct wlr_layer_surface_v1 *want = exclusive_keyboard_layer(server);
+	if (want == server->exclusive_layer)
+	{
+		if (want && server->seat->keyboard_state.focused_surface != want->surface)
+		{
+			layer_keyboard_enter(server, want->surface);
+		}
+		syncing = false;
+		return;
+	}
+
+	if (want)
+	{
+		server->exclusive_layer = want;
+		motion_focus_idle_cancel(server);
+		if (server->focused_toplevel && toplevel_surface_initialized(server->focused_toplevel))
+		{
+			toplevel_set_activated(server->focused_toplevel, false);
+		}
+		layer_keyboard_enter(server, want->surface);
+		/* GTK launchers often drop an enter that arrives inside the mapping commit. */
+		layer_exclusive_schedule_keyboard(server);
+		if (server->cursor && server->grab != COMP_GRAB_MOVE && server->grab != COMP_GRAB_RESIZE)
+		{
+			process_cursor_motion(server, 0);
+		}
+		syncing = false;
+		return;
+	}
+
+	struct comp_toplevel *restore = server->focused_toplevel;
+	layer_exclusive_keyboard_idle_cancel(server);
+	server->exclusive_layer = NULL;
+	if (restore && toplevel_focus_candidate(server, restore))
+	{
+		struct wlr_surface *surface = toplevel_wlr_surface(restore);
+		toplevel_set_activated(restore, true);
+		foreign_toplevel_refresh(restore);
+		layer_keyboard_enter(server, surface);
+	}
+	else
+	{
+		server->focused_toplevel = NULL;
+		struct comp_toplevel *pick = NULL;
+		struct comp_toplevel *t;
+		wl_list_for_each(t, &server->focus_order, focus_link)
+		{
+			if (toplevel_focus_candidate(server, t))
+			{
+				pick = t;
+				break;
+			}
+		}
+		if (pick)
+		{
+			focus_toplevel(server, pick);
+		}
+		else
+		{
+			wlr_seat_keyboard_notify_clear_focus(server->seat);
+		}
+	}
+	if (server->cursor && server->grab == COMP_GRAB_NONE)
+	{
+		process_cursor_motion(server, 0);
+	}
+	syncing = false;
 }
 
 /** Relative pointer motion callback. */
@@ -7181,6 +7616,13 @@ static void server_cursor_button(struct wl_listener *listener, void *data)
 		return;
 	}
 
+	if (layer_exclusive_active(server))
+	{
+		/* Pointer focus was already confined to the launcher. Do not focus or drag other windows. */
+		wlr_seat_pointer_notify_button(server->seat, ev->time_msec, ev->button, ev->state);
+		return;
+	}
+
 	if (ev->state == WL_POINTER_BUTTON_STATE_PRESSED && ev->button == BTN_LEFT &&
 		(mods & WLR_MODIFIER_LOGO) && !server->suppress_logo_pointer_drag)
 	{
@@ -7240,6 +7682,14 @@ static void server_cursor_axis(struct wl_listener *listener, void *data)
 	if (!server->seat || server->display_terminate_requested)
 	{
 		return;
+	}
+	if (layer_exclusive_active(server))
+	{
+		struct wlr_surface *focused = server->seat->pointer_state.focused_surface;
+		if (!surface_is_under_layer(focused, server->exclusive_layer))
+		{
+			return;
+		}
 	}
 	wlr_seat_pointer_notify_axis(server->seat, ev->time_msec, ev->orientation,
 								 ev->delta, ev->delta_discrete, ev->source, ev->relative_direction);
@@ -8293,6 +8743,7 @@ int main(int argc, char **argv)
 	 */
 	wlr_log(WLR_INFO, "Running compositor on WAYLAND_DISPLAY=%s", socket);
 	spawn_xwayland_satellite(socket);
+	publish_client_session_environment(server.backend);
 	comp_config_run_startup(server.config);
 	if (crash_test_from_argv)
 	{
