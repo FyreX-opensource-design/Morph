@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1305,7 +1306,50 @@ struct input_map_parse {
 	char *match_pat;
 	char *output_name;
 	char *type_str;
+	bool have_calibration;
+	float calibration[6];
 };
+
+/** Parse calibration_matrix= into six finite floats (whitespace or commas). */
+static bool parse_calibration_matrix(const char *value, float out[6], size_t line_no, const char *path) {
+	if (!value || !value[0]) {
+		wlr_log(WLR_ERROR, "%s:%zu: calibration_matrix= is empty", path, line_no);
+		return false;
+	}
+	char *buf = strdup(value);
+	if (!buf) {
+		return false;
+	}
+	for (char *p = buf; *p; p++) {
+		if (*p == ',') {
+			*p = ' ';
+		}
+	}
+	int n = 0;
+	char *save = NULL;
+	for (char *tok = strtok_r(buf, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save)) {
+		if (n >= 6) {
+			wlr_log(WLR_ERROR, "%s:%zu: calibration_matrix= expects 6 numbers", path, line_no);
+			free(buf);
+			return false;
+		}
+		errno = 0;
+		char *end = NULL;
+		const double v = strtod(tok, &end);
+		if (end == tok || (end && *end) || errno == ERANGE || !isfinite(v)) {
+			wlr_log(WLR_ERROR, "%s:%zu: calibration_matrix= has a bad number '%s'", path, line_no, tok);
+			free(buf);
+			return false;
+		}
+		out[n++] = (float)v;
+	}
+	free(buf);
+	if (n != 6) {
+		wlr_log(WLR_ERROR, "%s:%zu: calibration_matrix= expects 6 numbers, got %d", path, line_no, n);
+		return false;
+	}
+	return true;
+}
 
 static void input_map_parse_reset(struct input_map_parse *p) {
 	free(p->match_pat);
@@ -1354,14 +1398,17 @@ static bool flush_input_map_rule(struct comp_config *cfg, struct input_map_parse
 								 const char *path) {
 	const bool have_match = p->match_pat && p->match_pat[0];
 	const bool have_out = p->output_name && p->output_name[0];
-	if (!have_match && !have_out) {
+	const bool have_cal = p->have_calibration;
+	if (!have_match && !have_out && !have_cal) {
 		input_map_parse_reset(p);
 		(void)line_no;
 		(void)path;
 		return true;
 	}
-	if (!have_match || !have_out) {
-		wlr_log(WLR_ERROR, "%s:%zu: [input_map] needs both match= and output=", path, line_no);
+	if (!have_match || (!have_out && !have_cal)) {
+		wlr_log(WLR_ERROR,
+				"%s:%zu: [input_map] needs match= and at least one of output= or calibration_matrix=", path,
+				line_no);
 		input_map_parse_reset(p);
 		return false;
 	}
@@ -1373,10 +1420,16 @@ static bool flush_input_map_rule(struct comp_config *cfg, struct input_map_parse
 	struct comp_input_map_rule rule;
 	memset(&rule, 0, sizeof(rule));
 	rule.types = types;
-	rule.output_name = xstrdup(p->output_name);
-	if (!rule.output_name) {
-		input_map_parse_reset(p);
-		return false;
+	if (have_out) {
+		rule.output_name = xstrdup(p->output_name);
+		if (!rule.output_name) {
+			input_map_parse_reset(p);
+			return false;
+		}
+	}
+	if (have_cal) {
+		rule.have_calibration = true;
+		memcpy(rule.calibration, p->calibration, sizeof(rule.calibration));
 	}
 	int err = regcomp(&rule.name_re, p->match_pat, REG_EXTENDED | REG_NOSUB);
 	if (err != 0) {
@@ -1752,6 +1805,12 @@ bool comp_config_load(const char *path, struct comp_config **cfg_out) {
 			} else if (!strcasecmp(line, "type")) {
 				free(cur_imap.type_str);
 				cur_imap.type_str = xstrdup(eq);
+			} else if (!strcasecmp(line, "calibration_matrix") || !strcasecmp(line, "calibration-matrix")) {
+				if (!parse_calibration_matrix(eq, cur_imap.calibration, line_no, path)) {
+					ok = false;
+				} else {
+					cur_imap.have_calibration = true;
+				}
 			} else {
 				wlr_log(WLR_ERROR, "%s:%zu: unknown input_map key '%s'", path, line_no, line);
 				ok = false;

@@ -16,12 +16,18 @@ void comp_config_sync_shell_env(struct comp_server *server);
 #define COMP_INPUT_MAP_TYPE_TABLET (1u << 1)
 #define COMP_INPUT_MAP_TYPE_POINTER (1u << 2)
 
-/** Map a touch / tablet / pointer device to one output by connector name (see [input_map]). */
+/**
+ * Map a touch / tablet / pointer device to one output, and optionally apply a
+ * calibration matrix to normalized absolute coordinates (see [input_map]).
+ * calibration[] is the first two rows of a 3x3 matrix: a b c d e f.
+ */
 struct comp_input_map_rule {
 	regex_t name_re;
 	bool have_name;
 	uint32_t types;
 	char *output_name;
+	bool have_calibration;
+	float calibration[6];
 };
 
 enum comp_keybind_action {
