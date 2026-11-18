@@ -56,6 +56,8 @@
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_export_dmabuf_v1.h>
 #include <wlr/types/wlr_ext_data_control_v1.h>
 #include <wlr/util/box.h>
@@ -7825,6 +7827,19 @@ bool server_init(struct comp_server *server)
 	if (!server->viewporter)
 	{
 		wlr_log(WLR_ERROR, "Failed to create wlr_viewporter (required for xwayland-satellite)");
+		return false;
+	}
+	server->fractional_scale_manager = wlr_fractional_scale_manager_v1_create(dpy, 1);
+	if (!server->fractional_scale_manager)
+	{
+		wlr_log(WLR_ERROR, "Failed to create wlr_fractional_scale_manager_v1");
+		return false;
+	}
+	/* Scene surfaces call wlr_presentation_surface_*_on_output when sampled. */
+	server->presentation = wlr_presentation_create(dpy, server->backend, 2);
+	if (!server->presentation)
+	{
+		wlr_log(WLR_ERROR, "Failed to create wlr_presentation");
 		return false;
 	}
 	server->subcompositor = wlr_subcompositor_create(dpy);

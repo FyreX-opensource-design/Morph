@@ -43,6 +43,8 @@ struct wlr_pointer_constraints_v1;
 struct wlr_pointer_constraint_v1;
 struct wlr_relative_pointer_manager_v1;
 struct wlr_viewporter;
+struct wlr_fractional_scale_manager_v1;
+struct wlr_presentation;
 struct wlr_tablet_manager_v2;
 struct wlr_tablet;
 struct wlr_tablet_v2_tablet;
@@ -264,6 +266,10 @@ struct comp_server
 	struct wlr_session *session;
 	struct wlr_compositor *compositor;
 	struct wlr_viewporter *viewporter;
+	/** wp_fractional_scale_manager_v1. Scene surfaces send preferred scale. */
+	struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
+	/** wp_presentation. Scene surfaces send feedback when a client requests it. */
+	struct wlr_presentation *presentation;
 	struct wlr_subcompositor *subcompositor;
 	struct wlr_data_device_manager *data_device_mgr;
 	struct wlr_primary_selection_v1_device_manager *primary_selection_mgr;

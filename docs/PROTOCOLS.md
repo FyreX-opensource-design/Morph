@@ -42,9 +42,11 @@ These `wlr_*_create` calls register the corresponding **Wayland globals** (names
 | **`wl_seat`** | `wlr_seat_create(dpy, "seat0")` | Pointer, keyboard, touch (when devices present). |
 | **`wl_shm`** / **`linux_dmabuf`** (and related buffer support) | `wlr_renderer_init_wl_display(renderer, dpy)` | Buffer formats for clients (exact globals depend on renderer/backend). |
 | **`wp_viewporter`** | `wlr_viewporter_create(dpy)` | Required for **xwayland-satellite** (X11 → XDG bridge). |
+| **`wp_fractional_scale_manager_v1`** | `wlr_fractional_scale_manager_v1_create(dpy, 1)` | Preferred buffer scale. Scene surfaces call `wlr_fractional_scale_v1_notify_scale`. |
+| **`wp_presentation`** | `wlr_presentation_create(dpy, backend, 2)` | Presentation feedback. Scene surfaces report sampled buffers. |
 | **X11 (via satellite)** | `xwayland-satellite` child process | Not in-process Xwayland; **Morph** spawns satellite after startup and sets `DISPLAY`. |
 
-**Not created anywhere in this repo:** idle/keyboard-shortcuts inhibit, text-input/input-method, fractional-scale (explicit global), cursor-shape (wp), presentation-time, security-context, legacy `zwlr_data_control` (superseded by **ext-data-control** above), etc.
+**Not created anywhere in this repo:** idle/keyboard-shortcuts inhibit, text-input/input-method, cursor-shape (wp), security-context, legacy `zwlr_data_control` (superseded by **ext-data-control** above), etc.
 
 ---
 
@@ -116,19 +118,17 @@ A working portal still needs **`xdg-desktop-portal`** plus a backend such as **x
 **Medium**
 
 - **Idle inhibit** — prevent dim during video.
-- **Fractional scale** — HiDPI blur on some clients.
 
 **Lower**
 
 - **wp_cursor_shape** — named cursors (many apps use `set_cursor` surfaces instead).
-- **presentation-time**, **security-context**, etc.
+- **security-context**, etc.
 
 ### Suggested order for further work
 
 1. **Keyboard shortcuts inhibit** — fullscreen apps.
-2. **Fractional scale** — HiDPI clarity.
-3. **Idle inhibit** — presentations / video.
-4. **Text input / input method** — IME users (when test coverage is available).
+2. **Idle inhibit** — presentations / video.
+3. **Text input / input method** — IME users (when test coverage is available).
 
 Each addition needs new globals (often `wayland-protocols` or wlroots unstable headers) and event wiring; portal features also need the **portal service** in the session.
 
