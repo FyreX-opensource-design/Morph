@@ -16,8 +16,8 @@
 # ==============================================================================
 
 # Start and redirect services
-launch_nokill lxqt-policykit-agent
-launch /usr/bin/xfce4-power-manager
+#launch_nokill lxqt-policykit-agent
+#launch /usr/bin/xfce4-power-manager
 
 # Set background color.
 launch swaybg -c '#80c3d8'
@@ -47,7 +47,7 @@ log_startup INFO "Starting user startup example components."
 #     resume 'wlopm --on \*'
 
 # Launch a panel such as yambar or waybar.
-launch sfwbar
+launch sfwbar -f testing/sfwbar_morph.config
 log_startup INFO "Started panel sfwbar."
 #launch waybar -c ./config/waybar-morph.jsonc -s ./config/waybar-morph.css
 #log_startup INFO "Started waybar."

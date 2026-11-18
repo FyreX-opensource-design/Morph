@@ -1047,6 +1047,98 @@ test_system_uninstall_prints_manifest_without_removing() {
     trap - EXIT HUP INT TERM
 }
 
+test_system_uninstall_force_removes_modified_manifest_target() {
+    tmpdir=$(make_tmpdir)
+    trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+
+    mkdir -p "$tmpdir/bin"
+    src="$tmpdir/source"
+    dst="$tmpdir/installed"
+    printf 'source version\n' > "$src"
+    printf 'locally modified version\n' > "$dst"
+
+    cat > "$tmpdir/bin/meson" <<'EOF'
+#!/bin/sh
+printf '{"%s":"%s"}\n' "$TEST_MANIFEST_SRC" "$TEST_MANIFEST_DST"
+EOF
+    chmod +x "$tmpdir/bin/meson"
+
+    PATH="$tmpdir/bin:$PATH" \
+        TEST_MANIFEST_SRC="$src" \
+        TEST_MANIFEST_DST="$dst" \
+        sh "$repo_root/scripts/system-uninstall.sh" --builddir ignored --remove --force \
+        > "$tmpdir/output"
+
+    [ ! -e "$dst" ] || fail "force system uninstall kept a modified manifest target"
+    assert_file_contains "$tmpdir/output" "Force-removed installed file: $dst"
+
+    rm -rf "$tmpdir"
+    trap - EXIT HUP INT TERM
+}
+
+test_morph_uninstall_force_handles_user_config() {
+    tmpdir=$(make_tmpdir)
+    trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+
+    home="$tmpdir/home"
+    config_home="$home/.config"
+    fake_bin="$tmpdir/bin"
+    sudo_log="$tmpdir/sudo.log"
+    mkdir -p "$fake_bin" "$config_home/morph" "$home/.local/bin"
+
+    cat > "$fake_bin/sudo" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_SUDO_LOG"
+EOF
+    chmod +x "$fake_bin/sudo"
+
+    ln -s "$repo_root/testing/config/morph.conf" "$config_home/morph/morph.conf"
+    ln -s "$repo_root/testing/config/environment" "$config_home/morph/environment"
+    ln -s "$repo_root/testing/morph-session_dbg" "$home/.local/bin/morph-session_dbg"
+
+    (
+        cd "$repo_root"
+        HOME="$home" XDG_CONFIG_HOME="$config_home" \
+            TEST_SUDO_LOG="$sudo_log" PATH="$fake_bin:$PATH" \
+            bash ./scripts/morph-uninstall.sh --debug --force
+    ) > "$tmpdir/symlink-only.out"
+
+    [ ! -e "$config_home/morph" ] || fail "force uninstall kept symlink-only user config"
+    [ ! -L "$home/.local/bin/morph-session_dbg" ] || fail "force uninstall kept debug launcher link"
+    assert_file_contains "$tmpdir/symlink-only.out" "Force-removed symlink-only user config: $config_home/morph"
+    assert_file_contains "$sudo_log" "rm -f /usr/bin/morph_dbg"
+
+    mkdir -p "$config_home/morph"
+    printf 'user setting\n' > "$config_home/morph/environment"
+    ln -s "$repo_root/testing/config/morph.conf" "$config_home/morph/morph.conf"
+
+    (
+        cd "$repo_root"
+        HOME="$home" XDG_CONFIG_HOME="$config_home" \
+            TEST_SUDO_LOG="$sudo_log" PATH="$fake_bin:$PATH" \
+            bash ./scripts/morph-uninstall.sh --runtime --force --dry
+    ) > "$tmpdir/runtime-dry.out"
+
+    [ -f "$config_home/morph/environment" ] || fail "force dry-run changed real user config"
+    assert_file_contains "$tmpdir/runtime-dry.out" "--builddir build --remove --force"
+    assert_file_contains "$tmpdir/runtime-dry.out" "[dry] mv $config_home/morph $config_home/morph_bak"
+
+    (
+        cd "$repo_root"
+        HOME="$home" XDG_CONFIG_HOME="$config_home" \
+            TEST_SUDO_LOG="$sudo_log" PATH="$fake_bin:$PATH" \
+            bash ./scripts/morph-uninstall.sh --debug --force
+    ) > "$tmpdir/real-files.out"
+
+    [ ! -e "$config_home/morph" ] || fail "force uninstall kept original real-file config path"
+    [ -f "$config_home/morph_bak/environment" ] || fail "force uninstall did not back up real user config"
+    [ -L "$config_home/morph_bak/morph.conf" ] || fail "force uninstall did not preserve mixed config tree"
+    assert_file_contains "$tmpdir/real-files.out" "Backed up user config with real files: $config_home/morph -> $config_home/morph_bak"
+
+    rm -rf "$tmpdir"
+    trap - EXIT HUP INT TERM
+}
+
 test_launch_helpers_track_expected_processes
 test_reload_helper_restarts_without_duplicate_shutdown_entries
 test_reload_once_starts_component_when_missing
@@ -1074,3 +1166,5 @@ test_launcher_enables_x11_bridge_by_default_in_nested_mode
 test_production_wrapper_resolves_system_config_with_repo_overrides
 test_meson_install_manifest_lists_runtime_artifacts
 test_system_uninstall_prints_manifest_without_removing
+test_system_uninstall_force_removes_modified_manifest_target
+test_morph_uninstall_force_handles_user_config

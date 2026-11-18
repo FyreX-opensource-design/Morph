@@ -498,6 +498,18 @@ morph_source_portals() {
 # Display/session probe helpers
 # ==============================================================================
 
+# Return success when WAYLAND_DISPLAY names an existing socket.
+wayland_display_reachable() {
+    if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+        return 1
+    fi
+    case "$WAYLAND_DISPLAY" in
+        /*) socket="$WAYLAND_DISPLAY" ;;
+        *) socket="${XDG_RUNTIME_DIR:-}/$WAYLAND_DISPLAY" ;;
+    esac
+    [ -S "$socket" ]
+}
+
 # Return success if the given X11 display can be queried.
 x11_display_reachable_on() {
     cand="$1"
