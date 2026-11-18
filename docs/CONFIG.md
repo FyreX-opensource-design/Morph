@@ -161,15 +161,34 @@ Use **`strip = no`** on specific apps (e.g. video players) to keep their client 
 
 ## Section `[input_map]` (optional)
 
-Rules in **`[input_map]`** map physical input devices to one output by connector name. This is mainly for touch and tablet devices that should always follow a specific monitor. **First matching rule wins** in file order.
+Rules in **`[input_map]`** map physical input devices to one output by connector name, and can apply a calibration matrix to absolute coordinates. This is mainly for touch and tablet devices that should follow a specific monitor, or whose axes need rotating or flipping on their own. **First matching rule wins** in file order.
 
 | Key | Meaning |
 |-----|---------|
-| **`match`** / **`name`** | POSIX **extended** regex matched against the device name. |
-| **`output`** | Output connector name, for example `eDP-1`, `HDMI-A-1`, or `DP-2`. |
+| **`match`** / **`name`** | POSIX **extended** regex matched against the device name. Required. |
+| **`output`** | Output connector name, for example `eDP-1`, `HDMI-A-1`, or `DP-2`. Optional when **`calibration_matrix`** is set. |
 | **`type`** | Optional comma/space-separated filter: **`touch`**, **`tablet`** / **`stylus`** / **`pen`**, **`pointer`** / **`mouse`**, or **`all`** / **`both`**. If omitted, the rule applies to **touch** and **tablet** devices. |
+| **`calibration_matrix`** / **`calibration-matrix`** | Optional six numbers `a b c d e f` (spaces or commas). The first two rows of a 3×3 matrix applied to normalized device coordinates before an output transform. |
 
-If both **`match`** and **`output`** are present, the rule is applied to matching devices of the selected type(s). A rule that omits either key is rejected at load time.
+A rule must include **`match`** and at least one of **`output`** or **`calibration_matrix`**. A rule that names an output which is not connected yet is skipped, and the next rule is tried.
+
+The matrix is:
+
+```
+[ a b c ]   [ x ]
+[ d e f ] * [ y ]
+[ 0 0 1 ]   [ 1 ]
+```
+
+Identity is `1 0 0 0 1 0`. Clockwise rotations that stay inside the device square:
+
+| Rotation | `calibration_matrix` |
+|----------|----------------------|
+| 90° | `0 -1 1 1 0 0` |
+| 180° | `-1 0 1 0 -1 1` |
+| 270° | `0 1 0 -1 0 1` |
+
+The matrix is independent of the output transform set by kanshi or `wlr-randr`. Morph applies it to the device’s normalized coordinates first. When the device is mapped to an output, that output’s transform is applied after the matrix, so touch follows a rotated panel. While a rule sets a matrix, Morph clears libinput’s matrix to identity so a udev `LIBINPUT_CALIBRATION_MATRIX` is not stacked on top. Relative devices such as mice ignore it. A reload that drops the matrix restores libinput’s default, including that udev matrix when one is set.
 
 Example:
 
@@ -178,6 +197,7 @@ Example:
 match = ^HUION .*
 output = DP-2
 type = tablet
+calibration_matrix = 0 -1 1 1 0 0
 ```
 
 ## Actions reference

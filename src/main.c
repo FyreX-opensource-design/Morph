@@ -64,6 +64,7 @@
 #include <wlr/util/region.h>
 #include <wlr/util/edges.h>
 #include <wlr/util/log.h>
+#include <wlr/util/transform.h>
 #include <xkbcommon/xkbcommon.h>
 
 #include "config.h"
@@ -5982,6 +5983,210 @@ static struct wlr_output *output_by_name(struct comp_server *server, const char 
 	return NULL;
 }
 
+static uint32_t input_map_want_type(const struct wlr_input_device *dev)
+{
+	switch (dev->type)
+	{
+	case WLR_INPUT_DEVICE_TOUCH:
+		return COMP_INPUT_MAP_TYPE_TOUCH;
+	case WLR_INPUT_DEVICE_TABLET:
+		return COMP_INPUT_MAP_TYPE_TABLET;
+	case WLR_INPUT_DEVICE_POINTER:
+		return COMP_INPUT_MAP_TYPE_POINTER;
+	default:
+		return 0;
+	}
+}
+
+/**
+ * First matching [input_map] rule for this device.
+ * When mapped_out is non-NULL, it receives the connected output named by the rule.
+ */
+static const struct comp_input_map_rule *input_map_rule_for_device(struct comp_server *server,
+																  struct wlr_input_device *dev,
+																  struct wlr_output **mapped_out, bool quiet)
+{
+	if (mapped_out)
+	{
+		*mapped_out = NULL;
+	}
+	if (!server || !server->config || !dev || !dev->name)
+	{
+		return NULL;
+	}
+	const uint32_t want = input_map_want_type(dev);
+	if (!want)
+	{
+		return NULL;
+	}
+	for (size_t i = 0; i < server->config->n_input_map_rules; i++)
+	{
+		const struct comp_input_map_rule *r = &server->config->input_map_rules[i];
+		if (!(r->types & want) || !r->have_name)
+		{
+			continue;
+		}
+		if (regexec(&r->name_re, dev->name, 0, NULL, 0) != 0)
+		{
+			continue;
+		}
+		if (r->output_name)
+		{
+			struct wlr_output *mapped = output_by_name(server, r->output_name);
+			if (!mapped)
+			{
+				if (!quiet)
+				{
+					wlr_log(WLR_INFO, "input_map: output '%s' not found for device '%s' (trying next rule)",
+							r->output_name, dev->name);
+				}
+				continue;
+			}
+			if (mapped_out)
+			{
+				*mapped_out = mapped;
+			}
+		}
+		return r;
+	}
+	return NULL;
+}
+
+/** Rotate a normalized 0..1 point the same way wlroots rotates a mapped absolute device. */
+static void norm_output_transform(double *x, double *y, enum wl_output_transform transform)
+{
+	double dx = *x;
+	double dy = *y;
+	switch (transform)
+	{
+	case WL_OUTPUT_TRANSFORM_NORMAL:
+		break;
+	case WL_OUTPUT_TRANSFORM_90:
+		dx = 1.0 - *y;
+		dy = *x;
+		break;
+	case WL_OUTPUT_TRANSFORM_180:
+		dx = 1.0 - *x;
+		dy = 1.0 - *y;
+		break;
+	case WL_OUTPUT_TRANSFORM_270:
+		dx = *y;
+		dy = 1.0 - *x;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED:
+		dx = 1.0 - *x;
+		dy = *y;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+		dx = *y;
+		dy = *x;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+		dx = *x;
+		dy = 1.0 - *y;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+		dx = 1.0 - *y;
+		dy = 1.0 - *x;
+		break;
+	}
+	*x = dx;
+	*y = dy;
+}
+
+/**
+ * Hold libinput's matrix at identity while Morph applies one itself.
+ * Otherwise restore libinput's default, including a udev calibration matrix.
+ * Devices that share one libinput handle must agree: a sibling with a matrix
+ * keeps the handle at identity so a later sibling cannot wipe it.
+ */
+static void input_device_set_libinput_matrix_suppressed(struct wlr_input_device *dev, bool suppress)
+{
+	if (!dev || !wlr_input_device_is_libinput(dev))
+	{
+		return;
+	}
+	struct libinput_device *lid = wlr_libinput_get_device_handle(dev);
+	if (!lid || !libinput_device_config_calibration_has_matrix(lid))
+	{
+		return;
+	}
+	float applied[6];
+	if (suppress)
+	{
+		const float identity[6] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f};
+		memcpy(applied, identity, sizeof(applied));
+	}
+	else
+	{
+		libinput_device_config_calibration_get_default_matrix(lid, applied);
+	}
+	const enum libinput_config_status status = libinput_device_config_calibration_set_matrix(lid, applied);
+	if (status != LIBINPUT_CONFIG_STATUS_SUCCESS)
+	{
+		wlr_log(WLR_ERROR, "input_map: failed to set calibration matrix for '%s'", dev->name);
+	}
+}
+
+static bool libinput_handle_has_configured_matrix(struct comp_server *server, struct wlr_input_device *dev)
+{
+	if (!wlr_input_device_is_libinput(dev))
+	{
+		return false;
+	}
+	struct libinput_device *lid = wlr_libinput_get_device_handle(dev);
+	struct comp_tracked_input *ti;
+	wl_list_for_each(ti, &server->tracked_inputs, link)
+	{
+		if (!wlr_input_device_is_libinput(ti->dev) || wlr_libinput_get_device_handle(ti->dev) != lid)
+		{
+			continue;
+		}
+		const struct comp_input_map_rule *rule = input_map_rule_for_device(server, ti->dev, NULL, true);
+		if (rule && rule->have_calibration)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Apply calibration_matrix in normalized device space.
+ *
+ * The cursor has already applied the mapped output's transform. Undo it, apply
+ * the configured matrix, then put the output transform back so the matrix and
+ * an output rotation compose in that order.
+ */
+static void absolute_apply_input_calibration(struct comp_server *server, struct wlr_input_device *dev, double *x,
+											 double *y)
+{
+	if (!server || !dev || !x || !y || isnan(*x) || isnan(*y))
+	{
+		return;
+	}
+	struct wlr_output *mapped = NULL;
+	const struct comp_input_map_rule *rule = input_map_rule_for_device(server, dev, &mapped, true);
+	if (!rule || !rule->have_calibration)
+	{
+		return;
+	}
+	const enum wl_output_transform transform = mapped ? mapped->transform : WL_OUTPUT_TRANSFORM_NORMAL;
+	if (transform != WL_OUTPUT_TRANSFORM_NORMAL)
+	{
+		norm_output_transform(x, y, wlr_output_transform_invert(transform));
+	}
+	const float *m = rule->calibration;
+	const double nx = (double)m[0] * *x + (double)m[1] * *y + (double)m[2];
+	const double ny = (double)m[3] * *x + (double)m[4] * *y + (double)m[5];
+	*x = nx;
+	*y = ny;
+	if (transform != WL_OUTPUT_TRANSFORM_NORMAL)
+	{
+		norm_output_transform(x, y, transform);
+	}
+}
+
 /** Apply configured input-to-output mapping rules to all tracked non-keyboard devices. */
 void server_apply_input_device_maps(struct comp_server *server)
 {
@@ -5993,48 +6198,26 @@ void server_apply_input_device_maps(struct comp_server *server)
 	wl_list_for_each(ti, &server->tracked_inputs, link)
 	{
 		struct wlr_input_device *dev = ti->dev;
-		uint32_t want = 0;
-		switch (dev->type)
-		{
-		case WLR_INPUT_DEVICE_TOUCH:
-			want = COMP_INPUT_MAP_TYPE_TOUCH;
-			break;
-		case WLR_INPUT_DEVICE_TABLET:
-			want = COMP_INPUT_MAP_TYPE_TABLET;
-			break;
-		case WLR_INPUT_DEVICE_POINTER:
-			want = COMP_INPUT_MAP_TYPE_POINTER;
-			break;
-		default:
-			want = 0;
-			break;
-		}
-		if (!want)
+		if (!input_map_want_type(dev))
 		{
 			continue;
 		}
 		struct wlr_output *mapped = NULL;
-		for (size_t i = 0; i < server->config->n_input_map_rules; i++)
-		{
-			const struct comp_input_map_rule *r = &server->config->input_map_rules[i];
-			if (!(r->types & want) || !r->have_name)
-			{
-				continue;
-			}
-			if (regexec(&r->name_re, dev->name, 0, NULL, 0) != 0)
-			{
-				continue;
-			}
-			mapped = output_by_name(server, r->output_name);
-			if (!mapped)
-			{
-				wlr_log(WLR_INFO, "input_map: output '%s' not found for device '%s' (trying next rule)",
-						r->output_name, dev->name);
-				continue;
-			}
-			break;
-		}
+		const struct comp_input_map_rule *matched = input_map_rule_for_device(server, dev, &mapped, false);
 		wlr_cursor_map_input_to_output(server->cursor, dev, mapped);
+		input_device_set_libinput_matrix_suppressed(dev, libinput_handle_has_configured_matrix(server, dev));
+		if (matched && matched->have_calibration)
+		{
+			const float *m = matched->calibration;
+			wlr_log(WLR_INFO, "input_map: device '%s' calibration matrix %g %g %g %g %g %g", dev->name, m[0], m[1],
+					m[2], m[3], m[4], m[5]);
+		}
+		else if (!matched && server->config->n_input_map_rules > 0 &&
+				 (dev->type == WLR_INPUT_DEVICE_TOUCH || dev->type == WLR_INPUT_DEVICE_TABLET))
+		{
+			wlr_log(WLR_INFO, "input_map: no rule matched %s device '%s'",
+					dev->type == WLR_INPUT_DEVICE_TOUCH ? "touch" : "tablet", dev->name);
+		}
 		if (mapped)
 		{
 			wlr_log(WLR_INFO, "input_map: device '%s' -> output '%s'", dev->name, mapped->name);
@@ -6199,7 +6382,13 @@ static void tablet_tool_position(struct comp_server *server, struct comp_tablet_
 		return;
 	}
 	struct wlr_input_device *tab_dev = &tt->tablet->wlr_tablet->base;
-	wlr_cursor_warp_absolute(server->cursor, tab_dev, change_x ? x : NAN, change_y ? y : NAN);
+	double ax = x;
+	double ay = y;
+	if (change_x && change_y)
+	{
+		absolute_apply_input_calibration(server, tab_dev, &ax, &ay);
+	}
+	wlr_cursor_warp_absolute(server->cursor, tab_dev, change_x ? ax : (double)NAN, change_y ? ay : (double)NAN);
 
 	double sx, sy;
 	struct wlr_surface *surface = surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
@@ -6432,8 +6621,11 @@ static void server_cursor_touch_down(struct wl_listener *listener, void *data)
 		return;
 	}
 	struct wlr_touch_down_event *event = data;
+	double x = event->x;
+	double y = event->y;
+	absolute_apply_input_calibration(server, &event->touch->base, &x, &y);
 	double lx, ly;
-	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base, event->x, event->y, &lx, &ly);
+	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base, x, y, &lx, &ly);
 
 	double sx, sy;
 	struct wlr_surface *surface = surface_at(server, lx, ly, &sx, &sy);
@@ -6512,8 +6704,11 @@ static void server_cursor_touch_motion(struct wl_listener *listener, void *data)
 		return;
 	}
 	struct wlr_touch_motion_event *event = data;
+	double x = event->x;
+	double y = event->y;
+	absolute_apply_input_calibration(server, &event->touch->base, &x, &y);
 	double lx, ly;
-	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base, event->x, event->y, &lx, &ly);
+	wlr_cursor_absolute_to_layout_coords(server->cursor, &event->touch->base, x, y, &lx, &ly);
 	double sx, sy;
 	if (layer_exclusive_active(server) &&
 		!(server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id))
@@ -7477,7 +7672,10 @@ static void server_cursor_motion_absolute(struct wl_listener *listener, void *da
 {
 	struct comp_server *server = wl_container_of(listener, server, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *ev = data;
-	wlr_cursor_warp_absolute(server->cursor, &ev->pointer->base, ev->x, ev->y);
+	double x = ev->x;
+	double y = ev->y;
+	absolute_apply_input_calibration(server, &ev->pointer->base, &x, &y);
+	wlr_cursor_warp_absolute(server->cursor, &ev->pointer->base, x, y);
 	process_cursor_motion(server, ev->time_msec);
 }
 

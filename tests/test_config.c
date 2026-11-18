@@ -780,6 +780,104 @@ static int test_window_cycle_actions_parse(void)
     return 0;
 }
 
+/** calibration_matrix stores six floats and may be the only action on a rule. */
+static int test_input_map_calibration_matrix(void)
+{
+    const char *cfg_text =
+        "[input_map]\n"
+        "match = ^HUION .*\n"
+        "output = DP-2\n"
+        "type = tablet\n"
+        "calibration_matrix = 0, -1, 1, 1, 0, 0\n"
+        "\n"
+        "[input_map]\n"
+        "name = ^ELAN Touch\n"
+        "calibration-matrix = 1 0 0 0 1 0\n";
+
+    char path[128];
+    if (!write_temp_file(cfg_text, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp input_map config\n");
+        return 1;
+    }
+
+    struct comp_config *cfg = NULL;
+    if (!comp_config_load(path, &cfg))
+    {
+        fprintf(stderr, "input_map calibration_matrix config failed to parse\n");
+        unlink(path);
+        return 1;
+    }
+    unlink(path);
+
+    if (!cfg || cfg->n_input_map_rules != 2)
+    {
+        fprintf(stderr, "expected two input_map rules\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+
+    const struct comp_input_map_rule *tablet = &cfg->input_map_rules[0];
+    if (!tablet->have_calibration || tablet->types != COMP_INPUT_MAP_TYPE_TABLET ||
+        !tablet->output_name || strcmp(tablet->output_name, "DP-2") != 0)
+    {
+        fprintf(stderr, "tablet input_map rule missing output or calibration\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+    const float want_rot[6] = {0.f, -1.f, 1.f, 1.f, 0.f, 0.f};
+    if (memcmp(tablet->calibration, want_rot, sizeof(want_rot)) != 0)
+    {
+        fprintf(stderr, "tablet calibration matrix mismatch\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+
+    const struct comp_input_map_rule *touch = &cfg->input_map_rules[1];
+    const float want_id[6] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f};
+    if (!touch->have_calibration || touch->output_name ||
+        touch->types != (COMP_INPUT_MAP_TYPE_TOUCH | COMP_INPUT_MAP_TYPE_TABLET) ||
+        memcmp(touch->calibration, want_id, sizeof(want_id)) != 0)
+    {
+        fprintf(stderr, "matrix-only input_map rule mismatch\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+
+    comp_config_free(cfg);
+    return 0;
+}
+
+/** A short or non-numeric calibration_matrix fails the config load. */
+static int test_input_map_calibration_matrix_invalid(void)
+{
+    fprintf(stderr, "NOTE: the following config parser ERROR messages are expected; this test intentionally feeds an invalid calibration matrix.\n");
+
+    const char *cfg_text =
+        "[input_map]\n"
+        "match = ^HUION .*\n"
+        "output = DP-2\n"
+        "calibration_matrix = 1 0 0 0 1\n";
+
+    char path[128];
+    if (!write_temp_file(cfg_text, path, sizeof(path)))
+    {
+        fprintf(stderr, "failed to create temp invalid input_map config\n");
+        return 1;
+    }
+
+    struct comp_config *cfg = NULL;
+    bool ok = comp_config_load(path, &cfg);
+    unlink(path);
+    if (ok || cfg)
+    {
+        fprintf(stderr, "short calibration_matrix should fail config load\n");
+        comp_config_free(cfg);
+        return 1;
+    }
+    return 0;
+}
+
 /** Execute all config parser regression tests; return non-zero on first failure. */
 int main(void)
 {
@@ -816,6 +914,14 @@ int main(void)
         return 1;
     }
     if (test_unresolved_config_path_can_use_builtin_fallback() != 0)
+    {
+        return 1;
+    }
+    if (test_input_map_calibration_matrix() != 0)
+    {
+        return 1;
+    }
+    if (test_input_map_calibration_matrix_invalid() != 0)
     {
         return 1;
     }
