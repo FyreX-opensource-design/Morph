@@ -295,6 +295,8 @@ struct comp_server
 	struct wlr_scene_tree *layer_trees[4];
 	/** Compositor-owned chrome (switcher, future menus), above client overlay surfaces. */
 	struct wlr_scene_tree *ui_tree;
+	/** Live client drag icon, parented to `ui_tree`. NULL when no icon is showing. */
+	struct wlr_scene_tree *drag_icon;
 	struct wlr_scene_output_layout *scene_layout;
 	struct wlr_scene_tree *windows_tree;
 	/** Fullscreen toplevels. Above layer-shell top (panels) and below overlay. */
@@ -338,6 +340,9 @@ struct comp_server
 	struct wl_listener seat_request_cursor;
 	struct wl_listener seat_request_set_selection;
 	struct wl_listener seat_request_set_primary_selection;
+	struct wl_listener seat_request_start_drag;
+	struct wl_listener seat_start_drag;
+	struct wl_listener drag_icon_destroy;
 	struct wl_listener seat_pointer_focus_change;
 	struct wl_listener new_pointer_constraint;
 	struct wl_listener pointer_constraint_commit;

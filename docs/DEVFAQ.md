@@ -185,18 +185,13 @@ Observed behavior:
 
 Cause:
 
-- the client negotiates xdg-shell version 3
-- **Morph** can only advertise `wm_capabilities` starting at xdg-shell version 5
-- with version 3, the compositor cannot legally signal maximize/minimize support
+- the client binds xdg-shell version 3
+- `wm_capabilities` exists only from version 5
+- a version 3 client never receives maximize/minimize support, so its own title bar omits those buttons
 
 Current status:
 
-- this cannot be fixed cleanly in the existing client-side decoration path alone
-- a real fix would require server-side decorations (SSD) with compositor-drawn window controls
-- **Morph** does not currently implement SSD decoration
-
-In short:
-
-- close works because it is supported by xdg-shell v3
-- minimize/maximize are unavailable because the protocol version is too old
-- the proper long-term solution is SSD, not another xdg-shell workaround
+- **Morph** advertises xdg-shell version 5 and sends `wm_capabilities` for maximize, fullscreen, and minimize
+- clients that bind version 5 or newer can show those buttons in their own title bar
+- a client that still binds only version 3, which includes some Java toolkits, never sees that event
+- **Morph** does not draw its own title bar, so those older clients keep a close-only frame until server-side decorations exist

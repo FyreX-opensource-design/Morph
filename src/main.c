@@ -239,6 +239,9 @@ static void server_detach_global_listeners(struct comp_server *server)
 	detach_listener_if_linked(&server->seat_request_cursor);
 	detach_listener_if_linked(&server->seat_request_set_selection);
 	detach_listener_if_linked(&server->seat_request_set_primary_selection);
+	detach_listener_if_linked(&server->seat_request_start_drag);
+	detach_listener_if_linked(&server->seat_start_drag);
+	detach_listener_if_linked(&server->drag_icon_destroy);
 	detach_listener_if_linked(&server->seat_pointer_focus_change);
 	detach_listener_if_linked(&server->new_pointer_constraint);
 	detach_listener_if_linked(&server->pointer_constraint_commit);
@@ -2743,6 +2746,17 @@ static void toplevel_commit(struct wl_listener *listener, void *data)
 	/* wlroots asserts if we schedule configure before initialized. */
 	if (xdg->initial_commit && xdg->initialized)
 	{
+		/* wm_capabilities must ride the first configure. Sending it from new_toplevel
+		 * aborts because the surface is not initialized yet. */
+		const uint32_t shell_ver = (xdg->client && xdg->client->shell) ? xdg->client->shell->version : 0;
+		if (shell_ver >= XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION)
+		{
+			wlr_xdg_toplevel_set_wm_capabilities(
+				view->xdg_toplevel,
+				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE |
+					WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN |
+					WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE);
+		}
 		const struct wlr_box *geo = &xdg->geometry;
 		/* xwayland-satellite already negotiates X11 size; 0x0 reconfigure breaks splash/dialogs. */
 		if (geo->width <= 0 || geo->height <= 0)
@@ -3326,32 +3340,11 @@ static void xdg_shell_new_toplevel(struct wl_listener *listener, void *data)
 	wl_signal_add(&xdg_toplevel->events.set_parent, &view->set_parent);
 	view->new_popup.notify = toplevel_handle_new_popup;
 	wl_signal_add(&xdg_toplevel->base->events.new_popup, &view->new_popup);
-	/* wlroots asserts here on older xdg-shell versions; gate capabilities by negotiated version. */
 	const uint32_t shell_ver = (xdg_toplevel->base && xdg_toplevel->base->client &&
 								xdg_toplevel->base->client->shell)
 								   ? xdg_toplevel->base->client->shell->version
 								   : 0;
-	bool wm_caps_enabled = false;
-	if (shell_ver >= XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION)
-	{
-		wlr_xdg_toplevel_set_wm_capabilities(
-			xdg_toplevel,
-			WLR_XDG_TOPLEVEL_WM_CAPABILITIES_WINDOW_MENU |
-				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE |
-				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN |
-				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE);
-		wm_caps_enabled = true;
-		if (xdg_debug_logs_enabled)
-		{
-			wlr_log(WLR_INFO, "xdgdbg:wm_caps enabled shell_v=%u", shell_ver);
-		}
-	}
-	else if (xdg_debug_logs_enabled)
-	{
-		wlr_log(WLR_INFO, "xdgdbg:wm_caps skipped shell_v=%u (< %u)", shell_ver,
-				XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION);
-	}
-	log_new_toplevel_state(xdg_toplevel, shell_ver, wm_caps_enabled);
+	log_new_toplevel_state(xdg_toplevel, shell_ver, false);
 	wl_list_insert(server->toplevels.prev, &view->link);
 	view->listed = true;
 	/* Enter focus history behind existing windows; focus_toplevel promotes it on first focus. */
@@ -7400,12 +7393,109 @@ static void apply_pointer_motion(struct comp_server *server, struct wlr_input_de
  * Route cursor motion according to current grab state, then update pointer focus
  * and motion delivery for the surface currently under the cursor.
  */
+/** Keep a client drag icon under the cursor. The scene helper adds the icon surface offset. */
+static void drag_icon_reposition(struct comp_server *server)
+{
+	if (!server->drag_icon || !server->cursor)
+	{
+		return;
+	}
+	wlr_scene_node_set_position(&server->drag_icon->node,
+								(int)server->cursor->x, (int)server->cursor->y);
+}
+
+/**
+ * Deliver pointer focus for an in-progress client drag.
+ * Resize rings and frame-hole rules would otherwise clear focus and cancel the drop target.
+ */
+static void client_drag_deliver_pointer(struct comp_server *server, uint32_t time_msec)
+{
+	double sx, sy;
+	struct wlr_surface *surface = surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
+	if (!surface)
+	{
+		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+		wlr_seat_pointer_notify_clear_focus(server->seat);
+		return;
+	}
+	if (!server->seat->pointer_state.focused_surface)
+	{
+		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+	}
+	wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
+	wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
+}
+
+static void drag_icon_handle_destroy(struct wl_listener *listener, void *data)
+{
+	(void)data;
+	struct comp_server *server = wl_container_of(listener, server, drag_icon_destroy);
+	wl_list_remove(&server->drag_icon_destroy.link);
+	wl_list_init(&server->drag_icon_destroy.link);
+	server->drag_icon = NULL;
+}
+
+/** Seat request_start_drag: accept a pointer or touch serial, otherwise reject the source. */
+static void seat_request_start_drag(struct wl_listener *listener, void *data)
+{
+	struct comp_server *server = wl_container_of(listener, server, seat_request_start_drag);
+	struct wlr_seat_request_start_drag_event *event = data;
+	if (!server->seat || server->display_terminate_requested)
+	{
+		if (event->drag->source)
+		{
+			wlr_data_source_destroy(event->drag->source);
+		}
+		return;
+	}
+	if (wlr_seat_validate_pointer_grab_serial(server->seat, event->origin, event->serial))
+	{
+		wlr_seat_start_pointer_drag(server->seat, event->drag, event->serial);
+		return;
+	}
+	struct wlr_touch_point *point = NULL;
+	if (wlr_seat_validate_touch_grab_serial(server->seat, event->origin, event->serial, &point))
+	{
+		wlr_seat_start_touch_drag(server->seat, event->drag, event->serial, point);
+		return;
+	}
+	wlr_log(WLR_DEBUG, "rejecting drag: serial is not a pointer or touch grab");
+	if (event->drag->source)
+	{
+		wlr_data_source_destroy(event->drag->source);
+	}
+}
+
+/** Seat start_drag: show the client's drag icon above other surfaces. */
+static void seat_start_drag(struct wl_listener *listener, void *data)
+{
+	struct comp_server *server = wl_container_of(listener, server, seat_start_drag);
+	struct wlr_drag *drag = data;
+	if (!drag->icon || !server->ui_tree)
+	{
+		return;
+	}
+	detach_listener_if_linked(&server->drag_icon_destroy);
+	server->drag_icon = NULL;
+	struct wlr_scene_tree *icon = wlr_scene_drag_icon_create(server->ui_tree, drag->icon);
+	if (!icon)
+	{
+		wlr_log(WLR_ERROR, "failed to create drag icon scene node");
+		return;
+	}
+	server->drag_icon = icon;
+	drag_icon_reposition(server);
+	server->drag_icon_destroy.notify = drag_icon_handle_destroy;
+	wl_signal_add(&drag->icon->events.destroy, &server->drag_icon_destroy);
+}
+
 static void process_cursor_motion(struct comp_server *server, uint32_t time_msec)
 {
 	if (!server || !server->seat || server->display_terminate_requested)
 	{
 		return;
 	}
+	drag_icon_reposition(server);
 
 	if (server->grab == COMP_GRAB_MOVE && server->grabbed_toplevel)
 	{
@@ -7519,6 +7609,16 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 		}
 		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 		wlr_seat_pointer_notify_clear_focus(server->seat);
+		return;
+	}
+
+	/*
+	 * A client drag grab needs enter/motion on whatever is under the cursor, including
+	 * while crossing resize rings and transparent frame holes. Those paths clear focus.
+	 */
+	if (server->seat->drag)
+	{
+		client_drag_deliver_pointer(server, time_msec);
 		return;
 	}
 
@@ -7973,6 +8073,13 @@ static void server_cursor_button(struct wl_listener *listener, void *data)
 		return;
 	}
 
+	if (server->seat->drag)
+	{
+		/* The drag grab consumes the button. Do not start a window move or resize on top of it. */
+		wlr_seat_pointer_notify_button(server->seat, ev->time_msec, ev->button, ev->state);
+		return;
+	}
+
 	if (layer_exclusive_active(server))
 	{
 		/* Pointer focus was already confined to the launcher. Do not focus or drag other windows. */
@@ -8072,6 +8179,12 @@ static void seat_request_cursor(struct wl_listener *listener, void *data)
 	{
 		return;
 	}
+	struct wlr_seat_pointer_request_set_cursor_event *ev = data;
+	if (server->seat && server->seat->drag)
+	{
+		wlr_cursor_set_surface(server->cursor, ev->surface, ev->hotspot_x, ev->hotspot_y);
+		return;
+	}
 	/* Keep compositor-controlled resize cursor authoritative during interactive grabs. */
 	if (server->grab != COMP_GRAB_NONE)
 	{
@@ -8102,7 +8215,6 @@ static void seat_request_cursor(struct wl_listener *listener, void *data)
 			}
 		}
 	}
-	struct wlr_seat_pointer_request_set_cursor_event *ev = data;
 	wlr_cursor_set_surface(server->cursor, ev->surface, ev->hotspot_x, ev->hotspot_y);
 }
 
@@ -8279,7 +8391,9 @@ bool server_init(struct comp_server *server)
 		return false;
 	}
 
-	server->xdg_shell = wlr_xdg_shell_create(dpy, 3);
+	/* Version 5 is the first that can advertise wm_capabilities. Clients hide
+	 * minimize/maximize until the compositor says those requests are supported. */
+	server->xdg_shell = wlr_xdg_shell_create(dpy, 5);
 	server->foreign_toplevel_manager = wlr_foreign_toplevel_manager_v1_create(dpy);
 	if (!server->foreign_toplevel_manager)
 	{
@@ -8380,6 +8494,10 @@ bool server_init(struct comp_server *server)
 	server->seat_request_set_primary_selection.notify = seat_request_set_primary_selection;
 	wl_signal_add(&server->seat->events.request_set_primary_selection,
 				  &server->seat_request_set_primary_selection);
+	server->seat_request_start_drag.notify = seat_request_start_drag;
+	wl_signal_add(&server->seat->events.request_start_drag, &server->seat_request_start_drag);
+	server->seat_start_drag.notify = seat_start_drag;
+	wl_signal_add(&server->seat->events.start_drag, &server->seat_start_drag);
 	server->seat_pointer_focus_change.notify = seat_pointer_focus_change;
 	wl_signal_add(&server->seat->pointer_state.events.focus_change, &server->seat_pointer_focus_change);
 	server->new_pointer_constraint.notify = handle_new_pointer_constraint;
