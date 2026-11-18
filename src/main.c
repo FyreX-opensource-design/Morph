@@ -126,6 +126,7 @@ struct comp_layer_popup
 };
 
 static void focus_toplevel(struct comp_server *server, struct comp_toplevel *toplevel);
+static void toplevel_sync_fullscreen_layer(struct comp_toplevel *view);
 static void window_cycle_forget(struct comp_server *server, struct comp_toplevel *view);
 static void window_cycle_commit(struct comp_server *server);
 static void window_cycle_reset(struct comp_server *server);
@@ -319,6 +320,29 @@ static void toplevel_set_maximized_size(struct comp_toplevel *view, bool maximiz
 		wlr_xdg_toplevel_configure(view->xdg_toplevel, &configure));
 }
 
+/** One configure with both the fullscreen bit and the output size. */
+static void toplevel_set_fullscreen_size(struct comp_toplevel *view, bool fullscreen, int width, int height)
+{
+	if (!view || !view->xdg_toplevel)
+	{
+		return;
+	}
+	const struct wlr_xdg_toplevel_configure scheduled = view->xdg_toplevel->scheduled;
+	struct wlr_xdg_toplevel_configure configure = {
+		.maximized = scheduled.maximized,
+		.fullscreen = fullscreen,
+		.resizing = scheduled.resizing,
+		.activated = scheduled.activated,
+		.suspended = scheduled.suspended,
+		.tiled = scheduled.tiled,
+		.constrained = scheduled.constrained,
+		.width = width,
+		.height = height,
+	};
+	toplevel_track_configure(view,
+		wlr_xdg_toplevel_configure(view->xdg_toplevel, &configure));
+}
+
 /** Extract normalized title/app fields for config/rule matching across backends. */
 static void toplevel_title_app_for_config(const struct comp_toplevel *v, const char **title_out,
 										  const char **app_out)
@@ -350,6 +374,7 @@ static void toplevel_set_minimized(struct comp_toplevel *view, bool minimized)
 		clear_keyboard_focus(view->server);
 	}
 	server_workspace_apply_visibility(view->server);
+	toplevel_sync_fullscreen_layer(view);
 	if ((view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL) &&
 		view->server->grab != COMP_GRAB_MOVE)
 	{
@@ -2296,6 +2321,10 @@ static struct comp_toplevel **tile_sorted_views(struct comp_server *server, size
 		{
 			continue;
 		}
+		if (t->xdg_toplevel && (t->xdg_toplevel->current.fullscreen || t->scene_fullscreen))
+		{
+			continue;
+		}
 		if (t->workspace != server->current_workspace)
 		{
 			continue;
@@ -2315,6 +2344,10 @@ static struct comp_toplevel **tile_sorted_views(struct comp_server *server, size
 	wl_list_for_each(t, &server->toplevels, link)
 	{
 		if (!toplevel_surface_mapped(t) || t->tile_float || t->minimized)
+		{
+			continue;
+		}
+		if (t->xdg_toplevel && (t->xdg_toplevel->current.fullscreen || t->scene_fullscreen))
 		{
 			continue;
 		}
@@ -2460,7 +2493,136 @@ static void toplevel_unmap(struct wl_listener *listener, void *data)
 	{
 		server_arrange_toplevels(view->server);
 	}
+	toplevel_sync_fullscreen_layer(view);
 	foreign_toplevel_refresh(view);
+}
+
+/**
+ * Fullscreen clients, and any window already the size of its output, cover
+ * top-layer panels (waybar) and stay under overlay.
+ */
+static bool toplevel_output_box(struct comp_toplevel *view, struct wlr_output **out_out, struct wlr_box *obox_out)
+{
+	struct wlr_box geo = {0};
+	if (!toplevel_get_hit_box(view, &geo))
+	{
+		geo.x = view->scene_tree->node.x;
+		geo.y = view->scene_tree->node.y;
+	}
+	const double cx = geo.x + (geo.width > 0 ? geo.width / 2.0 : 0);
+	const double cy = geo.y + (geo.height > 0 ? geo.height / 2.0 : 0);
+	struct wlr_output *out = NULL;
+	if (view->xdg_toplevel->requested.fullscreen)
+	{
+		out = view->xdg_toplevel->requested.fullscreen_output;
+	}
+	if (!out && (geo.width > 0 || geo.height > 0))
+	{
+		out = wlr_output_layout_output_at(view->server->output_layout, cx, cy);
+	}
+	if (!out)
+	{
+		out = wlr_output_layout_output_at(view->server->output_layout,
+										  view->server->cursor->x, view->server->cursor->y);
+	}
+	if (!out)
+	{
+		return false;
+	}
+	struct wlr_box obox = {0};
+	wlr_output_layout_get_box(view->server->output_layout, out, &obox);
+	if (obox.width <= 0 || obox.height <= 0)
+	{
+		return false;
+	}
+	*out_out = out;
+	*obox_out = obox;
+	return true;
+}
+
+static bool toplevel_sized_like_output(const struct wlr_box *geo, const struct wlr_box *obox)
+{
+	/* A few pixels of slack covers scale rounding. The workarea is shorter than
+	 * this by the panel, so a normal maximized window does not match. */
+	return geo->width > 0 && geo->height > 0 &&
+		   abs(geo->width - obox->width) <= 4 && abs(geo->height - obox->height) <= 4;
+}
+
+static void toplevel_sync_fullscreen_layer(struct comp_toplevel *view)
+{
+	if (!view || !view->scene_tree || !view->xdg_toplevel || !view->server->fullscreen_tree)
+	{
+		return;
+	}
+	const bool mapped = toplevel_surface_mapped(view) && !view->minimized;
+	const bool protocol_fullscreen = view->xdg_toplevel->current.fullscreen;
+	struct wlr_output *out = NULL;
+	struct wlr_box obox = {0};
+	struct wlr_box geo = {0};
+	const bool have_output = toplevel_output_box(view, &out, &obox);
+	const bool have_geo = toplevel_get_hit_box(view, &geo);
+	const bool sized_like_output = mapped && have_output && have_geo &&
+								   toplevel_sized_like_output(&geo, &obox);
+	const bool fullscreen = mapped && (protocol_fullscreen || sized_like_output);
+	struct wlr_scene_tree *const target =
+		fullscreen ? view->server->fullscreen_tree : view->server->windows_tree;
+	if (view->scene_tree->node.parent != target)
+	{
+		wlr_scene_node_reparent(&view->scene_tree->node, target);
+	}
+	if (!fullscreen)
+	{
+		if (view->scene_fullscreen)
+		{
+			view->scene_fullscreen = false;
+			if ((view->server->layout == COMP_LAYOUT_TILE ||
+				 view->server->layout == COMP_LAYOUT_SCROLL) &&
+				!view->tile_float)
+			{
+				server_arrange_toplevels(view->server);
+			}
+		}
+		return;
+	}
+
+	if (have_output)
+	{
+		if (view->scene_tree->node.x != obox.x || view->scene_tree->node.y != obox.y)
+		{
+			wlr_scene_node_set_position(&view->scene_tree->node, obox.x, obox.y);
+		}
+		if (protocol_fullscreen && !view->scene_fullscreen &&
+			(geo.width != obox.width || geo.height != obox.height) &&
+			!(view->xdg_toplevel->scheduled.fullscreen &&
+			  view->xdg_toplevel->scheduled.width == obox.width &&
+			  view->xdg_toplevel->scheduled.height == obox.height))
+		{
+			toplevel_set_fullscreen_size(view, true, obox.width, obox.height);
+		}
+	}
+	wlr_scene_node_raise_to_top(&view->scene_tree->node);
+	view->scene_fullscreen = true;
+}
+
+static void toplevel_apply_pending_fullscreen(struct comp_toplevel *view)
+{
+	if (!view || !view->xdg_toplevel || !toplevel_surface_initialized(view))
+	{
+		return;
+	}
+	if (!view->xdg_toplevel->requested.fullscreen || view->xdg_toplevel->current.fullscreen ||
+		view->xdg_toplevel->scheduled.fullscreen)
+	{
+		return;
+	}
+	struct wlr_output *out = NULL;
+	struct wlr_box obox = {0};
+	if (!toplevel_output_box(view, &out, &obox))
+	{
+		return;
+	}
+	toplevel_set_fullscreen_size(view, true, obox.width, obox.height);
+	wlr_scene_node_set_position(&view->scene_tree->node, obox.x, obox.y);
 }
 
 /** Destroy callback: remove listeners/resources and keep compositor state coherent. */
@@ -2591,6 +2753,7 @@ static void toplevel_commit(struct wl_listener *listener, void *data)
 	}
 	toplevel_apply_decoration_mode(view);
 	toplevel_update_resize_anchor(view);
+	toplevel_apply_pending_fullscreen(view);
 	if (view->pending_configure_serial == 0 &&
 		xdg->geometry.width > 0 && xdg->geometry.height > 0)
 	{
@@ -2607,6 +2770,7 @@ static void toplevel_commit(struct wl_listener *listener, void *data)
 						 view->server->grab_view_width, view->server->grab_view_height,
 						 view->server->resize_edges);
 	}
+	toplevel_sync_fullscreen_layer(view);
 }
 
 /** toplevel map callback: place/focus according to current layout policy and rules. */
@@ -2651,6 +2815,7 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 		focus_toplevel(view->server, view);
 		server_workspace_apply_visibility(view->server);
 		server_sync_xdg_decorations(view->server);
+		toplevel_sync_fullscreen_layer(view);
 		return;
 	}
 	if (view->server->layout == COMP_LAYOUT_TILE || view->server->layout == COMP_LAYOUT_SCROLL)
@@ -2665,12 +2830,14 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 			server_arrange_toplevels(view->server);
 			server_workspace_apply_visibility(view->server);
 			server_sync_xdg_decorations(view->server);
+			toplevel_sync_fullscreen_layer(view);
 			return;
 		}
 		focus_toplevel(view->server, view);
 		server_arrange_toplevels(view->server);
 		server_workspace_apply_visibility(view->server);
 		server_sync_xdg_decorations(view->server);
+		toplevel_sync_fullscreen_layer(view);
 		return;
 	}
 	const int x = obox.x + (obox.width - gw) / 2;
@@ -2680,6 +2847,7 @@ static void toplevel_map(struct wl_listener *listener, void *data)
 	focus_toplevel(view->server, view);
 	server_workspace_apply_visibility(view->server);
 	server_sync_xdg_decorations(view->server);
+	toplevel_sync_fullscreen_layer(view);
 }
 
 /** Begin interactive move grab for a view. */
@@ -2866,37 +3034,22 @@ static void toplevel_request_fullscreen(struct wl_listener *listener, void *data
 	}
 	if (!toplevel_surface_initialized(view))
 	{
+		/* The request is retained on the toplevel. The next commit applies it
+		 * once the surface can accept a configure. */
 		return;
 	}
 	if (view->server->grabbed_toplevel == view)
 	{
 		cancel_active_grab(view->server);
 	}
-	const bool want_fullscreen = view->xdg_toplevel->requested.fullscreen;
-	toplevel_track_configure(view,
-		wlr_xdg_toplevel_set_fullscreen(view->xdg_toplevel, want_fullscreen));
-	if (want_fullscreen)
+	if (view->xdg_toplevel->requested.fullscreen)
 	{
-		struct wlr_output *out = view->xdg_toplevel->requested.fullscreen_output;
-		if (!out)
-		{
-			out = wlr_output_layout_output_at(view->server->output_layout,
-											  view->server->cursor->x, view->server->cursor->y);
-		}
-		struct wlr_box obox = {0, 0, 800, 600};
-		if (out)
-		{
-			wlr_output_layout_get_box(view->server->output_layout, out, &obox);
-		}
-		toplevel_set_size(view, obox.width, obox.height);
-		if (view->server->layout == COMP_LAYOUT_STACK || view->tile_float)
-		{
-			wlr_scene_node_set_position(&view->scene_tree->node, obox.x, obox.y);
-		}
+		toplevel_apply_pending_fullscreen(view);
+		toplevel_sync_fullscreen_layer(view);
 	}
 	else
 	{
-		toplevel_set_size(view, 0, 0);
+		toplevel_set_fullscreen_size(view, false, 0, 0);
 	}
 	foreign_toplevel_refresh(view);
 }
@@ -3264,7 +3417,11 @@ static void focus_toplevel(struct comp_server *server, struct comp_toplevel *top
 	}
 	log_xdg_state("focus:activate-new", toplevel);
 	toplevel_set_activated(toplevel, true);
-	if (server->layout == COMP_LAYOUT_STACK ||
+	if (toplevel->xdg_toplevel && toplevel->xdg_toplevel->current.fullscreen)
+	{
+		toplevel_sync_fullscreen_layer(toplevel);
+	}
+	else if (server->layout == COMP_LAYOUT_STACK ||
 		((server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) && toplevel->tile_float))
 	{
 		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
@@ -8108,6 +8265,11 @@ bool server_init(struct comp_server *server)
 		wlr_scene_tree_create(&server->scene->tree);
 	server->windows_tree = wlr_scene_tree_create(&server->scene->tree);
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = wlr_scene_tree_create(&server->scene->tree);
+	server->fullscreen_tree = wlr_scene_tree_create(&server->scene->tree);
+	if (!server->fullscreen_tree)
+	{
+		return false;
+	}
 	server->layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] =
 		wlr_scene_tree_create(&server->scene->tree);
 	server->ui_tree = wlr_scene_tree_create(&server->scene->tree);

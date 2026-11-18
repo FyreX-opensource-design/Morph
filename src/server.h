@@ -191,6 +191,8 @@ struct comp_toplevel
 	/** Delays anchor cleanup until the final non-resizing commit has been observed. */
 	bool resize_anchor_finishing;
 	bool minimized;
+	/** Scene node is parented to fullscreen_tree while current.fullscreen is shown. */
+	bool scene_fullscreen;
 	int restore_x;
 	int restore_y;
 	int restore_width;
@@ -289,12 +291,14 @@ struct comp_server
 	pixman_region32_t pointer_confine;
 	bool pointer_confine_requires_warp;
 	struct wlr_scene *scene;
-	/** Scene stacking (back to front): background, layout+outputs, bottom, windows, top, overlay. */
+	/** Scene stacking (back to front): background, layout+outputs, bottom, windows, top, fullscreen, overlay. */
 	struct wlr_scene_tree *layer_trees[4];
 	/** Compositor-owned chrome (switcher, future menus), above client overlay surfaces. */
 	struct wlr_scene_tree *ui_tree;
 	struct wlr_scene_output_layout *scene_layout;
 	struct wlr_scene_tree *windows_tree;
+	/** Fullscreen toplevels. Above layer-shell top (panels) and below overlay. */
+	struct wlr_scene_tree *fullscreen_tree;
 	struct wlr_xdg_shell *xdg_shell;
 	struct wlr_layer_shell_v1 *layer_shell;
 	struct wl_list layers;
