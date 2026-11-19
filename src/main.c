@@ -2409,7 +2409,7 @@ static int tile_sorted_index(struct comp_toplevel **arr, size_t n, struct comp_t
 	return -1;
 }
 
-/** Which output's `layer_workarea` contains the center of this tiled view (layout coordinates). */
+/** Which output contains the center of this tiled view (layout coordinates). */
 static struct comp_output *toplevel_tile_output(struct comp_toplevel *t)
 {
 	struct comp_server *server = t->server;
@@ -2423,7 +2423,12 @@ static struct comp_output *toplevel_tile_output(struct comp_toplevel *t)
 	struct comp_output *o;
 	wl_list_for_each(o, &server->outputs, link)
 	{
-		if (wlr_box_contains_point(&o->layer_workarea, cx, cy))
+		/* The workarea stops above a panel. A window crossing that strip would
+		 * match no output and snap back to the primary. Ownership follows the
+		 * full output, including the pixels the bar covers. */
+		struct wlr_box box = {0};
+		wlr_output_layout_get_box(server->output_layout, o->wlr_output, &box);
+		if (box.width > 0 && box.height > 0 && wlr_box_contains_point(&box, cx, cy))
 		{
 			return o;
 		}
@@ -2582,10 +2587,31 @@ static bool toplevel_sized_like_output(const struct wlr_box *geo, const struct w
 		   abs(geo->width - obox->width) <= 4 && abs(geo->height - obox->height) <= 4;
 }
 
+/** Draw an in-progress move above top-layer panels without touching pointer focus. */
+static void toplevel_raise_for_move(struct comp_toplevel *view)
+{
+	if (!view || !view->scene_tree || !view->server || !view->server->fullscreen_tree)
+	{
+		return;
+	}
+	if (view->scene_tree->node.parent != view->server->fullscreen_tree)
+	{
+		wlr_scene_node_reparent(&view->scene_tree->node, view->server->fullscreen_tree);
+	}
+	wlr_scene_node_raise_to_top(&view->scene_tree->node);
+}
+
 static void toplevel_sync_fullscreen_layer(struct comp_toplevel *view)
 {
 	if (!view || !view->scene_tree || !view->xdg_toplevel || !view->server->fullscreen_tree)
 	{
+		return;
+	}
+	if (view->server->grab == COMP_GRAB_MOVE && view->server->grabbed_toplevel == view)
+	{
+		/* A commit during the drag must not snap the window back under the bar
+		 * or onto the output it started on. */
+		toplevel_raise_for_move(view);
 		return;
 	}
 	const bool mapped = toplevel_surface_mapped(view) && !view->minimized;
@@ -2909,10 +2935,9 @@ static void toplevel_request_move(struct wl_listener *listener, void *data)
 	{
 		return;
 	}
-	if (toplevel_effectively_maximized(view))
-	{
-		return;
-	}
+	/* Maximized windows are still movable. The release path docks them onto the
+	 * output under the cursor; refusing the grab here left them pinned to the
+	 * monitor they were maximized on. */
 	begin_move(view->server, view, false);
 }
 
@@ -2976,11 +3001,25 @@ static void toplevel_apply_requested_maximize(struct comp_toplevel *view)
 		/* Some clients request maximize before first commit; configuring here would assert in wlroots. */
 		return;
 	}
-	if (view->server->grabbed_toplevel == view)
+	const bool dragging = view->server->grab == COMP_GRAB_MOVE &&
+						  view->server->grabbed_toplevel == view;
+	if (dragging)
 	{
-		/* Title-bar double click often arrives as move initiation followed by maximize.
-		 * Drop the stale move grab first so later pointer motion does not keep dragging the window. */
-		cancel_active_grab(view->server);
+		if (view->xdg_toplevel->requested.maximized && view->xdg_toplevel->current.maximized)
+		{
+			/* A panel commit (waybar's clock, taskbar, exclusive zone) re-runs this
+			 * for windows that are already maximized. Cancelling here pins an
+			 * in-progress drag back onto the workarea it started on. */
+			return;
+		}
+		if (view->xdg_toplevel->requested.maximized)
+		{
+			/* Title-bar double click often arrives as move initiation followed by maximize.
+			 * Drop the stale move grab first so later pointer motion does not keep dragging the window. */
+			cancel_active_grab(view->server);
+		}
+		/* Unmaximize during a drag (title-bar drag of a maximized window) keeps the grab.
+		 * Cancelling here is what made the window refuse to follow the pointer. */
 	}
 	const bool want_max = view->xdg_toplevel->requested.maximized;
 	const bool was_max = view->xdg_toplevel->current.maximized;
@@ -3017,7 +3056,11 @@ static void toplevel_apply_requested_maximize(struct comp_toplevel *view)
 	}
 	else
 	{
-		/* Restore pre-maximize geometry so normalize returns to previous size and position. */
+		/* Restore pre-maximize geometry so normalize returns to previous size and position.
+		 * A live move keeps the pointer position; jumping back to the saved origin
+		 * drops the window out from under the cursor. */
+		const bool keep_drag_position = view->server->grab == COMP_GRAB_MOVE &&
+										view->server->grabbed_toplevel == view;
 		if (view->has_restore && view->restore_width > 0 && view->restore_height > 0)
 		{
 			int restore_x = view->restore_x;
@@ -3030,7 +3073,8 @@ static void toplevel_apply_requested_maximize(struct comp_toplevel *view)
 					&restore_x, &restore_y, &restore_width, &restore_height);
 			}
 			toplevel_set_maximized_size(view, false, restore_width, restore_height);
-			if (view->server->layout == COMP_LAYOUT_STACK || view->tile_float)
+			if (!keep_drag_position &&
+				(view->server->layout == COMP_LAYOUT_STACK || view->tile_float))
 			{
 				wlr_scene_node_set_position(&view->scene_tree->node, restore_x, restore_y);
 			}
@@ -3048,7 +3092,8 @@ static void toplevel_apply_requested_maximize(struct comp_toplevel *view)
 				restore_width = view->xdg_toplevel->base->surface->current.width;
 				restore_height = view->xdg_toplevel->base->surface->current.height;
 			}
-			if (view->server->layout == COMP_LAYOUT_STACK || view->tile_float)
+			if (!keep_drag_position &&
+				(view->server->layout == COMP_LAYOUT_STACK || view->tile_float))
 			{
 				toplevel_clamp_floating_box_to_workarea(view,
 					&restore_x, &restore_y, &restore_width, &restore_height);
@@ -3761,6 +3806,7 @@ static void begin_move(struct comp_server *server, struct comp_toplevel *view, b
 	server->grab_cursor_y = server->cursor->y;
 	server->grab_view_x = view->scene_tree->node.x;
 	server->grab_view_y = view->scene_tree->node.y;
+	toplevel_raise_for_move(view);
 }
 
 /** True while either the committed or newest scheduled client state is maximized. */
@@ -7554,7 +7600,9 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 
 	if (server->grab == COMP_GRAB_MOVE && server->grabbed_toplevel)
 	{
-		if (server->seat->pointer_state.button_count == 0)
+		/* Super+drag swallows the press, so the seat button count stays 0 for the
+		 * whole grab. A real missed release has no swallow flag and must still end it. */
+		if (server->seat->pointer_state.button_count == 0 && !server->swallow_left_release)
 		{
 			cancel_active_grab(server);
 		}
@@ -7566,6 +7614,7 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 		double dy = server->cursor->y - server->grab_cursor_y;
 		wlr_scene_node_set_position(&v->scene_tree->node,
 									server->grab_view_x + (int)dx, server->grab_view_y + (int)dy);
+		toplevel_raise_for_move(v);
 	}
 	else if (server->grab == COMP_GRAB_RESIZE && server->grabbed_toplevel)
 	{
@@ -7695,6 +7744,16 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 
 	double sx, sy;
 	struct wlr_surface *surface = surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
+	if (server->grab == COMP_GRAB_MOVE && surface)
+	{
+		struct wlr_surface *root = wlr_surface_get_root_surface(surface);
+		if (wlr_layer_surface_v1_try_from_wlr_surface(root))
+		{
+			/* The bar sits on the seam. Handing it the pointer makes the drag
+			 * look stuck there. The window position was already updated. */
+			return;
+		}
+	}
 	if (surface)
 	{
 		struct comp_toplevel *focused_frame = focused_toplevel_frame_at_cursor(server);
@@ -8100,6 +8159,37 @@ static void server_cursor_button(struct wl_listener *listener, void *data)
 		server->grab = COMP_GRAB_NONE;
 		server->grabbed_toplevel = NULL;
 		server->resize_edges = 0;
+		if (was_move && dragged && dragged->xdg_toplevel &&
+			dragged->xdg_toplevel->requested.maximized &&
+			(server->layout == COMP_LAYOUT_STACK || dragged->tile_float))
+		{
+			/* The window's center is still on the monitor it started on until the
+			 * pointer has travelled half the window. Park that center on the cursor
+			 * so the dock follows the pointer onto the output it actually entered. */
+			const struct wlr_box geo = dragged->xdg_toplevel->base->geometry;
+			int width = geo.width;
+			int height = geo.height;
+			int origin_x = geo.x;
+			int origin_y = geo.y;
+			if ((width <= 0 || height <= 0) && dragged->xdg_toplevel->base->surface)
+			{
+				width = dragged->xdg_toplevel->base->surface->current.width;
+				height = dragged->xdg_toplevel->base->surface->current.height;
+				origin_x = 0;
+				origin_y = 0;
+			}
+			if (width > 0 && height > 0 && dragged->scene_tree)
+			{
+				wlr_scene_node_set_position(&dragged->scene_tree->node,
+											(int)server->cursor->x - width / 2 - origin_x,
+											(int)server->cursor->y - height / 2 - origin_y);
+			}
+			toplevel_apply_requested_maximize(dragged);
+		}
+		if (was_move && dragged)
+		{
+			toplevel_sync_fullscreen_layer(dragged);
+		}
 		if (was_move && (server->layout == COMP_LAYOUT_TILE || server->layout == COMP_LAYOUT_SCROLL) && dragged)
 		{
 			double sx, sy;
