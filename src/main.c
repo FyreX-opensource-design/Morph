@@ -1075,6 +1075,37 @@ static bool surface_is_under_layer(struct wlr_surface *surface, struct wlr_layer
 	return false;
 }
 
+/**
+ * Exclusive keyboard grabs belong to one layer surface, but a client can map one
+ * per output (scran's selection overlay). Pointer, touch, and tablet input still
+ * belong to whichever of those surfaces is under the cursor.
+ */
+static bool surface_accepts_exclusive_pointer(const struct comp_server *server, struct wlr_surface *surface)
+{
+	if (!surface || !layer_exclusive_active(server))
+	{
+		return false;
+	}
+	struct comp_layer *layer;
+	wl_list_for_each(layer, &server->layers, link)
+	{
+		struct wlr_layer_surface_v1 *ls = layer->layer_surface;
+		if (!ls || !ls->surface || !ls->surface->mapped || !ls->configured)
+		{
+			continue;
+		}
+		if (ls->current.keyboard_interactive != ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
+		{
+			continue;
+		}
+		if (surface_is_under_layer(surface, ls))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 /** Hit-test and resolve the compositor toplevel at layout coordinates. */
 static struct comp_toplevel *toplevel_at(struct comp_server *server, double lx, double ly, double *sx, double *sy)
 {
@@ -6115,7 +6146,17 @@ static void keyboard_handle_modifiers(struct wl_listener *listener, void *data)
 	}
 }
 
-/** Resolve configured output name to current wlroots output object. */
+static bool output_text_eq(const char *field, const char *name)
+{
+	return field && field[0] && strcmp(field, name) == 0;
+}
+
+/**
+ * Resolve a configured output identity to a current wlroots output.
+ * Accepts the connector name, or the EDID make, model, serial, or description.
+ * Description is "make model[ serial] (connector)"; the connector suffix is
+ * ignored so a panel still matches after it moves to another port.
+ */
 static struct wlr_output *output_by_name(struct comp_server *server, const char *name)
 {
 	if (!name || !name[0])
@@ -6125,9 +6166,26 @@ static struct wlr_output *output_by_name(struct comp_server *server, const char 
 	struct comp_output *o;
 	wl_list_for_each(o, &server->outputs, link)
 	{
-		if (strcmp(o->wlr_output->name, name) == 0)
+		struct wlr_output *output = o->wlr_output;
+		if (output_text_eq(output->name, name) || output_text_eq(output->make, name) ||
+			output_text_eq(output->model, name) || output_text_eq(output->serial, name) ||
+			output_text_eq(output->description, name))
 		{
-			return o->wlr_output;
+			return output;
+		}
+		if (!output->description)
+		{
+			continue;
+		}
+		const char *paren = strrchr(output->description, '(');
+		if (!paren || paren <= output->description || paren[-1] != ' ')
+		{
+			continue;
+		}
+		const size_t len = (size_t)(paren - output->description) - 1;
+		if (strlen(name) == len && strncmp(output->description, name, len) == 0)
+		{
+			return output;
 		}
 	}
 	return NULL;
@@ -6682,8 +6740,7 @@ static void server_cursor_tablet_tool_tip(struct wl_listener *listener, void *da
 	}
 
 	/* TIP_DOWN */
-	if (layer_exclusive_active(server) &&
-		!(surface && surface_is_under_layer(surface, server->exclusive_layer)))
+	if (layer_exclusive_active(server) && !surface_accepts_exclusive_pointer(server, surface))
 	{
 		return;
 	}
@@ -6744,8 +6801,7 @@ static void server_cursor_tablet_tool_button(struct wl_listener *listener, void 
 	struct wlr_tablet_v2_tablet *v2tab = tab->v2_tablet;
 	if (!surface || !wlr_surface_accepts_tablet_v2(surface, v2tab))
 	{
-		if (layer_exclusive_active(server) &&
-			!(surface && surface_is_under_layer(surface, server->exclusive_layer)))
+		if (layer_exclusive_active(server) && !surface_accepts_exclusive_pointer(server, surface))
 		{
 			return;
 		}
@@ -6779,8 +6835,7 @@ static void server_cursor_touch_down(struct wl_listener *listener, void *data)
 
 	double sx, sy;
 	struct wlr_surface *surface = surface_at(server, lx, ly, &sx, &sy);
-	if (layer_exclusive_active(server) &&
-		!(surface && surface_is_under_layer(surface, server->exclusive_layer)))
+	if (layer_exclusive_active(server) && !surface_accepts_exclusive_pointer(server, surface))
 	{
 		return;
 	}
@@ -6864,7 +6919,7 @@ static void server_cursor_touch_motion(struct wl_listener *listener, void *data)
 		!(server->touch_pointer_emu && event->touch_id == server->touch_pointer_emu_id))
 	{
 		struct wlr_surface *surface = surface_at(server, lx, ly, &sx, &sy);
-		if (surface && surface_is_under_layer(surface, server->exclusive_layer) &&
+		if (surface && surface_accepts_exclusive_pointer(server, surface) &&
 			wlr_surface_accepts_touch(surface, server->seat))
 		{
 			wlr_seat_touch_notify_motion(server->seat, event->time_msec, event->touch_id, sx, sy);
@@ -7597,7 +7652,7 @@ static void process_cursor_motion(struct comp_server *server, uint32_t time_msec
 		double ex, ey;
 		struct wlr_surface *exclusive_surface =
 			surface_at(server, server->cursor->x, server->cursor->y, &ex, &ey);
-		if (exclusive_surface && surface_is_under_layer(exclusive_surface, server->exclusive_layer))
+		if (exclusive_surface && surface_accepts_exclusive_pointer(server, exclusive_surface))
 		{
 			if (!server->seat->pointer_state.focused_surface)
 			{
@@ -8150,7 +8205,7 @@ static void server_cursor_axis(struct wl_listener *listener, void *data)
 	if (layer_exclusive_active(server))
 	{
 		struct wlr_surface *focused = server->seat->pointer_state.focused_surface;
-		if (!surface_is_under_layer(focused, server->exclusive_layer))
+		if (!surface_accepts_exclusive_pointer(server, focused))
 		{
 			return;
 		}

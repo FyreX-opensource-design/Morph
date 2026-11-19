@@ -116,7 +116,7 @@ Accepted policy names (case-insensitive; underscores and hyphens are allowed):
 
 These rules apply to all policies and are part of the stable contract:
 
-- **Layer-shell** (panels / overlays): an on-demand layer surface receives keyboard focus only on **click/tap**, never on pointer enter. Hovering a panel does not clear an XDG toplevel’s keyboard focus under FocusFollowsMouse or SloppyFocus. A surface with **exclusive** keyboard interactivity (launchers such as wofi) takes keyboard focus when it maps and keeps pointer, touch, and tablet input until it closes or drops exclusivity. Clicks, drags, and scrolling outside that surface and its popups are not delivered to other clients and do not move keyboard focus. Closing it restores the previous window.
+- **Layer-shell** (panels / overlays): an on-demand layer surface receives keyboard focus only on **click/tap**, never on pointer enter. Hovering a panel does not clear an XDG toplevel’s keyboard focus under FocusFollowsMouse or SloppyFocus. A surface with **exclusive** keyboard interactivity (launchers such as wofi) takes keyboard focus when it maps and keeps pointer, touch, and tablet input until it closes or drops exclusivity. When several outputs each have an exclusive surface (a selection overlay such as scran), pointer, touch, and tablet input go to the exclusive surface under the cursor. Clicks, drags, and scrolling on anything else are not delivered to other clients and do not move keyboard focus. Closing it restores the previous window.
 - **Root / empty desktop**: ClickToFocus and FocusFollowsMouse clear keyboard focus on an empty-root click (or a click on a BACKGROUND/BOTTOM wallpaper layer); SloppyFocus does not. FocusFollowsMouse additionally clears when the pointer leaves onto empty root / desktop wallpaper via motion. In a fully tiled layout with no visible desktop, SloppyFocus and FocusFollowsMouse look the same until the pointer rests on uncovered desktop or wallpaper.
 - **Compositor move/resize grabs** (`Super+drag`, edge resize): motion during an active grab does not apply FocusFollowsMouse / SloppyFocus handoff. Explicit focus still happens when a grab is armed on a toplevel.
 - **Non-pointer focus** (toplevel map, foreign-toplevel / xdg-activation, workspace switch, keybinds): always uses the compositor’s normal focus path and ignores the mouse policy.
@@ -161,12 +161,12 @@ Use **`strip = no`** on specific apps (e.g. video players) to keep their client 
 
 ## Section `[input_map]` (optional)
 
-Rules in **`[input_map]`** map physical input devices to one output by connector name, and can apply a calibration matrix to absolute coordinates. This is mainly for touch and tablet devices that should follow a specific monitor, or whose axes need rotating or flipping on their own. **First matching rule wins** in file order.
+Rules in **`[input_map]`** map physical input devices to one output, and can apply a calibration matrix to absolute coordinates. This is mainly for touch and tablet devices that should follow a specific monitor, or whose axes need rotating or flipping on their own. **First matching rule wins** in file order.
 
 | Key | Meaning |
 |-----|---------|
 | **`match`** / **`name`** | POSIX **extended** regex matched against the device name. Required. |
-| **`output`** | Output connector name, for example `eDP-1`, `HDMI-A-1`, or `DP-2`. Optional when **`calibration_matrix`** is set. |
+| **`output`** | Output to bind the device to. A connector name (`eDP-1`, `HDMI-A-1`, `DP-2`), or the panel’s make, model, serial, or description. Make is the EDID vendor string. An unregistered vendor ID is reported as `Invalid Vendor Codename - RTK` (the three-letter code varies) and stays the same when the connector name changes between machines. Optional when **`calibration_matrix`** is set. |
 | **`type`** | Optional comma/space-separated filter: **`touch`**, **`tablet`** / **`stylus`** / **`pen`**, **`pointer`** / **`mouse`**, or **`all`** / **`both`**. If omitted, the rule applies to **touch** and **tablet** devices. |
 | **`calibration_matrix`** / **`calibration-matrix`** | Optional six numbers `a b c d e f` (spaces or commas). The first two rows of a 3×3 matrix applied to normalized device coordinates before an output transform. |
 
